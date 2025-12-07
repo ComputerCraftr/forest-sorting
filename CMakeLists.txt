@@ -7,23 +7,46 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_executable(forest-sorting)
-
-target_sources(forest-sorting
-    PRIVATE
-        src/main.cpp
+add_library(forest-sorting-lib STATIC
+    src/forest.cpp
 )
 
-target_compile_features(forest-sorting PRIVATE cxx_std_20)
-
-target_compile_options(forest-sorting PRIVATE
-    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
-    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -pedantic>
-    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fsanitize=address,undefined -fno-omit-frame-pointer>
-    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3>
+target_include_directories(forest-sorting-lib PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<INSTALL_INTERFACE:include>
 )
 
-target_link_options(forest-sorting PRIVATE
-    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fsanitize=address,undefined>
-    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3>
+add_executable(forest-sorting
+    src/main.cpp
 )
+
+target_link_libraries(forest-sorting PRIVATE forest-sorting-lib)
+
+add_executable(forest-sorting-tests
+    tests/forest_tests.cpp
+)
+
+target_link_libraries(forest-sorting-tests PRIVATE forest-sorting-lib)
+
+set(_forest_targets
+    forest-sorting-lib
+    forest-sorting
+    forest-sorting-tests
+)
+
+foreach(target ${_forest_targets})
+    target_compile_features(${target} PRIVATE cxx_std_20)
+    target_compile_options(${target} PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -pedantic>
+        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fsanitize=address,undefined -fno-omit-frame-pointer>
+        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3>
+    )
+    target_link_options(${target} PRIVATE
+        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fsanitize=address,undefined>
+        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3>
+    )
+endforeach()
+
+enable_testing()
+add_test(NAME forest-sorting-tests COMMAND forest-sorting-tests)
