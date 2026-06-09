@@ -1,0 +1,16 @@
+Checks: >
+    clang-analyzer-*,
+    bugprone-*,
+    performance-*,
+    misc-include-cleaner,
+    misc-no-recursion,
+    portability-*,
+    readability-*,
+    -bugprone-easily-swappable-parameters,
+    -clang-analyzer-security.VAList,
+    -readability-function-cognitive-complexity,
+    -readability-isolate-declaration,
+    -readability-magic-numbers
+
+HeaderFilterRegex: ".*"
+WarningsAsErrors: "*"

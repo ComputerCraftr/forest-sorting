@@ -2,6 +2,8 @@
 
 #include <cassert>
 #include <cstdint>
+#include <exception>
+#include <iostream>
 #include <vector>
 
 UInt128 makeId(uint64_t high, uint64_t low) {
@@ -48,7 +50,15 @@ void test_sort_and_verify_multi_root() {
 }
 
 int main() {
-    test_compute_depths_simple_chain();
-    test_sort_and_verify_multi_root();
-    return 0;
+    try {
+        test_compute_depths_simple_chain();
+        test_sort_and_verify_multi_root();
+        return 0;
+    } catch (const std::exception &error) {
+        std::cerr << "forest-sorting-tests failed: " << error.what() << "\n";
+        return 1;
+    } catch (...) {
+        std::cerr << "forest-sorting-tests failed: unknown exception\n";
+        return 1;
+    }
 }

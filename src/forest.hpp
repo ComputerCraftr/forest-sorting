@@ -1,4 +1,5 @@
-#pragma once
+#ifndef FOREST_SORTING_FOREST_HPP
+#define FOREST_SORTING_FOREST_HPP
 
 #include <cstddef>
 #include <cstdint>
@@ -18,7 +19,7 @@ constexpr std::size_t kNoParent = std::numeric_limits<std::size_t>::max();
 std::string toHex(UInt128 value);
 
 struct UInt128Hash {
-    static uint64_t mix64(uint64_t x) noexcept;
+    static uint64_t mix64(uint64_t input) noexcept;
     std::size_t operator()(const UInt128 &value) const noexcept;
 };
 
@@ -31,3 +32,5 @@ computeDepths(const std::vector<Node> &nodes,
 std::vector<Node> sortForestByDepthAndId(const std::vector<Node> &nodes);
 
 bool verifySortedByDepthAndId(const std::vector<Node> &nodes);
+
+#endif // FOREST_SORTING_FOREST_HPP

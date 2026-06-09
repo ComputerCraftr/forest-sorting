@@ -7,6 +7,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+find_program(FOREST_CLANG_TIDY
+    NAMES clang-tidy
+    DOC "Path to clang-tidy"
+)
+
 add_library(forest-sorting-lib STATIC
     src/forest.cpp
 )
@@ -50,3 +55,18 @@ endforeach()
 
 enable_testing()
 add_test(NAME forest-sorting-tests COMMAND forest-sorting-tests)
+
+if(FOREST_CLANG_TIDY)
+    add_custom_target(tidy
+        COMMAND "${FOREST_CLANG_TIDY}"
+                -p "${CMAKE_BINARY_DIR}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/forest.cpp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/forest_tests.cpp"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Running clang-tidy"
+        VERBATIM
+    )
+else()
+    message(STATUS "clang-tidy not found; tidy target will not be available")
+endif()
