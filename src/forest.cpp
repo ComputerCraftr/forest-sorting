@@ -1,14 +1,78 @@
 #include "forest.hpp"
 
-#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
 #include <ios>
+#include <numeric>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+namespace {
+
+constexpr std::size_t kUInt128ByteCount = 16;
+constexpr std::size_t kDepthByteCount = 2;
+constexpr std::size_t kRadixBits = 8;
+constexpr std::size_t kRadixBucketCount = 256;
+
+uint8_t idByte(UInt128 value, std::size_t byteIndex) noexcept {
+    return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
+}
+
+uint8_t depthByte(uint32_t value, std::size_t byteIndex) noexcept {
+    return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
+}
+
+template <typename DigitForIndex>
+void radixPass(std::vector<std::size_t> &order,
+               std::vector<std::size_t> &scratch, DigitForIndex digitForIndex) {
+    std::array<std::size_t, kRadixBucketCount> counts{};
+    for (std::size_t nodeIndex : order) {
+        ++counts[digitForIndex(nodeIndex)];
+    }
+
+    std::size_t offset = 0;
+    for (std::size_t &count : counts) {
+        const std::size_t bucketSize = count;
+        count = offset;
+        offset += bucketSize;
+    }
+
+    for (std::size_t nodeIndex : order) {
+        const uint8_t digit = digitForIndex(nodeIndex);
+        scratch[counts[digit]] = nodeIndex;
+        ++counts[digit];
+    }
+
+    order.swap(scratch);
+}
+
+void radixSortByDepthAndId(std::vector<std::size_t> &order,
+                           const std::vector<Node> &nodes,
+                           const std::vector<uint32_t> &depths) {
+    if (order.size() <= 1) {
+        return;
+    }
+
+    std::vector<std::size_t> scratch(order.size());
+    for (std::size_t byteIndex = 0; byteIndex < kUInt128ByteCount;
+         ++byteIndex) {
+        radixPass(order, scratch, [&](std::size_t nodeIndex) {
+            return idByte(nodes[nodeIndex].id, byteIndex);
+        });
+    }
+    for (std::size_t byteIndex = 0; byteIndex < kDepthByteCount; ++byteIndex) {
+        radixPass(order, scratch, [&](std::size_t nodeIndex) {
+            return depthByte(depths[nodeIndex], byteIndex);
+        });
+    }
+}
+
+} // namespace
 
 // toHex converts a 128-bit value to a hex string with a 0x prefix.
 std::string toHex(UInt128 value) {
@@ -143,26 +207,24 @@ std::vector<Node> sortForestByDepthAndId(const std::vector<Node> &nodes) {
     const auto parentIndex = buildParentIndex(nodes);
     std::vector<uint32_t> depth = computeDepths(nodes, parentIndex);
 
-    // 2) Make an index vector 0..N-1.
+    // 2) Validate depth and make an index vector 0..N-1.
     std::vector<std::size_t> order(nodeCount);
+    std::iota(order.begin(), order.end(), 0);
     for (std::size_t i = 0; i < nodeCount; ++i) {
-        order[i] = i;
+        if (depth[i] > kMaxSortableDepth) {
+            throw std::runtime_error(
+                "forest depth exceeds sortable depth limit");
+        }
     }
 
-    // 3) Sort indices by (depth, id) (O(N log N)).
-    std::sort(order.begin(), order.end(),
-              [&](std::size_t lhsIndex, std::size_t rhsIndex) {
-                  if (depth[lhsIndex] != depth[rhsIndex]) {
-                      return depth[lhsIndex] < depth[rhsIndex];
-                  }
-                  return nodes[lhsIndex].id < nodes[rhsIndex].id;
-              });
+    // 3) Stable LSD radix sort by composite key: id first, then depth.
+    radixSortByDepthAndId(order, nodes, depth);
 
     // 4) Materialize sorted nodes.
     std::vector<Node> sorted;
     sorted.reserve(nodeCount);
-    for (std::size_t idx : order) {
-        sorted.push_back(nodes[idx]);
+    for (std::size_t nodeIndex : order) {
+        sorted.push_back(nodes[nodeIndex]);
     }
 
     return sorted;

@@ -33,10 +33,17 @@ add_executable(forest-sorting-tests
 
 target_link_libraries(forest-sorting-tests PRIVATE forest-sorting-lib)
 
+add_executable(forest-sorting-bench
+    benchmarks/forest_bench.cpp
+)
+
+target_link_libraries(forest-sorting-bench PRIVATE forest-sorting-lib)
+
 set(_forest_targets
     forest-sorting-lib
     forest-sorting
     forest-sorting-tests
+    forest-sorting-bench
 )
 
 foreach(target ${_forest_targets})
@@ -63,10 +70,16 @@ if(FOREST_CLANG_TIDY)
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/forest.cpp"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/forest_tests.cpp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/forest_bench.cpp"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         COMMENT "Running clang-tidy"
         VERBATIM
     )
 else()
-    message(STATUS "clang-tidy not found; tidy target will not be available")
+    add_custom_target(tidy
+        COMMAND "${CMAKE_COMMAND}" -E echo
+                "clang-tidy not found; set FOREST_CLANG_TIDY or put clang-tidy on PATH"
+        COMMAND "${CMAKE_COMMAND}" -E false
+        VERBATIM
+    )
 endif()

@@ -12,13 +12,27 @@ jobs:
                 os: [ubuntu-latest, macos-latest]
         steps:
             - name: Checkout
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
+
+            - name: Install clang-tidy (Ubuntu)
+              if: runner.os == 'Linux'
+              run: sudo apt-get update && sudo apt-get install -y clang clang-tidy
+
+            - name: Install LLVM and configure path (macOS)
+              if: runner.os == 'macOS'
+              run: |
+                  brew list llvm >/dev/null 2>&1 || brew install llvm
+                  LLVM_PREFIX="$(brew --prefix llvm)"
+                  echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
 
             - name: Configure (Debug, sanitizers)
               run: cmake --preset debug
 
             - name: Build (Debug, sanitizers)
               run: cmake --build --preset debug
+
+            - name: Lint (clang-tidy)
+              run: cmake --build --preset debug --target tidy
 
             - name: Test (Debug, sanitizers)
               env:
@@ -31,6 +45,9 @@ jobs:
 
             - name: Build (Release)
               run: cmake --build --preset release
+
+            - name: Benchmark smoke test (Release)
+              run: ./out/build/release/forest-sorting-bench
 
             - name: Test (Release)
               run: ctest --preset release --output-on-failure

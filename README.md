@@ -1,6 +1,11 @@
 # forest-sorting
 
-Sorting a forest of nodes deterministically
+Sorting a forest of nodes deterministically by depth, then by node ID with a
+composite-key radix sort.
+
+The production sorter is tuned for common depths `0-30`, supports outliers up
+to `kMaxSortableDepth` (`1024`), and rejects deeper forests instead of
+allocating unbounded depth buckets.
 
 ## Building
 
@@ -26,6 +31,10 @@ cmake --build --preset debug      # compile with sanitizers
 ctest --preset debug              # run the test suite with sanitizers active
 ```
 
+The regression tests check deterministic ordering across multiple input
+permutations and verify the production bucketed radix sort against a
+comparison-sort oracle.
+
 ## Linting
 
 If `clang-tidy` is available on `PATH`, CMake adds a `tidy` target:
@@ -38,4 +47,16 @@ cmake --build --preset debug --target tidy
 To use a specific `clang-tidy`, configure with
 `-DFOREST_CLANG_TIDY=/path/to/clang-tidy`.
 
-CI runs on GitHub Actions for macOS and Ubuntu using these presets; Debug uses ASan/UBSan, and Release builds are also compiled and tested.
+## Benchmarks
+
+The release build includes a small deterministic benchmark comparing
+comparison sort, bucketed radix sort, and the production composite radix sort:
+
+```bash
+cmake --build --preset release --target forest-sorting-bench
+./out/build/release/forest-sorting-bench
+```
+
+CI runs on GitHub Actions for macOS and Ubuntu using these presets. It builds
+and tests Debug with ASan/UBSan, runs `clang-tidy`, builds Release, smoke-runs
+the benchmark executable, and runs the Release tests.

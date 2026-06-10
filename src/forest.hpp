@@ -15,6 +15,7 @@ struct Node {
 };
 
 constexpr std::size_t kNoParent = std::numeric_limits<std::size_t>::max();
+constexpr uint32_t kMaxSortableDepth = 1024;
 
 std::string toHex(UInt128 value);
 
