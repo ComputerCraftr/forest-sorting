@@ -1,4 +1,7 @@
 #include "forest.hpp"
+#include "parent_index.hpp"
+#include "parent_index_baselines.hpp"
+#include "radix.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,48 +13,22 @@
 #include <numeric>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 UInt128 makeId(uint64_t high, uint64_t low) {
     return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
 }
 
-constexpr std::size_t kUInt128ByteCount = 16;
-constexpr std::size_t kDepthByteCount = 2;
-constexpr std::size_t kRadixBits = 8;
-constexpr std::size_t kRadixBucketCount = 256;
-
-uint8_t idByte(UInt128 value, std::size_t byteIndex) noexcept {
-    return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
-}
-
-uint8_t depthByte(uint32_t value, std::size_t byteIndex) noexcept {
-    return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
-}
-
-template <typename DigitForIndex>
-void radixPass(std::vector<std::size_t> &order,
-               std::vector<std::size_t> &scratch, DigitForIndex digitForIndex) {
-    std::array<std::size_t, kRadixBucketCount> counts{};
-    for (std::size_t nodeIndex : order) {
-        ++counts[digitForIndex(nodeIndex)];
-    }
-
-    std::size_t offset = 0;
-    for (std::size_t &count : counts) {
-        const std::size_t bucketSize = count;
-        count = offset;
-        offset += bucketSize;
-    }
-
-    for (std::size_t nodeIndex : order) {
-        const uint8_t digit = digitForIndex(nodeIndex);
-        scratch[counts[digit]] = nodeIndex;
-        ++counts[digit];
-    }
-
-    order.swap(scratch);
-}
+using forest_internal::buildParentIndexControlByteFlatHash;
+using forest_internal::buildParentIndexFlatHash;
+using forest_internal::buildParentIndexRadixJoin;
+using forest_internal::depthByte;
+using forest_internal::idByte;
+using forest_internal::kDepthByteCount;
+using forest_internal::kRadixBucketCount;
+using forest_internal::kUInt128ByteCount;
+using forest_internal::radixPass;
 
 bool sameNodes(const std::vector<Node> &lhs, const std::vector<Node> &rhs) {
     if (lhs.size() != rhs.size()) {
@@ -255,6 +232,141 @@ std::vector<Node> makeGeneratedForestWithOutliers(std::size_t nodeCount,
     appendDeepChain(nodes, 512, 0x2000ULL);
     appendDeepChain(nodes, kMaxSortableDepth, 0x3000ULL);
     return shuffledCopy(nodes, 0xabcdef00ULL);
+}
+
+std::vector<Node> makeSameHigh64Forest(std::size_t nodeCount) {
+    std::vector<Node> nodes;
+    nodes.reserve(nodeCount);
+    constexpr uint64_t sharedHighWord = 0x123456789abcdef0ULL;
+    for (std::size_t i = 0; i < nodeCount; ++i) {
+        UInt128 parentId = 0;
+        if (i > 0) {
+            parentId = makeId(sharedHighWord, static_cast<uint64_t>(i));
+        }
+        nodes.push_back(Node{
+            makeId(sharedHighWord, static_cast<uint64_t>(i) + 1ULL),
+            parentId,
+        });
+    }
+    return shuffledCopy(nodes, 0x0badcafeULL);
+}
+
+std::vector<Node> makeSequentialIdForest(std::size_t nodeCount) {
+    std::vector<Node> nodes;
+    nodes.reserve(nodeCount);
+    for (std::size_t i = 0; i < nodeCount; ++i) {
+        UInt128 parentId = 0;
+        if (i > 0) {
+            parentId = makeId(0, static_cast<uint64_t>(i));
+        }
+        nodes.push_back(
+            Node{makeId(0, static_cast<uint64_t>(i) + 1ULL), parentId});
+    }
+    return shuffledCopy(nodes, 0x1234abcdULL);
+}
+
+std::vector<Node> makeManyExternalParentForest(std::size_t nodeCount) {
+    std::vector<Node> nodes;
+    nodes.reserve(nodeCount);
+    for (std::size_t i = 0; i < nodeCount; ++i) {
+        const UInt128 nodeId =
+            makeId(0x1000ULL, static_cast<uint64_t>(i) + 1ULL);
+        const UInt128 parentId =
+            makeId(0x2000ULL, static_cast<uint64_t>(i) + 1ULL);
+        nodes.push_back(Node{nodeId, parentId});
+    }
+    return shuffledCopy(nodes, 0x44445555ULL);
+}
+
+std::vector<Node> makeManySiblingsForest(std::size_t nodeCount) {
+    std::vector<Node> nodes;
+    nodes.reserve(nodeCount);
+    const UInt128 rootId = makeId(0, 1);
+    nodes.push_back(Node{rootId, 0});
+    for (std::size_t i = 1; i < nodeCount; ++i) {
+        nodes.push_back(
+            Node{makeId(0, static_cast<uint64_t>(i) + 1ULL), rootId});
+    }
+    return shuffledCopy(nodes, 0x9999aaaaULL);
+}
+
+void assertParentBuildersMatch(const std::vector<Node> &nodes) {
+    const auto unorderedParent = buildParentIndexStdUnorderedMap(nodes);
+    const auto flatParent = buildParentIndexFlatHash(nodes);
+    const auto controlParent = buildParentIndexControlByteFlatHash(nodes);
+    const auto radixParent = buildParentIndexRadixJoin(nodes);
+
+    if (unorderedParent != flatParent) {
+        throw std::runtime_error(
+            "flat hash parent builder differs from unordered map");
+    }
+    if (unorderedParent != controlParent) {
+        throw std::runtime_error(
+            "control-byte flat hash parent builder differs from unordered map");
+    }
+    if (unorderedParent != radixParent) {
+        throw std::runtime_error(
+            "radix join parent builder differs from unordered map");
+    }
+}
+
+template <typename ParentBuilder>
+void assertParentBuilderRejectsDuplicate(const std::vector<Node> &nodes,
+                                         ParentBuilder parentBuilder,
+                                         const char *builderName) {
+    bool rejected = false;
+    try {
+        (void)parentBuilder(nodes);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+
+    if (!rejected) {
+        throw std::runtime_error(std::string(builderName) +
+                                 " accepted duplicate full id");
+    }
+}
+
+void test_parent_builders_match_for_random_uint128_ids() {
+    assertParentBuildersMatch(makeGeneratedForest(10000, 30));
+}
+
+void test_parent_builders_match_for_depth_outliers() {
+    assertParentBuildersMatch(makeGeneratedForestWithOutliers(10000, 30));
+}
+
+void test_parent_builders_match_for_same_high64_ids() {
+    assertParentBuildersMatch(makeSameHigh64Forest(10000));
+}
+
+void test_parent_builders_match_for_sequential_ids() {
+    assertParentBuildersMatch(makeSequentialIdForest(10000));
+}
+
+void test_parent_builders_match_for_external_parent_ids() {
+    assertParentBuildersMatch(makeManyExternalParentForest(10000));
+}
+
+void test_parent_builders_match_for_many_siblings() {
+    assertParentBuildersMatch(makeManySiblingsForest(10000));
+}
+
+void test_parent_builders_reject_duplicate_full_uint128_id() {
+    const UInt128 duplicateId = makeId(7, 11);
+    const std::vector<Node> nodes = {
+        {duplicateId, 0},
+        {duplicateId, 0},
+    };
+
+    assertParentBuilderRejectsDuplicate(nodes, buildParentIndexStdUnorderedMap,
+                                        "unordered parent builder");
+    assertParentBuilderRejectsDuplicate(nodes, buildParentIndexFlatHash,
+                                        "flat hash parent builder");
+    assertParentBuilderRejectsDuplicate(nodes,
+                                        buildParentIndexControlByteFlatHash,
+                                        "control-byte parent builder");
+    assertParentBuilderRejectsDuplicate(nodes, buildParentIndexRadixJoin,
+                                        "radix join parent builder");
 }
 
 void test_compute_depths_simple_chain() {
@@ -560,6 +672,20 @@ int main() {
         std::cout << "forest sorting tests\n";
         runTest("compute depths for simple parent chain",
                 test_compute_depths_simple_chain);
+        runTest("parent builders match for random UInt128 IDs",
+                test_parent_builders_match_for_random_uint128_ids);
+        runTest("parent builders match for depth outliers",
+                test_parent_builders_match_for_depth_outliers);
+        runTest("parent builders match for same high64 IDs",
+                test_parent_builders_match_for_same_high64_ids);
+        runTest("parent builders match for sequential IDs",
+                test_parent_builders_match_for_sequential_ids);
+        runTest("parent builders match for external parent IDs",
+                test_parent_builders_match_for_external_parent_ids);
+        runTest("parent builders match for many siblings",
+                test_parent_builders_match_for_many_siblings);
+        runTest("parent builders reject duplicate full UInt128 ID",
+                test_parent_builders_reject_duplicate_full_uint128_id);
         runTest("sort and verify multiple roots",
                 test_sort_and_verify_multi_root);
         runTest("adaptive sort orders high64 before low64",

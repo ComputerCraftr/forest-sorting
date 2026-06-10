@@ -9,6 +9,10 @@ most-significant 64-bit words first, so random hash-like IDs usually only need
 their high word inspected; lower words are used only inside equal-prefix
 ranges. Duplicate full IDs are rejected.
 
+Parent ID lookup uses a control-byte open-addressed `UInt128 -> node index`
+hash table, then the rest of the sort and verifier operate on integer-indexed
+vectors.
+
 ## Building
 
 This repository uses CMake and a C++20 `clang++` available on `PATH`.
@@ -35,7 +39,8 @@ ctest --preset debug              # run the test suite with sanitizers active
 
 The regression tests check deterministic ordering across multiple input
 permutations, verify the production adaptive radix sort against comparison and
-full-LSD radix baselines, and cover duplicate full-ID rejection.
+full-LSD radix baselines, compare parent-index builders, and cover duplicate
+full-ID rejection.
 
 ## Linting
 
@@ -51,13 +56,17 @@ To use a specific `clang-tidy`, configure with
 
 ## Benchmarks
 
-The release build includes a small deterministic benchmark comparing
-comparison sort, bucketed full-LSD radix sort, composite full-LSD radix sort,
-and the production adaptive word-first radix sort:
+The release build includes a deterministic benchmark matrix comparing parent
+index construction with `std::unordered_map`, the original flat hash,
+production control-byte flat hash, and radix join baselines. It can also time
+comparison, bucketed LSD radix, composite LSD radix, and adaptive MSD radix
+sorts with selectable datasets and output formats:
 
 ```bash
 cmake --build --preset release --target forest-sorting-bench
 ./out/build/release/forest-sorting-bench
+./out/build/release/forest-sorting-bench --format csv --size 10000 --dataset random --parent all --sort adaptive-msd
+./out/build/release/forest-sorting-bench --format json --size 10000 --dataset same-high64 --parent all --sort adaptive-msd
 ```
 
 CI runs on GitHub Actions for macOS and Ubuntu using these presets. It builds

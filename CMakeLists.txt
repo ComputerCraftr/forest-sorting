@@ -62,6 +62,33 @@ endforeach()
 
 enable_testing()
 add_test(NAME forest-sorting-tests COMMAND forest-sorting-tests)
+add_test(NAME forest-sorting-bench-help
+    COMMAND forest-sorting-bench --help
+)
+add_test(NAME forest-sorting-bench-csv
+    COMMAND forest-sorting-bench
+            --format csv
+            --size 10000
+            --dataset random
+            --parent all
+            --sort adaptive-msd
+)
+add_test(NAME forest-sorting-bench-tsv
+    COMMAND forest-sorting-bench
+            --format tsv
+            --size 10000
+            --dataset siblings
+            --parent control
+            --sort all
+)
+add_test(NAME forest-sorting-bench-json
+    COMMAND forest-sorting-bench
+            --format json
+            --size 10000
+            --dataset same-high64
+            --parent all
+            --sort adaptive-msd
+)
 
 if(FOREST_CLANG_TIDY)
     add_custom_target(tidy
