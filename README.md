@@ -1,11 +1,13 @@
 # forest-sorting
 
-Sorting a forest of nodes deterministically by depth, then by node ID with a
-composite-key radix sort.
+Sorting a forest of nodes deterministically by depth, then by node ID with an
+adaptive word-first radix sort.
 
 The production sorter is tuned for common depths `0-30`, supports outliers up
-to `kMaxSortableDepth` (`1024`), and rejects deeper forests instead of
-allocating unbounded depth buckets.
+to `kMaxSortableDepth` (`1024`), and rejects deeper forests. IDs are sorted by
+most-significant 64-bit words first, so random hash-like IDs usually only need
+their high word inspected; lower words are used only inside equal-prefix
+ranges. Duplicate full IDs are rejected.
 
 ## Building
 
@@ -32,8 +34,8 @@ ctest --preset debug              # run the test suite with sanitizers active
 ```
 
 The regression tests check deterministic ordering across multiple input
-permutations and verify the production bucketed radix sort against a
-comparison-sort oracle.
+permutations, verify the production adaptive radix sort against comparison and
+full-LSD radix baselines, and cover duplicate full-ID rejection.
 
 ## Linting
 
@@ -50,7 +52,8 @@ To use a specific `clang-tidy`, configure with
 ## Benchmarks
 
 The release build includes a small deterministic benchmark comparing
-comparison sort, bucketed radix sort, and the production composite radix sort:
+comparison sort, bucketed full-LSD radix sort, composite full-LSD radix sort,
+and the production adaptive word-first radix sort:
 
 ```bash
 cmake --build --preset release --target forest-sorting-bench

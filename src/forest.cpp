@@ -14,61 +14,146 @@
 
 namespace {
 
-constexpr std::size_t kUInt128ByteCount = 16;
-constexpr std::size_t kDepthByteCount = 2;
+constexpr std::size_t kIdWordCount = 2;
+constexpr std::size_t kWordByteCount = 8;
 constexpr std::size_t kRadixBits = 8;
 constexpr std::size_t kRadixBucketCount = 256;
 
-uint8_t idByte(UInt128 value, std::size_t byteIndex) noexcept {
+struct IdWordRange {
+    std::size_t begin;
+    std::size_t end;
+    std::size_t wordIndex;
+};
+
+uint64_t idWordMsbFirst(UInt128 value, std::size_t wordIndex) noexcept {
+    if (wordIndex == 0) {
+        return static_cast<uint64_t>(value >> 64);
+    }
+    return static_cast<uint64_t>(value);
+}
+
+uint8_t wordByte(uint64_t value, std::size_t byteIndex) noexcept {
     return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
 }
 
-uint8_t depthByte(uint32_t value, std::size_t byteIndex) noexcept {
-    return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
-}
-
-template <typename DigitForIndex>
-void radixPass(std::vector<std::size_t> &order,
-               std::vector<std::size_t> &scratch, DigitForIndex digitForIndex) {
-    std::array<std::size_t, kRadixBucketCount> counts{};
+std::vector<std::size_t>
+groupOrderByDepth(std::vector<std::size_t> &order,
+                  std::vector<std::size_t> &scratch,
+                  const std::vector<uint32_t> &depths) {
+    std::vector<std::size_t> depthStarts(
+        static_cast<std::size_t>(kMaxSortableDepth) + 2, 0);
     for (std::size_t nodeIndex : order) {
-        ++counts[digitForIndex(nodeIndex)];
+        ++depthStarts[static_cast<std::size_t>(depths[nodeIndex]) + 1];
     }
 
-    std::size_t offset = 0;
-    for (std::size_t &count : counts) {
-        const std::size_t bucketSize = count;
-        count = offset;
-        offset += bucketSize;
+    for (std::size_t depth = 1; depth < depthStarts.size(); ++depth) {
+        depthStarts[depth] += depthStarts[depth - 1];
     }
 
+    std::vector<std::size_t> depthOffsets = depthStarts;
     for (std::size_t nodeIndex : order) {
-        const uint8_t digit = digitForIndex(nodeIndex);
-        scratch[counts[digit]] = nodeIndex;
-        ++counts[digit];
+        const std::size_t depth = static_cast<std::size_t>(depths[nodeIndex]);
+        scratch[depthOffsets[depth]] = nodeIndex;
+        ++depthOffsets[depth];
     }
 
     order.swap(scratch);
+    return depthStarts;
 }
 
-void radixSortByDepthAndId(std::vector<std::size_t> &order,
+void stableSortRangeByIdWord(std::vector<std::size_t> &order,
+                             std::vector<std::size_t> &scratch,
+                             const std::vector<Node> &nodes,
+                             std::size_t rangeBegin, std::size_t rangeEnd,
+                             std::size_t wordIndex) {
+    for (std::size_t byteIndex = 0; byteIndex < kWordByteCount; ++byteIndex) {
+        std::array<std::size_t, kRadixBucketCount> counts{};
+        for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
+            const std::size_t nodeIndex = order[offset];
+            ++counts[wordByte(idWordMsbFirst(nodes[nodeIndex].id, wordIndex),
+                              byteIndex)];
+        }
+
+        std::size_t writeOffset = rangeBegin;
+        for (std::size_t &count : counts) {
+            const std::size_t bucketSize = count;
+            count = writeOffset;
+            writeOffset += bucketSize;
+        }
+
+        for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
+            const std::size_t nodeIndex = order[offset];
+            const uint8_t digit = wordByte(
+                idWordMsbFirst(nodes[nodeIndex].id, wordIndex), byteIndex);
+            scratch[counts[digit]] = nodeIndex;
+            ++counts[digit];
+        }
+
+        for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
+            order[offset] = scratch[offset];
+        }
+    }
+}
+
+void sortRangeByIdWords(std::vector<std::size_t> &order,
+                        std::vector<std::size_t> &scratch,
+                        const std::vector<Node> &nodes, std::size_t rangeBegin,
+                        std::size_t rangeEnd, std::size_t wordIndex) {
+    if (rangeEnd - rangeBegin <= 1) {
+        return;
+    }
+
+    std::vector<IdWordRange> pending;
+    pending.push_back(IdWordRange{rangeBegin, rangeEnd, wordIndex});
+
+    while (!pending.empty()) {
+        const IdWordRange currentRange = pending.back();
+        pending.pop_back();
+        if (currentRange.end - currentRange.begin <= 1 ||
+            currentRange.wordIndex >= kIdWordCount) {
+            continue;
+        }
+
+        stableSortRangeByIdWord(order, scratch, nodes, currentRange.begin,
+                                currentRange.end, currentRange.wordIndex);
+
+        const std::size_t nextWordIndex = currentRange.wordIndex + 1;
+        if (nextWordIndex >= kIdWordCount) {
+            continue;
+        }
+
+        std::size_t equalWordBegin = currentRange.begin;
+        uint64_t previousWord = idWordMsbFirst(
+            nodes[order[currentRange.begin]].id, currentRange.wordIndex);
+        for (std::size_t offset = currentRange.begin + 1;
+             offset < currentRange.end; ++offset) {
+            const uint64_t currentWord =
+                idWordMsbFirst(nodes[order[offset]].id, currentRange.wordIndex);
+            if (currentWord != previousWord) {
+                pending.push_back(
+                    IdWordRange{equalWordBegin, offset, nextWordIndex});
+                equalWordBegin = offset;
+                previousWord = currentWord;
+            }
+        }
+
+        pending.push_back(
+            IdWordRange{equalWordBegin, currentRange.end, nextWordIndex});
+    }
+}
+
+void sortOrderByDepthAndId(std::vector<std::size_t> &order,
+                           std::vector<std::size_t> &scratch,
                            const std::vector<Node> &nodes,
                            const std::vector<uint32_t> &depths) {
     if (order.size() <= 1) {
         return;
     }
 
-    std::vector<std::size_t> scratch(order.size());
-    for (std::size_t byteIndex = 0; byteIndex < kUInt128ByteCount;
-         ++byteIndex) {
-        radixPass(order, scratch, [&](std::size_t nodeIndex) {
-            return idByte(nodes[nodeIndex].id, byteIndex);
-        });
-    }
-    for (std::size_t byteIndex = 0; byteIndex < kDepthByteCount; ++byteIndex) {
-        radixPass(order, scratch, [&](std::size_t nodeIndex) {
-            return depthByte(depths[nodeIndex], byteIndex);
-        });
+    const auto depthStarts = groupOrderByDepth(order, scratch, depths);
+    for (std::size_t depth = 0; depth <= kMaxSortableDepth; ++depth) {
+        sortRangeByIdWords(order, scratch, nodes, depthStarts[depth],
+                           depthStarts[depth + 1], 0);
     }
 }
 
@@ -220,8 +305,9 @@ std::vector<Node> sortForestByDepthAndId(const std::vector<Node> &nodes) {
         }
     }
 
-    // 3) Stable LSD radix sort by composite key: id first, then depth.
-    radixSortByDepthAndId(order, nodes, depth);
+    // 3) Group by depth, then adaptively sort equal-depth ranges by id words.
+    std::vector<std::size_t> scratch(nodeCount);
+    sortOrderByDepthAndId(order, scratch, nodes, depth);
 
     // 4) Materialize sorted nodes.
     std::vector<Node> sorted;

@@ -19,11 +19,40 @@ UInt128 makeId(uint64_t high, uint64_t low) {
 }
 
 constexpr std::size_t kUInt128ByteCount = 16;
+constexpr std::size_t kDepthByteCount = 2;
 constexpr std::size_t kRadixBits = 8;
 constexpr std::size_t kRadixBucketCount = 256;
 
 uint8_t idByte(UInt128 value, std::size_t byteIndex) noexcept {
     return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
+}
+
+uint8_t depthByte(uint32_t value, std::size_t byteIndex) noexcept {
+    return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
+}
+
+template <typename DigitForIndex>
+void radixPass(std::vector<std::size_t> &order,
+               std::vector<std::size_t> &scratch, DigitForIndex digitForIndex) {
+    std::array<std::size_t, kRadixBucketCount> counts{};
+    for (std::size_t nodeIndex : order) {
+        ++counts[digitForIndex(nodeIndex)];
+    }
+
+    std::size_t offset = 0;
+    for (std::size_t &count : counts) {
+        const std::size_t bucketSize = count;
+        count = offset;
+        offset += bucketSize;
+    }
+
+    for (std::size_t nodeIndex : order) {
+        const uint8_t digit = digitForIndex(nodeIndex);
+        scratch[counts[digit]] = nodeIndex;
+        ++counts[digit];
+    }
+
+    order.swap(scratch);
 }
 
 std::vector<Node> makeGeneratedForest(std::size_t nodeCount,
@@ -83,6 +112,37 @@ std::vector<Node> makeGeneratedForestWithOutliers(std::size_t nodeCount,
     appendDeepChain(nodes, 512, 0x2000ULL);
     appendDeepChain(nodes, kMaxSortableDepth, 0x3000ULL);
     return shuffledCopy(nodes, 0xabcdef00ULL);
+}
+
+std::vector<Node>
+makeGeneratedForestWithHighWordCollisions(std::size_t nodeCount,
+                                          uint32_t maxDepth) {
+    std::vector<Node> nodes;
+    nodes.reserve(nodeCount);
+
+    constexpr uint64_t sharedHighWord = 0x123456789abcdef0ULL;
+    std::vector<std::size_t> lastIndexAtDepth(
+        static_cast<std::size_t>(maxDepth) + 1, kNoParent);
+    for (std::size_t i = 0; i < nodeCount; ++i) {
+        uint32_t targetDepth =
+            static_cast<uint32_t>(i % (static_cast<std::size_t>(maxDepth) + 1));
+        UInt128 parentId = 0;
+        if (targetDepth > 0 &&
+            lastIndexAtDepth[static_cast<std::size_t>(targetDepth - 1)] !=
+                kNoParent) {
+            parentId = nodes[lastIndexAtDepth[static_cast<std::size_t>(
+                                 targetDepth - 1)]]
+                           .id;
+        } else {
+            targetDepth = 0;
+        }
+
+        const uint64_t low = static_cast<uint64_t>(nodeCount - i);
+        nodes.push_back(Node{makeId(sharedHighWord, low), parentId});
+        lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = i;
+    }
+
+    return shuffledCopy(nodes, 0xfeedfaceULL);
 }
 
 std::vector<Node> sortForestByComparison(const std::vector<Node> &nodes) {
@@ -174,6 +234,42 @@ std::vector<Node> sortForestByBucketedRadix(const std::vector<Node> &nodes) {
     return sorted;
 }
 
+std::vector<Node> sortForestByCompositeRadix(const std::vector<Node> &nodes) {
+    const auto parentIndex = buildParentIndex(nodes);
+    const auto depths = computeDepths(nodes, parentIndex);
+
+    std::vector<std::size_t> order(nodes.size());
+    std::iota(order.begin(), order.end(), 0);
+
+    for (uint32_t depth : depths) {
+        if (depth > kMaxSortableDepth) {
+            throw std::runtime_error(
+                "forest depth exceeds sortable depth limit");
+        }
+    }
+
+    std::vector<std::size_t> scratch(order.size());
+    for (std::size_t byteIndex = 0; byteIndex < kUInt128ByteCount;
+         ++byteIndex) {
+        radixPass(order, scratch, [&](std::size_t nodeIndex) {
+            return idByte(nodes[nodeIndex].id, byteIndex);
+        });
+    }
+    for (std::size_t byteIndex = 0; byteIndex < kDepthByteCount; ++byteIndex) {
+        radixPass(order, scratch, [&](std::size_t nodeIndex) {
+            return depthByte(depths[nodeIndex], byteIndex);
+        });
+    }
+
+    std::vector<Node> sorted;
+    sorted.reserve(nodes.size());
+    for (std::size_t nodeIndex : order) {
+        sorted.push_back(nodes[nodeIndex]);
+    }
+
+    return sorted;
+}
+
 UInt128 checksumIds(const std::vector<Node> &nodes) {
     UInt128 checksum = 0;
     for (const auto &node : nodes) {
@@ -200,13 +296,7 @@ double timeVerifyMs(const std::vector<Node> &nodes, bool &verified) {
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-void runBenchmark(std::size_t nodeCount, bool includeOutliers) {
-    constexpr uint32_t commonMaxDepth = 30;
-    const auto nodes =
-        includeOutliers
-            ? makeGeneratedForestWithOutliers(nodeCount, commonMaxDepth)
-            : makeGeneratedForest(nodeCount, commonMaxDepth);
-
+void runBenchmark(const std::vector<Node> &nodes, const char *label) {
     UInt128 comparisonChecksum = 0;
     const double comparisonMs =
         timeSortMs(nodes, sortForestByComparison, comparisonChecksum);
@@ -217,23 +307,24 @@ void runBenchmark(std::size_t nodeCount, bool includeOutliers) {
 
     UInt128 compositeChecksum = 0;
     const double compositeMs =
-        timeSortMs(nodes, sortForestByDepthAndId, compositeChecksum);
-    const auto compositeSorted = sortForestByDepthAndId(nodes);
-    bool verified = false;
-    const double verifyMs = timeVerifyMs(compositeSorted, verified);
+        timeSortMs(nodes, sortForestByCompositeRadix, compositeChecksum);
 
-    std::cout << std::setw(8) << nodeCount << " nodes";
-    if (includeOutliers) {
-        std::cout << " + outliers";
-    } else {
-        std::cout << "           ";
-    }
+    UInt128 adaptiveChecksum = 0;
+    const double adaptiveMs =
+        timeSortMs(nodes, sortForestByDepthAndId, adaptiveChecksum);
+    const auto adaptiveSorted = sortForestByDepthAndId(nodes);
+    bool verified = false;
+    const double verifyMs = timeVerifyMs(adaptiveSorted, verified);
+
+    std::cout << std::setw(28) << label;
     std::cout << "  comparison " << std::setw(10) << comparisonMs
               << " ms  bucketed " << std::setw(10) << bucketedMs
               << " ms  composite " << std::setw(10) << compositeMs
+              << " ms  adaptive " << std::setw(10) << adaptiveMs
               << " ms  verify " << std::setw(10) << verifyMs << " ms";
     if (comparisonChecksum != bucketedChecksum ||
-        comparisonChecksum != compositeChecksum) {
+        comparisonChecksum != compositeChecksum ||
+        comparisonChecksum != adaptiveChecksum) {
         std::cout << "  checksum-mismatch";
     }
     if (!verified) {
@@ -244,11 +335,21 @@ void runBenchmark(std::size_t nodeCount, bool includeOutliers) {
 
 int main() {
     try {
+        constexpr uint32_t commonMaxDepth = 30;
         std::cout << "forest sorting benchmark\n";
-        runBenchmark(10000, false);
-        runBenchmark(10000, true);
-        runBenchmark(100000, false);
-        runBenchmark(100000, true);
+        runBenchmark(makeGeneratedForest(10000, commonMaxDepth), "10000 nodes");
+        runBenchmark(makeGeneratedForestWithOutliers(10000, commonMaxDepth),
+                     "10000 nodes + outliers");
+        runBenchmark(
+            makeGeneratedForestWithHighWordCollisions(10000, commonMaxDepth),
+            "10000 nodes same high64");
+        runBenchmark(makeGeneratedForest(100000, commonMaxDepth),
+                     "100000 nodes");
+        runBenchmark(makeGeneratedForestWithOutliers(100000, commonMaxDepth),
+                     "100000 nodes + outliers");
+        runBenchmark(
+            makeGeneratedForestWithHighWordCollisions(100000, commonMaxDepth),
+            "100000 nodes same high64");
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "forest-sorting-bench failed: " << error.what() << "\n";

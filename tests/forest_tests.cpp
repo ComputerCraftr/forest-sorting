@@ -17,11 +17,40 @@ UInt128 makeId(uint64_t high, uint64_t low) {
 }
 
 constexpr std::size_t kUInt128ByteCount = 16;
+constexpr std::size_t kDepthByteCount = 2;
 constexpr std::size_t kRadixBits = 8;
 constexpr std::size_t kRadixBucketCount = 256;
 
 uint8_t idByte(UInt128 value, std::size_t byteIndex) noexcept {
     return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
+}
+
+uint8_t depthByte(uint32_t value, std::size_t byteIndex) noexcept {
+    return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
+}
+
+template <typename DigitForIndex>
+void radixPass(std::vector<std::size_t> &order,
+               std::vector<std::size_t> &scratch, DigitForIndex digitForIndex) {
+    std::array<std::size_t, kRadixBucketCount> counts{};
+    for (std::size_t nodeIndex : order) {
+        ++counts[digitForIndex(nodeIndex)];
+    }
+
+    std::size_t offset = 0;
+    for (std::size_t &count : counts) {
+        const std::size_t bucketSize = count;
+        count = offset;
+        offset += bucketSize;
+    }
+
+    for (std::size_t nodeIndex : order) {
+        const uint8_t digit = digitForIndex(nodeIndex);
+        scratch[counts[digit]] = nodeIndex;
+        ++counts[digit];
+    }
+
+    order.swap(scratch);
 }
 
 bool sameNodes(const std::vector<Node> &lhs, const std::vector<Node> &rhs) {
@@ -122,6 +151,42 @@ std::vector<Node> sortForestByBucketedRadix(const std::vector<Node> &nodes) {
         for (std::size_t nodeIndex : bucket) {
             sorted.push_back(nodes[nodeIndex]);
         }
+    }
+
+    return sorted;
+}
+
+std::vector<Node> sortForestByCompositeRadix(const std::vector<Node> &nodes) {
+    const auto parentIndex = buildParentIndex(nodes);
+    const auto depths = computeDepths(nodes, parentIndex);
+
+    std::vector<std::size_t> order(nodes.size());
+    std::iota(order.begin(), order.end(), 0);
+
+    for (uint32_t depth : depths) {
+        if (depth > kMaxSortableDepth) {
+            throw std::runtime_error(
+                "forest depth exceeds sortable depth limit");
+        }
+    }
+
+    std::vector<std::size_t> scratch(order.size());
+    for (std::size_t byteIndex = 0; byteIndex < kUInt128ByteCount;
+         ++byteIndex) {
+        radixPass(order, scratch, [&](std::size_t nodeIndex) {
+            return idByte(nodes[nodeIndex].id, byteIndex);
+        });
+    }
+    for (std::size_t byteIndex = 0; byteIndex < kDepthByteCount; ++byteIndex) {
+        radixPass(order, scratch, [&](std::size_t nodeIndex) {
+            return depthByte(depths[nodeIndex], byteIndex);
+        });
+    }
+
+    std::vector<Node> sorted;
+    sorted.reserve(nodes.size());
+    for (std::size_t nodeIndex : order) {
+        sorted.push_back(nodes[nodeIndex]);
     }
 
     return sorted;
@@ -236,13 +301,38 @@ void test_sort_orders_high_64_bits() {
     const auto sorted = sortForestByDepthAndId(nodes);
     const auto expected = sortForestByComparison(nodes);
     const auto bucketed = sortForestByBucketedRadix(nodes);
+    const auto composite = sortForestByCompositeRadix(nodes);
 
     assert(sameNodes(sorted, expected));
     assert(sameNodes(bucketed, expected));
+    assert(sameNodes(composite, expected));
     assert(sorted[0].id == makeId(0, UINT64_MAX));
     assert(sorted[1].id == makeId(1, 0));
     assert(sorted[2].id == makeId(1, UINT64_MAX));
     assert(sorted[3].id == makeId(2, 0));
+}
+
+void test_sort_handles_high_word_collisions() {
+    std::vector<Node> nodes = {
+        {makeId(9, 3), 0},
+        {makeId(8, UINT64_MAX), 0},
+        {makeId(9, 1), 0},
+        {makeId(9, 2), 0},
+    };
+
+    const auto sorted = sortForestByDepthAndId(nodes);
+    const auto expected = sortForestByComparison(nodes);
+    const auto bucketed = sortForestByBucketedRadix(nodes);
+    const auto composite = sortForestByCompositeRadix(nodes);
+
+    assert(sameNodes(sorted, expected));
+    assert(sameNodes(bucketed, expected));
+    assert(sameNodes(composite, expected));
+    assert(verifySortedByDepthAndId(sorted));
+    assert(sorted[0].id == makeId(8, UINT64_MAX));
+    assert(sorted[1].id == makeId(9, 1));
+    assert(sorted[2].id == makeId(9, 2));
+    assert(sorted[3].id == makeId(9, 3));
 }
 
 void test_sort_is_deterministic_for_shuffled_input() {
@@ -261,9 +351,11 @@ void test_sort_is_deterministic_for_shuffled_input() {
     const auto sorted = sortForestByDepthAndId(shuffled);
     const auto expected = sortForestByComparison(nodes);
     const auto bucketed = sortForestByBucketedRadix(shuffled);
+    const auto composite = sortForestByCompositeRadix(shuffled);
 
     assert(sameNodes(sorted, expected));
     assert(sameNodes(bucketed, expected));
+    assert(sameNodes(composite, expected));
     assert(verifySortedByDepthAndId(sorted));
 }
 
@@ -275,9 +367,11 @@ void test_large_generated_forest_matches_comparison_oracle() {
     const auto sorted = sortForestByDepthAndId(nodes);
     const auto expected = sortForestByComparison(nodes);
     const auto bucketed = sortForestByBucketedRadix(nodes);
+    const auto composite = sortForestByCompositeRadix(nodes);
 
     assert(sameNodes(sorted, expected));
     assert(sameNodes(bucketed, expected));
+    assert(sameNodes(composite, expected));
     assert(verifySortedByDepthAndId(sorted));
 }
 
@@ -297,7 +391,8 @@ void test_all_sort_methods_are_permutation_deterministic() {
     for (const auto &permutation : permutations) {
         const auto comparison = sortForestByComparison(permutation);
         const auto bucketed = sortForestByBucketedRadix(permutation);
-        const auto composite = sortForestByDepthAndId(permutation);
+        const auto composite = sortForestByCompositeRadix(permutation);
+        const auto adaptive = sortForestByDepthAndId(permutation);
 
         if (!sameNodes(comparison, canonical)) {
             throw std::runtime_error(
@@ -311,9 +406,14 @@ void test_all_sort_methods_are_permutation_deterministic() {
             throw std::runtime_error(
                 "composite radix sort changed across input permutations");
         }
+        if (!sameNodes(adaptive, canonical)) {
+            throw std::runtime_error(
+                "adaptive radix sort changed across input permutations");
+        }
         if (!verifySortedByDepthAndId(comparison) ||
             !verifySortedByDepthAndId(bucketed) ||
-            !verifySortedByDepthAndId(composite)) {
+            !verifySortedByDepthAndId(composite) ||
+            !verifySortedByDepthAndId(adaptive)) {
             throw std::runtime_error("sorted output failed verification");
         }
     }
@@ -328,10 +428,41 @@ void test_generated_forest_with_deep_outliers_matches_comparison_oracle() {
     const auto sorted = sortForestByDepthAndId(nodes);
     const auto expected = sortForestByComparison(nodes);
     const auto bucketed = sortForestByBucketedRadix(nodes);
+    const auto composite = sortForestByCompositeRadix(nodes);
 
     assert(sameNodes(sorted, expected));
     assert(sameNodes(bucketed, expected));
+    assert(sameNodes(composite, expected));
     assert(verifySortedByDepthAndId(sorted));
+}
+
+void test_sort_rejects_duplicate_full_id() {
+    const UInt128 duplicateId = makeId(7, 11);
+    std::vector<Node> nodes = {
+        {duplicateId, 0},
+        {duplicateId, 0},
+    };
+
+    bool rejected = false;
+    try {
+        (void)sortForestByDepthAndId(nodes);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+
+    if (!rejected) {
+        throw std::runtime_error("sort accepted a duplicate full id");
+    }
+}
+
+void test_verify_rejects_duplicate_full_id() {
+    const UInt128 duplicateId = makeId(7, 11);
+    std::vector<Node> nodes = {
+        {duplicateId, 0},
+        {duplicateId, 0},
+    };
+
+    assert(!verifySortedByDepthAndId(nodes));
 }
 
 void test_sort_rejects_depth_over_limit() {
@@ -423,16 +554,19 @@ int main() {
         test_compute_depths_simple_chain();
         test_sort_and_verify_multi_root();
         test_sort_orders_high_64_bits();
+        test_sort_handles_high_word_collisions();
         test_sort_is_deterministic_for_shuffled_input();
         test_large_generated_forest_matches_comparison_oracle();
         test_all_sort_methods_are_permutation_deterministic();
         test_generated_forest_with_deep_outliers_matches_comparison_oracle();
+        test_sort_rejects_duplicate_full_id();
         test_sort_rejects_depth_over_limit();
         test_verify_accepts_sorted_common_forest();
         test_verify_rejects_unsorted_by_depth();
         test_verify_rejects_unsorted_by_id_within_depth();
         test_verify_rejects_child_before_existing_parent();
         test_verify_treats_missing_parent_as_root();
+        test_verify_rejects_duplicate_full_id();
         test_verify_rejects_depth_over_limit();
         return 0;
     } catch (const std::exception &error) {
