@@ -295,17 +295,26 @@ void test_all_sort_methods_are_permutation_deterministic() {
     };
 
     for (const auto &permutation : permutations) {
-        if (!sameNodes(sortForestByComparison(permutation), canonical)) {
+        const auto comparison = sortForestByComparison(permutation);
+        const auto bucketed = sortForestByBucketedRadix(permutation);
+        const auto composite = sortForestByDepthAndId(permutation);
+
+        if (!sameNodes(comparison, canonical)) {
             throw std::runtime_error(
                 "comparison sort changed across input permutations");
         }
-        if (!sameNodes(sortForestByBucketedRadix(permutation), canonical)) {
+        if (!sameNodes(bucketed, canonical)) {
             throw std::runtime_error(
                 "bucketed radix sort changed across input permutations");
         }
-        if (!sameNodes(sortForestByDepthAndId(permutation), canonical)) {
+        if (!sameNodes(composite, canonical)) {
             throw std::runtime_error(
                 "composite radix sort changed across input permutations");
+        }
+        if (!verifySortedByDepthAndId(comparison) ||
+            !verifySortedByDepthAndId(bucketed) ||
+            !verifySortedByDepthAndId(composite)) {
+            throw std::runtime_error("sorted output failed verification");
         }
     }
 }
@@ -348,6 +357,67 @@ void test_sort_rejects_depth_over_limit() {
     }
 }
 
+void test_verify_accepts_sorted_common_forest() {
+    constexpr std::size_t nodeCount = 10000;
+    constexpr uint32_t commonMaxDepth = 30;
+
+    const auto sorted =
+        sortForestByDepthAndId(makeGeneratedForest(nodeCount, commonMaxDepth));
+
+    assert(verifySortedByDepthAndId(sorted));
+}
+
+void test_verify_rejects_unsorted_by_depth() {
+    std::vector<Node> nodes = {
+        {makeId(0, 1), 0},
+        {makeId(0, 2), makeId(0, 1)},
+    };
+
+    std::swap(nodes[0], nodes[1]);
+
+    assert(!verifySortedByDepthAndId(nodes));
+}
+
+void test_verify_rejects_unsorted_by_id_within_depth() {
+    std::vector<Node> nodes = {
+        {makeId(0, 20), 0},
+        {makeId(0, 10), 0},
+    };
+
+    assert(!verifySortedByDepthAndId(nodes));
+}
+
+void test_verify_rejects_child_before_existing_parent() {
+    std::vector<Node> nodes = {
+        {makeId(0, 2), makeId(0, 1)},
+        {makeId(0, 1), 0},
+    };
+
+    assert(!verifySortedByDepthAndId(nodes));
+}
+
+void test_verify_treats_missing_parent_as_root() {
+    std::vector<Node> nodes = {
+        {makeId(0, 1), makeId(0, 99)},
+        {makeId(0, 2), 0},
+    };
+
+    assert(verifySortedByDepthAndId(nodes));
+}
+
+void test_verify_rejects_depth_over_limit() {
+    std::vector<Node> nodes;
+    nodes.reserve(static_cast<std::size_t>(kMaxSortableDepth) + 2);
+
+    nodes.push_back(Node{makeId(0, 1), 0});
+    for (uint32_t depth = 1; depth <= kMaxSortableDepth + 1; ++depth) {
+        nodes.push_back(Node{makeId(0, static_cast<uint64_t>(depth) + 1ULL),
+                             makeId(0, static_cast<uint64_t>(depth))});
+    }
+
+    assert(!verifySortedByDepthAndId(nodes));
+}
+
 int main() {
     try {
         test_compute_depths_simple_chain();
@@ -358,6 +428,12 @@ int main() {
         test_all_sort_methods_are_permutation_deterministic();
         test_generated_forest_with_deep_outliers_matches_comparison_oracle();
         test_sort_rejects_depth_over_limit();
+        test_verify_accepts_sorted_common_forest();
+        test_verify_rejects_unsorted_by_depth();
+        test_verify_rejects_unsorted_by_id_within_depth();
+        test_verify_rejects_child_before_existing_parent();
+        test_verify_treats_missing_parent_as_root();
+        test_verify_rejects_depth_over_limit();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "forest-sorting-tests failed: " << error.what() << "\n";

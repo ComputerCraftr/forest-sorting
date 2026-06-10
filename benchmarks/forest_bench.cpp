@@ -193,6 +193,13 @@ double timeSortMs(const std::vector<Node> &nodes, Sorter sorter,
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
+double timeVerifyMs(const std::vector<Node> &nodes, bool &verified) {
+    const auto start = std::chrono::steady_clock::now();
+    verified = verifySortedByDepthAndId(nodes);
+    const auto end = std::chrono::steady_clock::now();
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
 void runBenchmark(std::size_t nodeCount, bool includeOutliers) {
     constexpr uint32_t commonMaxDepth = 30;
     const auto nodes =
@@ -211,6 +218,9 @@ void runBenchmark(std::size_t nodeCount, bool includeOutliers) {
     UInt128 compositeChecksum = 0;
     const double compositeMs =
         timeSortMs(nodes, sortForestByDepthAndId, compositeChecksum);
+    const auto compositeSorted = sortForestByDepthAndId(nodes);
+    bool verified = false;
+    const double verifyMs = timeVerifyMs(compositeSorted, verified);
 
     std::cout << std::setw(8) << nodeCount << " nodes";
     if (includeOutliers) {
@@ -220,10 +230,14 @@ void runBenchmark(std::size_t nodeCount, bool includeOutliers) {
     }
     std::cout << "  comparison " << std::setw(10) << comparisonMs
               << " ms  bucketed " << std::setw(10) << bucketedMs
-              << " ms  composite " << std::setw(10) << compositeMs << " ms";
+              << " ms  composite " << std::setw(10) << compositeMs
+              << " ms  verify " << std::setw(10) << verifyMs << " ms";
     if (comparisonChecksum != bucketedChecksum ||
         comparisonChecksum != compositeChecksum) {
         std::cout << "  checksum-mismatch";
+    }
+    if (!verified) {
+        std::cout << "  verify-failed";
     }
     std::cout << "\n";
 }

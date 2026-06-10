@@ -114,13 +114,16 @@ std::size_t UInt128Hash::operator()(const UInt128 &value) const noexcept {
 
 using IdIndexMap = std::unordered_map<UInt128, std::size_t, UInt128Hash>;
 
-// buildParentIndex maps each node index to its parent index; kNoParent for
-// roots.
+// buildParentIndex performs the only id-keyed parent lookup. Later working
+// data stays indexed by original node position.
 std::vector<std::size_t> buildParentIndex(const std::vector<Node> &nodes) {
     IdIndexMap idToIndex;
     idToIndex.reserve(nodes.size() * 2); // load factor headroom
     for (std::size_t i = 0; i < nodes.size(); ++i) {
-        idToIndex.emplace(nodes[i].id, i);
+        const auto inserted = idToIndex.emplace(nodes[i].id, i);
+        if (!inserted.second) {
+            throw std::runtime_error("duplicate node id");
+        }
     }
 
     std::vector<std::size_t> parent(nodes.size(), kNoParent);
@@ -129,7 +132,7 @@ std::vector<std::size_t> buildParentIndex(const std::vector<Node> &nodes) {
         if (parentId == 0) {
             continue;
         }
-        auto parentIt = idToIndex.find(parentId);
+        const auto parentIt = idToIndex.find(parentId);
         if (parentIt != idToIndex.end()) {
             parent[i] = parentIt->second;
         }
@@ -230,35 +233,48 @@ std::vector<Node> sortForestByDepthAndId(const std::vector<Node> &nodes) {
     return sorted;
 }
 
-// verifySortedByDepthAndId checks the sorted order by recomputing depths.
+// verifySortedByDepthAndId checks the sorted order in one forward pass after
+// mapping ids. Missing parents are root-equivalent, matching computeDepths.
 bool verifySortedByDepthAndId(const std::vector<Node> &nodes) {
     const std::size_t nodeCount = nodes.size();
     if (nodeCount <= 1) {
         return true;
     }
 
-    const auto parentIndex = buildParentIndex(nodes);
-    std::vector<uint32_t> depth = computeDepths(nodes, parentIndex);
-
-    // First element must be at depth 0 (a root).
-    if (depth[0] != 0) {
+    std::vector<std::size_t> parentIndex;
+    try {
+        parentIndex = buildParentIndex(nodes);
+    } catch (const std::runtime_error &) {
         return false;
     }
 
-    uint32_t prevDepth = depth[0];
-    UInt128 prevId = nodes[0].id;
+    std::vector<uint32_t> verifiedDepth(nodeCount, UINT32_MAX);
 
-    for (std::size_t i = 1; i < nodeCount; ++i) {
-        const uint32_t currentDepth = depth[i];
+    uint32_t prevDepth = 0;
+    UInt128 prevId = 0;
+
+    for (std::size_t i = 0; i < nodeCount; ++i) {
         const UInt128 currentId = nodes[i].id;
 
-        // Depth must be non-decreasing. Within the same depth, id must be
-        // non-decreasing.
-        if (currentDepth < prevDepth ||
-            (currentDepth == prevDepth && currentId < prevId)) {
+        uint32_t currentDepth = 0;
+        if (nodes[i].parentId != 0 && parentIndex[i] != kNoParent) {
+            const std::size_t parentNodeIndex = parentIndex[i];
+            if (verifiedDepth[parentNodeIndex] == UINT32_MAX) {
+                return false;
+            }
+
+            currentDepth = verifiedDepth[parentNodeIndex] + 1;
+            if (currentDepth > kMaxSortableDepth) {
+                return false;
+            }
+        }
+
+        if (i > 0 && (currentDepth < prevDepth ||
+                      (currentDepth == prevDepth && currentId < prevId))) {
             return false;
         }
 
+        verifiedDepth[i] = currentDepth;
         prevDepth = currentDepth;
         prevId = currentId;
     }
