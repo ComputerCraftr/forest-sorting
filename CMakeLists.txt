@@ -12,12 +12,10 @@ find_program(FOREST_CLANG_TIDY
     DOC "Path to clang-tidy"
 )
 
-add_library(forest-sorting-lib STATIC
-    src/forest.cpp
-)
+add_library(forest-sorting-lib INTERFACE)
 
-target_include_directories(forest-sorting-lib PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+target_include_directories(forest-sorting-lib INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -33,6 +31,14 @@ add_executable(forest-sorting-tests
 
 target_link_libraries(forest-sorting-tests PRIVATE forest-sorting-lib)
 
+add_executable(forest-sorting-portable-include-tests
+    tests/portable_include_tests.cpp
+)
+
+target_link_libraries(forest-sorting-portable-include-tests
+    PRIVATE forest-sorting-lib
+)
+
 add_executable(forest-sorting-bench
     benchmarks/forest_bench.cpp
 )
@@ -43,10 +49,17 @@ set(_forest_targets
     forest-sorting-lib
     forest-sorting
     forest-sorting-tests
+    forest-sorting-portable-include-tests
     forest-sorting-bench
 )
 
-foreach(target ${_forest_targets})
+target_compile_features(forest-sorting-lib INTERFACE cxx_std_20)
+
+foreach(target
+        forest-sorting
+        forest-sorting-tests
+        forest-sorting-portable-include-tests
+        forest-sorting-bench)
     target_compile_features(${target} PRIVATE cxx_std_20)
     target_compile_options(${target} PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
@@ -62,6 +75,9 @@ endforeach()
 
 enable_testing()
 add_test(NAME forest-sorting-tests COMMAND forest-sorting-tests)
+add_test(NAME forest-sorting-portable-include-tests
+    COMMAND forest-sorting-portable-include-tests
+)
 add_test(NAME forest-sorting-bench-help
     COMMAND forest-sorting-bench --help
 )
@@ -91,13 +107,24 @@ add_test(NAME forest-sorting-bench-json
 )
 
 if(FOREST_CLANG_TIDY)
+    file(GLOB_RECURSE _forest_tidy_headers CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/forest_sorting/*.hpp"
+    )
+
+    set(_forest_tidy_files
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/forest_tests.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/parent_index_baselines.hpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/portable_include_tests.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bytes.hpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/forest_bench.cpp"
+        ${_forest_tidy_headers}
+    )
     add_custom_target(tidy
         COMMAND "${FOREST_CLANG_TIDY}"
                 -p "${CMAKE_BINARY_DIR}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/forest.cpp"
-                "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/forest_tests.cpp"
-                "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/forest_bench.cpp"
+                --extra-arg-before=-xc++
+                ${_forest_tidy_files}
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         COMMENT "Running clang-tidy"
         VERBATIM

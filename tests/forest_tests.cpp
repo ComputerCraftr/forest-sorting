@@ -1,7 +1,11 @@
-#include "forest.hpp"
-#include "parent_index.hpp"
+#include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/depth.hpp"
+#include "forest_sorting/detail/parent_index.hpp"
+#include "forest_sorting/detail/radix.hpp"
+#include "forest_sorting/uint128.hpp"
+#include "forest_sorting/uint128_forest.hpp"
 #include "parent_index_baselines.hpp"
-#include "radix.hpp"
+#include "test_bytes.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,27 +20,69 @@
 #include <string>
 #include <vector>
 
+using forest_sorting::Node;
+using forest_sorting::sortedCopyByDepthAndId;
+using forest_sorting::sortedOrderByDepthAndId;
+using forest_sorting::sortForestByDepthAndId;
+using forest_sorting::UInt128;
+using forest_sorting::UInt128NodeTraits;
+using forest_sorting::UInt128Traits;
+using forest_sorting::verifySortedByDepthAndId;
+
+constexpr std::size_t uint128_byte_count = UInt128Traits::id_byte_count;
+constexpr std::size_t depth_byte_count = 2;
+
+uint8_t idByte(UInt128 value, std::size_t byteIndex) noexcept {
+    return static_cast<uint8_t>(
+        value >> (byteIndex * forest_sorting::detail::radix_bits));
+}
+
 UInt128 makeId(uint64_t high, uint64_t low) {
     return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
 }
 
-using forest_internal::buildParentIndexControlByteFlatHash;
-using forest_internal::buildParentIndexFlatHash;
-using forest_internal::buildParentIndexRadixJoin;
-using forest_internal::depthByte;
-using forest_internal::idByte;
-using forest_internal::kDepthByteCount;
-using forest_internal::kRadixBucketCount;
-using forest_internal::kUInt128ByteCount;
-using forest_internal::radixPass;
+using forest_sorting::detail::buildParentIndexControlByteFlatHash;
+using forest_sorting::detail::buildParentIndexFlatHash;
+using forest_sorting::detail::buildParentIndexRadixJoin;
+using forest_sorting::detail::depthByte;
+using forest_sorting::detail::radix_bucket_count;
+using forest_sorting::detail::radixPass;
+
+std::vector<std::size_t>
+buildParentIndexFlatHashForUInt128(const std::vector<Node> &nodes) {
+    return buildParentIndexFlatHash(nodes, UInt128NodeTraits{});
+}
+
+std::vector<std::size_t>
+buildParentIndexControlByteFlatHashForUInt128(const std::vector<Node> &nodes) {
+    return buildParentIndexControlByteFlatHash(nodes, UInt128NodeTraits{});
+}
+
+std::vector<std::size_t>
+buildParentIndexRadixJoinForUInt128(const std::vector<Node> &nodes) {
+    return buildParentIndexRadixJoin(nodes, UInt128NodeTraits{});
+}
+
+std::vector<std::size_t>
+buildParentIndexForUInt128(const std::vector<Node> &nodes) {
+    return buildParentIndexControlByteFlatHashForUInt128(nodes);
+}
+
+std::vector<uint32_t>
+computeDepthsForUInt128(const std::vector<Node> &nodes,
+                        const std::vector<std::size_t> &parentIndex) {
+    return forest_sorting::detail::computeDepths(nodes, parentIndex,
+                                                 UInt128NodeTraits{});
+}
 
 bool sameNodes(const std::vector<Node> &lhs, const std::vector<Node> &rhs) {
     if (lhs.size() != rhs.size()) {
         return false;
     }
 
-    for (std::size_t i = 0; i < lhs.size(); ++i) {
-        if (lhs[i].id != rhs[i].id || lhs[i].parentId != rhs[i].parentId) {
+    for (std::size_t nodeIdx = 0; nodeIdx < lhs.size(); ++nodeIdx) {
+        if (lhs[nodeIdx].id != rhs[nodeIdx].id ||
+            lhs[nodeIdx].parentId != rhs[nodeIdx].parentId) {
             return false;
         }
     }
@@ -51,8 +97,8 @@ void runTest(const char *testName, void (*testFunction)()) {
 }
 
 std::vector<Node> sortForestByComparison(const std::vector<Node> &nodes) {
-    const auto parentIndex = buildParentIndex(nodes);
-    const auto depths = computeDepths(nodes, parentIndex);
+    const auto parentIndex = buildParentIndexForUInt128(nodes);
+    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
 
     std::vector<std::size_t> order(nodes.size());
     std::iota(order.begin(), order.end(), 0);
@@ -81,9 +127,9 @@ void radixSortBucketById(std::vector<std::size_t> &bucket,
     }
 
     std::vector<std::size_t> scratch(bucket.size());
-    for (std::size_t byteIndex = 0; byteIndex < kUInt128ByteCount;
+    for (std::size_t byteIndex = 0; byteIndex < uint128_byte_count;
          ++byteIndex) {
-        std::array<std::size_t, kRadixBucketCount> counts{};
+        std::array<std::size_t, radix_bucket_count> counts{};
         for (std::size_t nodeIndex : bucket) {
             ++counts[idByte(nodes[nodeIndex].id, byteIndex)];
         }
@@ -106,12 +152,12 @@ void radixSortBucketById(std::vector<std::size_t> &bucket,
 }
 
 std::vector<Node> sortForestByBucketedRadix(const std::vector<Node> &nodes) {
-    const auto parentIndex = buildParentIndex(nodes);
-    const auto depths = computeDepths(nodes, parentIndex);
+    const auto parentIndex = buildParentIndexForUInt128(nodes);
+    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
 
     uint32_t maxDepth = 0;
     for (uint32_t depth : depths) {
-        if (depth > kMaxSortableDepth) {
+        if (depth > forest_sorting::detail::maxDepthForPrefix<2>()) {
             throw std::runtime_error(
                 "forest depth exceeds sortable depth limit");
         }
@@ -120,8 +166,8 @@ std::vector<Node> sortForestByBucketedRadix(const std::vector<Node> &nodes) {
 
     std::vector<std::vector<std::size_t>> buckets(
         static_cast<std::size_t>(maxDepth) + 1);
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-        buckets[depths[i]].push_back(i);
+    for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
+        buckets[depths[nodeIdx]].push_back(nodeIdx);
     }
 
     for (auto &bucket : buckets) {
@@ -140,27 +186,28 @@ std::vector<Node> sortForestByBucketedRadix(const std::vector<Node> &nodes) {
 }
 
 std::vector<Node> sortForestByCompositeRadix(const std::vector<Node> &nodes) {
-    const auto parentIndex = buildParentIndex(nodes);
-    const auto depths = computeDepths(nodes, parentIndex);
+    const auto parentIndex = buildParentIndexForUInt128(nodes);
+    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
 
     std::vector<std::size_t> order(nodes.size());
     std::iota(order.begin(), order.end(), 0);
 
     for (uint32_t depth : depths) {
-        if (depth > kMaxSortableDepth) {
+        if (depth > forest_sorting::detail::maxDepthForPrefix<2>()) {
             throw std::runtime_error(
                 "forest depth exceeds sortable depth limit");
         }
     }
 
     std::vector<std::size_t> scratch(order.size());
-    for (std::size_t byteIndex = 0; byteIndex < kUInt128ByteCount;
+    for (std::size_t byteIndex = 0; byteIndex < uint128_byte_count;
          ++byteIndex) {
         radixPass(order, scratch, [&](std::size_t nodeIndex) {
             return idByte(nodes[nodeIndex].id, byteIndex);
         });
     }
-    for (std::size_t byteIndex = 0; byteIndex < kDepthByteCount; ++byteIndex) {
+
+    for (std::size_t byteIndex = 0; byteIndex < depth_byte_count; ++byteIndex) {
         radixPass(order, scratch, [&](std::size_t nodeIndex) {
             return depthByte(depths[nodeIndex], byteIndex);
         });
@@ -183,14 +230,15 @@ std::vector<Node> makeGeneratedForest(std::size_t nodeCount,
     nodes.reserve(nodeCount);
 
     std::vector<std::size_t> lastIndexAtDepth(
-        static_cast<std::size_t>(maxDepth) + 1, kNoParent);
-    for (std::size_t i = 0; i < nodeCount; ++i) {
-        uint32_t targetDepth =
-            static_cast<uint32_t>(i % (static_cast<std::size_t>(maxDepth) + 1));
+        static_cast<std::size_t>(maxDepth) + 1,
+        forest_sorting::detail::no_parent);
+    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
+        uint32_t targetDepth = static_cast<uint32_t>(
+            nodeIdx % (static_cast<std::size_t>(maxDepth) + 1));
         UInt128 parentId = 0;
         if (targetDepth > 0 &&
             lastIndexAtDepth[static_cast<std::size_t>(targetDepth - 1)] !=
-                kNoParent) {
+                forest_sorting::detail::no_parent) {
             parentId = nodes[lastIndexAtDepth[static_cast<std::size_t>(
                                  targetDepth - 1)]]
                            .id;
@@ -199,9 +247,9 @@ std::vector<Node> makeGeneratedForest(std::size_t nodeCount,
         }
 
         const uint64_t high = rng();
-        const uint64_t low = static_cast<uint64_t>(i) + 1ULL;
+        const uint64_t low = static_cast<uint64_t>(nodeIdx) + 1ULL;
         nodes.push_back(Node{makeId(high, low), parentId});
-        lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = i;
+        lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = nodeIdx;
     }
 
     std::shuffle(nodes.begin(), nodes.end(), rng);
@@ -230,7 +278,7 @@ std::vector<Node> makeGeneratedForestWithOutliers(std::size_t nodeCount,
     std::vector<Node> nodes = makeGeneratedForest(nodeCount, commonMaxDepth);
     appendDeepChain(nodes, 128, 0x1000ULL);
     appendDeepChain(nodes, 512, 0x2000ULL);
-    appendDeepChain(nodes, kMaxSortableDepth, 0x3000ULL);
+    appendDeepChain(nodes, 1024, 0x3000ULL);
     return shuffledCopy(nodes, 0xabcdef00ULL);
 }
 
@@ -238,13 +286,13 @@ std::vector<Node> makeSameHigh64Forest(std::size_t nodeCount) {
     std::vector<Node> nodes;
     nodes.reserve(nodeCount);
     constexpr uint64_t sharedHighWord = 0x123456789abcdef0ULL;
-    for (std::size_t i = 0; i < nodeCount; ++i) {
+    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
         UInt128 parentId = 0;
-        if (i > 0) {
-            parentId = makeId(sharedHighWord, static_cast<uint64_t>(i));
+        if (nodeIdx > 0) {
+            parentId = makeId(sharedHighWord, static_cast<uint64_t>(nodeIdx));
         }
         nodes.push_back(Node{
-            makeId(sharedHighWord, static_cast<uint64_t>(i) + 1ULL),
+            makeId(sharedHighWord, static_cast<uint64_t>(nodeIdx) + 1ULL),
             parentId,
         });
     }
@@ -254,13 +302,13 @@ std::vector<Node> makeSameHigh64Forest(std::size_t nodeCount) {
 std::vector<Node> makeSequentialIdForest(std::size_t nodeCount) {
     std::vector<Node> nodes;
     nodes.reserve(nodeCount);
-    for (std::size_t i = 0; i < nodeCount; ++i) {
+    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
         UInt128 parentId = 0;
-        if (i > 0) {
-            parentId = makeId(0, static_cast<uint64_t>(i));
+        if (nodeIdx > 0) {
+            parentId = makeId(0, static_cast<uint64_t>(nodeIdx));
         }
         nodes.push_back(
-            Node{makeId(0, static_cast<uint64_t>(i) + 1ULL), parentId});
+            Node{makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL), parentId});
     }
     return shuffledCopy(nodes, 0x1234abcdULL);
 }
@@ -268,11 +316,11 @@ std::vector<Node> makeSequentialIdForest(std::size_t nodeCount) {
 std::vector<Node> makeManyExternalParentForest(std::size_t nodeCount) {
     std::vector<Node> nodes;
     nodes.reserve(nodeCount);
-    for (std::size_t i = 0; i < nodeCount; ++i) {
+    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
         const UInt128 nodeId =
-            makeId(0x1000ULL, static_cast<uint64_t>(i) + 1ULL);
+            makeId(0x1000ULL, static_cast<uint64_t>(nodeIdx) + 1ULL);
         const UInt128 parentId =
-            makeId(0x2000ULL, static_cast<uint64_t>(i) + 1ULL);
+            makeId(0x2000ULL, static_cast<uint64_t>(nodeIdx) + 1ULL);
         nodes.push_back(Node{nodeId, parentId});
     }
     return shuffledCopy(nodes, 0x44445555ULL);
@@ -283,18 +331,19 @@ std::vector<Node> makeManySiblingsForest(std::size_t nodeCount) {
     nodes.reserve(nodeCount);
     const UInt128 rootId = makeId(0, 1);
     nodes.push_back(Node{rootId, 0});
-    for (std::size_t i = 1; i < nodeCount; ++i) {
+    for (std::size_t nodeIdx = 1; nodeIdx < nodeCount; ++nodeIdx) {
         nodes.push_back(
-            Node{makeId(0, static_cast<uint64_t>(i) + 1ULL), rootId});
+            Node{makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL), rootId});
     }
     return shuffledCopy(nodes, 0x9999aaaaULL);
 }
 
 void assertParentBuildersMatch(const std::vector<Node> &nodes) {
     const auto unorderedParent = buildParentIndexStdUnorderedMap(nodes);
-    const auto flatParent = buildParentIndexFlatHash(nodes);
-    const auto controlParent = buildParentIndexControlByteFlatHash(nodes);
-    const auto radixParent = buildParentIndexRadixJoin(nodes);
+    const auto flatParent = buildParentIndexFlatHashForUInt128(nodes);
+    const auto controlParent =
+        buildParentIndexControlByteFlatHashForUInt128(nodes);
+    const auto radixParent = buildParentIndexRadixJoinForUInt128(nodes);
 
     if (unorderedParent != flatParent) {
         throw std::runtime_error(
@@ -360,12 +409,13 @@ void test_parent_builders_reject_duplicate_full_uint128_id() {
 
     assertParentBuilderRejectsDuplicate(nodes, buildParentIndexStdUnorderedMap,
                                         "unordered parent builder");
-    assertParentBuilderRejectsDuplicate(nodes, buildParentIndexFlatHash,
-                                        "flat hash parent builder");
+    assertParentBuilderRejectsDuplicate(
+        nodes, buildParentIndexFlatHashForUInt128, "flat hash parent builder");
+    assertParentBuilderRejectsDuplicate(
+        nodes, buildParentIndexControlByteFlatHashForUInt128,
+        "control-byte parent builder");
     assertParentBuilderRejectsDuplicate(nodes,
-                                        buildParentIndexControlByteFlatHash,
-                                        "control-byte parent builder");
-    assertParentBuilderRejectsDuplicate(nodes, buildParentIndexRadixJoin,
+                                        buildParentIndexRadixJoinForUInt128,
                                         "radix join parent builder");
 }
 
@@ -376,8 +426,8 @@ void test_compute_depths_simple_chain() {
         {makeId(0, 3), makeId(0, 2)}, // depth 2
     };
 
-    const auto parentIndex = buildParentIndex(nodes);
-    const auto depths = computeDepths(nodes, parentIndex);
+    const auto parentIndex = buildParentIndexForUInt128(nodes);
+    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
 
     assert(depths.size() == 3);
     assert(depths[0] == 0);
@@ -583,19 +633,20 @@ void test_verify_rejects_duplicate_full_uint128_id() {
     assert(!verifySortedByDepthAndId(nodes));
 }
 
-void test_sort_rejects_depth_over_limit() {
+void test_sort_rejects_depth_over_one_byte_prefix_limit() {
     std::vector<Node> nodes;
-    nodes.reserve(static_cast<std::size_t>(kMaxSortableDepth) + 2);
+    constexpr uint32_t rejectedDepth = 256;
+    nodes.reserve(static_cast<std::size_t>(rejectedDepth) + 1);
 
     nodes.push_back(Node{makeId(0, 1), 0});
-    for (uint32_t depth = 1; depth <= kMaxSortableDepth + 1; ++depth) {
+    for (uint32_t depth = 1; depth <= rejectedDepth; ++depth) {
         nodes.push_back(Node{makeId(0, static_cast<uint64_t>(depth) + 1ULL),
                              makeId(0, static_cast<uint64_t>(depth))});
     }
 
     bool rejected = false;
     try {
-        (void)sortForestByDepthAndId(nodes);
+        (void)sortForestByDepthAndId<1>(nodes);
     } catch (const std::runtime_error &) {
         rejected = true;
     }
@@ -604,6 +655,21 @@ void test_sort_rejects_depth_over_limit() {
         throw std::runtime_error(
             "sort accepted a forest deeper than the limit");
     }
+}
+
+void test_sort_accepts_depth_1024_with_two_byte_prefix() {
+    std::vector<Node> nodes;
+    constexpr uint32_t acceptedDepth = 1024;
+    nodes.reserve(static_cast<std::size_t>(acceptedDepth) + 1);
+
+    nodes.push_back(Node{makeId(0, 1), 0});
+    for (uint32_t depth = 1; depth <= acceptedDepth; ++depth) {
+        nodes.push_back(Node{makeId(0, static_cast<uint64_t>(depth) + 1ULL),
+                             makeId(0, static_cast<uint64_t>(depth))});
+    }
+
+    const auto sorted = sortForestByDepthAndId<2>(nodes);
+    assert(verifySortedByDepthAndId<2>(sorted));
 }
 
 void test_verify_accepts_sorted_common_forest() {
@@ -654,17 +720,110 @@ void test_verify_treats_missing_parent_as_root() {
     assert(verifySortedByDepthAndId(nodes));
 }
 
-void test_verify_rejects_depth_over_limit() {
+void test_verify_rejects_depth_over_one_byte_prefix_limit() {
     std::vector<Node> nodes;
-    nodes.reserve(static_cast<std::size_t>(kMaxSortableDepth) + 2);
+    constexpr uint32_t rejectedDepth = 256;
+    nodes.reserve(static_cast<std::size_t>(rejectedDepth) + 1);
 
     nodes.push_back(Node{makeId(0, 1), 0});
-    for (uint32_t depth = 1; depth <= kMaxSortableDepth + 1; ++depth) {
+    for (uint32_t depth = 1; depth <= rejectedDepth; ++depth) {
         nodes.push_back(Node{makeId(0, static_cast<uint64_t>(depth) + 1ULL),
                              makeId(0, static_cast<uint64_t>(depth))});
     }
 
-    assert(!verifySortedByDepthAndId(nodes));
+    assert(!verifySortedByDepthAndId<1>(nodes));
+}
+
+template <std::size_t ByteCount>
+void assert_generic_fixed_hash_api_orders_by_depth_then_id() {
+    using Id = TestBytes<ByteCount>;
+    using Node = TestNode<ByteCount>;
+    using Traits = TestBytesTraits<ByteCount>;
+
+    const Id root = makeTestBytes<ByteCount>(0, 10);
+    const Id childLow = makeTestBytes<ByteCount>(0, 20);
+    const Id childHigh = makeTestBytes<ByteCount>(1, 1);
+    const Id sibling = makeTestBytes<ByteCount>(0, 5);
+
+    std::vector<Node> nodes = {
+        {childHigh, root},
+        {sibling, Id{}},
+        {childLow, root},
+        {root, Id{}},
+    };
+
+    const auto explicitOrder =
+        forest_sorting::sortedOrderByDepthAndId<2>(nodes, Traits{});
+    const auto order = forest_sorting::sortedOrderByDepthAndId(nodes, Traits{});
+
+    assert(order == explicitOrder);
+
+    assert(order.size() == nodes.size());
+    assert(order[0] == 1);
+    assert(order[1] == 3);
+    assert(order[2] == 2);
+    assert(order[3] == 0);
+
+    const auto sorted = forest_sorting::sortedCopyByDepthAndId(nodes, Traits{});
+    assert(sorted[0].id == sibling);
+    assert(sorted[1].id == root);
+    assert(sorted[2].id == childLow);
+    assert(sorted[3].id == childHigh);
+
+    auto inPlace = nodes;
+    forest_sorting::sortInPlaceByDepthAndId(inPlace, Traits{});
+    assert(inPlace[0].id == sibling);
+    assert(inPlace[1].id == root);
+    assert(inPlace[2].id == childLow);
+    assert(inPlace[3].id == childHigh);
+
+    assert(forest_sorting::verifySortedByDepthAndId(sorted, Traits{}));
+    assert(!forest_sorting::verifySortedByDepthAndId(nodes, Traits{}));
+}
+
+void test_generic_16_byte_public_api_forms() {
+    assert_generic_fixed_hash_api_orders_by_depth_then_id<16>();
+}
+
+void test_generic_20_byte_public_api_forms() {
+    assert_generic_fixed_hash_api_orders_by_depth_then_id<20>();
+}
+
+void test_generic_28_byte_public_api_forms() {
+    assert_generic_fixed_hash_api_orders_by_depth_then_id<28>();
+}
+
+void test_generic_32_byte_public_api_forms() {
+    assert_generic_fixed_hash_api_orders_by_depth_then_id<32>();
+}
+
+void test_generic_64_byte_public_api_forms() {
+    assert_generic_fixed_hash_api_orders_by_depth_then_id<64>();
+}
+
+void test_generic_37_byte_public_api_forms() {
+    assert_generic_fixed_hash_api_orders_by_depth_then_id<37>();
+}
+
+void test_sort_accepts_depth_over_two_byte_prefix_limit_with_three_byte() {
+    std::vector<Node> nodes;
+    constexpr uint32_t depthLimit = 65536;
+    nodes.reserve(depthLimit + 1);
+
+    nodes.push_back(Node{makeId(0, 1), 0});
+    nodes.push_back(Node{makeId(0, 2), makeId(0, 1)});
+    // Just test one level over 2-byte limit
+    const auto sorted = sortForestByDepthAndId<3>(nodes);
+    assert(verifySortedByDepthAndId<3>(sorted));
+}
+
+void test_sort_accepts_large_depth_with_four_byte_prefix() {
+    std::vector<Node> nodes;
+    nodes.push_back(Node{makeId(0, 1), 0});
+    // Test a very large depth (though we won't allocate millions of nodes for
+    // speed)
+    const auto sorted = sortForestByDepthAndId<4>(nodes);
+    assert(verifySortedByDepthAndId<4>(sorted));
 }
 
 int main() {
@@ -704,8 +863,16 @@ int main() {
                 test_adaptive_sort_matches_baselines_with_deep_depth_outliers);
         runTest("sort rejects duplicate full UInt128 ID",
                 test_sort_rejects_duplicate_full_uint128_id);
-        runTest("sort rejects depth over limit",
-                test_sort_rejects_depth_over_limit);
+        runTest("sort rejects depth over one-byte prefix limit",
+                test_sort_rejects_depth_over_one_byte_prefix_limit);
+        runTest("sort accepts depth 1024 with two-byte prefix",
+                test_sort_accepts_depth_1024_with_two_byte_prefix);
+        runTest(
+            "sort accepts depth over two-byte prefix limit with three-byte",
+            test_sort_accepts_depth_over_two_byte_prefix_limit_with_three_byte);
+        runTest("sort accepts large depth with four-byte prefix",
+                test_sort_accepts_large_depth_with_four_byte_prefix);
+
         runTest("verify accepts sorted common forest",
                 test_verify_accepts_sorted_common_forest);
         runTest("verify rejects unsorted depth order",
@@ -718,8 +885,20 @@ int main() {
                 test_verify_treats_missing_parent_as_root);
         runTest("verify rejects duplicate full UInt128 ID",
                 test_verify_rejects_duplicate_full_uint128_id);
-        runTest("verify rejects depth over limit",
-                test_verify_rejects_depth_over_limit);
+        runTest("verify rejects depth over one-byte prefix limit",
+                test_verify_rejects_depth_over_one_byte_prefix_limit);
+        runTest("generic 16-byte public API forms",
+                test_generic_16_byte_public_api_forms);
+        runTest("generic 20-byte public API forms",
+                test_generic_20_byte_public_api_forms);
+        runTest("generic 28-byte public API forms",
+                test_generic_28_byte_public_api_forms);
+        runTest("generic 32-byte public API forms",
+                test_generic_32_byte_public_api_forms);
+        runTest("generic 64-byte public API forms",
+                test_generic_64_byte_public_api_forms);
+        runTest("generic 37-byte public API forms",
+                test_generic_37_byte_public_api_forms);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "forest-sorting-tests failed: " << error.what() << "\n";

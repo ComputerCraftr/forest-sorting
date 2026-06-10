@@ -1,17 +1,45 @@
 # forest-sorting
 
-Sorting a forest of nodes deterministically by depth, then by node ID with an
-adaptive word-first radix sort.
+Header-only C++20 library for sorting a forest of nodes deterministically by
+depth, then by node ID with an adaptive byte-width radix sort.
 
 The production sorter is tuned for common depths `0-30`, supports outliers up
-to `kMaxSortableDepth` (`1024`), and rejects deeper forests. IDs are sorted by
-most-significant 64-bit words first, so random hash-like IDs usually only need
-their high word inspected; lower words are used only inside equal-prefix
-ranges. Duplicate full IDs are rejected.
+to the selected compile-time depth prefix, and rejects deeper forests. IDs are
+exposed through fixed-width most-significant-first bytes; the implementation can
+chunk those bytes internally for speed. Duplicate full IDs are rejected.
 
-Parent ID lookup uses a control-byte open-addressed `UInt128 -> node index`
-hash table, then the rest of the sort and verifier operate on integer-indexed
-vectors.
+Parent ID lookup uses a control-byte open-addressed ID-to-index hash table,
+then the rest of the sort and verifier operate on integer-indexed vectors.
+
+## API
+
+The portable generic algorithm header does not depend on `unsigned __int128`:
+
+```cpp
+#include <forest_sorting/algorithms.hpp>
+```
+
+Portable users provide their own node and ID representation, plus a trait that
+exposes ID bytes, hashing, equality, parent lookup, and root-parent semantics.
+The primary primitive returns a non-owning sorted index order:
+
+```cpp
+auto order = forest_sorting::sortedOrderByDepthAndId<2>(
+    nodes, MyCombinedTraits{});
+```
+
+The template argument is the depth-prefix byte count. The default overload uses
+`2`, which supports depths up to `65535`.
+
+Convenience wrappers for sorted copy, in-place sorting, and verification are
+thin layers over the same order primitive.
+
+The current `unsigned __int128` node API is available only from guarded
+optional headers on compilers that support `__SIZEOF_INT128__`:
+
+```cpp
+#include <forest_sorting/uint128_forest.hpp>
+```
 
 ## Building
 
@@ -39,7 +67,8 @@ ctest --preset debug              # run the test suite with sanitizers active
 
 The regression tests check deterministic ordering across multiple input
 permutations, verify the production adaptive radix sort against comparison and
-full-LSD radix baselines, compare parent-index builders, and cover duplicate
+full-LSD radix baselines, compare parent-index builders, compile the portable
+algorithm header without UInt128 compatibility headers, and cover duplicate
 full-ID rejection.
 
 ## Linting
