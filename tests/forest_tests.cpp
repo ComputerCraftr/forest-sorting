@@ -67,6 +67,12 @@ bool sameNodes(const std::vector<Node> &lhs, const std::vector<Node> &rhs) {
     return true;
 }
 
+void runTest(const char *testName, void (*testFunction)()) {
+    std::cout << "RUN  " << testName << "\n";
+    testFunction();
+    std::cout << "PASS " << testName << "\n";
+}
+
 std::vector<Node> sortForestByComparison(const std::vector<Node> &nodes) {
     const auto parentIndex = buildParentIndex(nodes);
     const auto depths = computeDepths(nodes, parentIndex);
@@ -290,7 +296,7 @@ void test_sort_and_verify_multi_root() {
     assert(sorted[4].id == makeId(0, 21));
 }
 
-void test_sort_orders_high_64_bits() {
+void test_adaptive_sort_orders_by_high64_before_low64() {
     std::vector<Node> nodes = {
         {makeId(2, 0), 0},
         {makeId(1, UINT64_MAX), 0},
@@ -312,7 +318,7 @@ void test_sort_orders_high_64_bits() {
     assert(sorted[3].id == makeId(2, 0));
 }
 
-void test_sort_handles_high_word_collisions() {
+void test_adaptive_sort_uses_low64_when_high64_matches() {
     std::vector<Node> nodes = {
         {makeId(9, 3), 0},
         {makeId(8, UINT64_MAX), 0},
@@ -335,7 +341,7 @@ void test_sort_handles_high_word_collisions() {
     assert(sorted[3].id == makeId(9, 3));
 }
 
-void test_sort_is_deterministic_for_shuffled_input() {
+void test_adaptive_sort_matches_comparison_for_shuffled_input() {
     std::vector<Node> nodes = {
         {makeId(0, 40), 0},
         {makeId(0, 10), 0},
@@ -359,7 +365,7 @@ void test_sort_is_deterministic_for_shuffled_input() {
     assert(verifySortedByDepthAndId(sorted));
 }
 
-void test_large_generated_forest_matches_comparison_oracle() {
+void test_adaptive_sort_matches_baselines_for_100k_common_depth_forest() {
     constexpr std::size_t nodeCount = 100000;
     constexpr uint32_t commonMaxDepth = 30;
 
@@ -375,7 +381,7 @@ void test_large_generated_forest_matches_comparison_oracle() {
     assert(verifySortedByDepthAndId(sorted));
 }
 
-void test_all_sort_methods_are_permutation_deterministic() {
+void test_all_sort_methods_match_canonical_order_across_permutations() {
     constexpr std::size_t nodeCount = 10000;
     constexpr uint32_t commonMaxDepth = 30;
 
@@ -419,7 +425,7 @@ void test_all_sort_methods_are_permutation_deterministic() {
     }
 }
 
-void test_generated_forest_with_deep_outliers_matches_comparison_oracle() {
+void test_adaptive_sort_matches_baselines_with_deep_depth_outliers() {
     constexpr std::size_t nodeCount = 10000;
     constexpr uint32_t commonMaxDepth = 30;
 
@@ -436,7 +442,7 @@ void test_generated_forest_with_deep_outliers_matches_comparison_oracle() {
     assert(verifySortedByDepthAndId(sorted));
 }
 
-void test_sort_rejects_duplicate_full_id() {
+void test_sort_rejects_duplicate_full_uint128_id() {
     const UInt128 duplicateId = makeId(7, 11);
     std::vector<Node> nodes = {
         {duplicateId, 0},
@@ -455,7 +461,7 @@ void test_sort_rejects_duplicate_full_id() {
     }
 }
 
-void test_verify_rejects_duplicate_full_id() {
+void test_verify_rejects_duplicate_full_uint128_id() {
     const UInt128 duplicateId = makeId(7, 11);
     std::vector<Node> nodes = {
         {duplicateId, 0},
@@ -551,23 +557,43 @@ void test_verify_rejects_depth_over_limit() {
 
 int main() {
     try {
-        test_compute_depths_simple_chain();
-        test_sort_and_verify_multi_root();
-        test_sort_orders_high_64_bits();
-        test_sort_handles_high_word_collisions();
-        test_sort_is_deterministic_for_shuffled_input();
-        test_large_generated_forest_matches_comparison_oracle();
-        test_all_sort_methods_are_permutation_deterministic();
-        test_generated_forest_with_deep_outliers_matches_comparison_oracle();
-        test_sort_rejects_duplicate_full_id();
-        test_sort_rejects_depth_over_limit();
-        test_verify_accepts_sorted_common_forest();
-        test_verify_rejects_unsorted_by_depth();
-        test_verify_rejects_unsorted_by_id_within_depth();
-        test_verify_rejects_child_before_existing_parent();
-        test_verify_treats_missing_parent_as_root();
-        test_verify_rejects_duplicate_full_id();
-        test_verify_rejects_depth_over_limit();
+        std::cout << "forest sorting tests\n";
+        runTest("compute depths for simple parent chain",
+                test_compute_depths_simple_chain);
+        runTest("sort and verify multiple roots",
+                test_sort_and_verify_multi_root);
+        runTest("adaptive sort orders high64 before low64",
+                test_adaptive_sort_orders_by_high64_before_low64);
+        runTest("adaptive sort uses low64 when high64 matches",
+                test_adaptive_sort_uses_low64_when_high64_matches);
+        runTest("adaptive sort matches comparison for shuffled input",
+                test_adaptive_sort_matches_comparison_for_shuffled_input);
+        runTest(
+            "adaptive sort matches baselines for 100k common-depth forest",
+            test_adaptive_sort_matches_baselines_for_100k_common_depth_forest);
+        runTest(
+            "all sort methods match canonical order across permutations",
+            test_all_sort_methods_match_canonical_order_across_permutations);
+        runTest("adaptive sort matches baselines with deep depth outliers",
+                test_adaptive_sort_matches_baselines_with_deep_depth_outliers);
+        runTest("sort rejects duplicate full UInt128 ID",
+                test_sort_rejects_duplicate_full_uint128_id);
+        runTest("sort rejects depth over limit",
+                test_sort_rejects_depth_over_limit);
+        runTest("verify accepts sorted common forest",
+                test_verify_accepts_sorted_common_forest);
+        runTest("verify rejects unsorted depth order",
+                test_verify_rejects_unsorted_by_depth);
+        runTest("verify rejects unsorted ID order within depth",
+                test_verify_rejects_unsorted_by_id_within_depth);
+        runTest("verify rejects child before existing parent",
+                test_verify_rejects_child_before_existing_parent);
+        runTest("verify treats missing parent as root",
+                test_verify_treats_missing_parent_as_root);
+        runTest("verify rejects duplicate full UInt128 ID",
+                test_verify_rejects_duplicate_full_uint128_id);
+        runTest("verify rejects depth over limit",
+                test_verify_rejects_depth_over_limit);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "forest-sorting-tests failed: " << error.what() << "\n";

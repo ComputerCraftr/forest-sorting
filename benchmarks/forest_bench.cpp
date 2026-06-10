@@ -22,6 +22,9 @@ constexpr std::size_t kUInt128ByteCount = 16;
 constexpr std::size_t kDepthByteCount = 2;
 constexpr std::size_t kRadixBits = 8;
 constexpr std::size_t kRadixBucketCount = 256;
+constexpr int kDatasetColumnWidth = 28;
+constexpr int kTimingColumnWidth = 15;
+constexpr int kTimingValueWidth = 14;
 
 uint8_t idByte(UInt128 value, std::size_t byteIndex) noexcept {
     return static_cast<uint8_t>(value >> (byteIndex * kRadixBits));
@@ -296,6 +299,21 @@ double timeVerifyMs(const std::vector<Node> &nodes, bool &verified) {
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
+void printBenchmarkHeader() {
+    std::cout << std::left << std::setw(kDatasetColumnWidth) << "dataset"
+              << std::right << "  " << std::setw(kTimingColumnWidth)
+              << "cmp_sort_ms"
+              << "  " << std::setw(kTimingColumnWidth) << "bucket_lsd_ms"
+              << "  " << std::setw(kTimingColumnWidth) << "composite_lsd_ms"
+              << "  " << std::setw(kTimingColumnWidth) << "adaptive_msd_ms"
+              << "  " << std::setw(kTimingColumnWidth) << "verify_ms"
+              << "  status\n";
+}
+
+void printTiming(double milliseconds) {
+    std::cout << "  " << std::setw(kTimingValueWidth) << milliseconds << " ms";
+}
+
 void runBenchmark(const std::vector<Node> &nodes, const char *label) {
     UInt128 comparisonChecksum = 0;
     const double comparisonMs =
@@ -316,19 +334,27 @@ void runBenchmark(const std::vector<Node> &nodes, const char *label) {
     bool verified = false;
     const double verifyMs = timeVerifyMs(adaptiveSorted, verified);
 
-    std::cout << std::setw(28) << label;
-    std::cout << "  comparison " << std::setw(10) << comparisonMs
-              << " ms  bucketed " << std::setw(10) << bucketedMs
-              << " ms  composite " << std::setw(10) << compositeMs
-              << " ms  adaptive " << std::setw(10) << adaptiveMs
-              << " ms  verify " << std::setw(10) << verifyMs << " ms";
+    std::cout << std::left << std::setw(kDatasetColumnWidth) << label
+              << std::right;
+    printTiming(comparisonMs);
+    printTiming(bucketedMs);
+    printTiming(compositeMs);
+    printTiming(adaptiveMs);
+    printTiming(verifyMs);
+
+    bool passed = true;
     if (comparisonChecksum != bucketedChecksum ||
         comparisonChecksum != compositeChecksum ||
         comparisonChecksum != adaptiveChecksum) {
+        passed = false;
         std::cout << "  checksum-mismatch";
     }
     if (!verified) {
+        passed = false;
         std::cout << "  verify-failed";
+    }
+    if (passed) {
+        std::cout << "  ok";
     }
     std::cout << "\n";
 }
@@ -337,6 +363,7 @@ int main() {
     try {
         constexpr uint32_t commonMaxDepth = 30;
         std::cout << "forest sorting benchmark\n";
+        printBenchmarkHeader();
         runBenchmark(makeGeneratedForest(10000, commonMaxDepth), "10000 nodes");
         runBenchmark(makeGeneratedForestWithOutliers(10000, commonMaxDepth),
                      "10000 nodes + outliers");
