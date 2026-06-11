@@ -4,6 +4,7 @@
 #include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/radix.hpp"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -13,102 +14,120 @@
 namespace forest_sorting::detail {
 
 inline constexpr uint8_t empty_control_byte = 0x80;
+inline constexpr std::size_t max_probe_groups_before_fallback = 32;
 
-inline std::size_t nextPowerOfTwo(std::size_t value) noexcept {
-    std::size_t capacity = 1;
-    while (capacity < value) {
-        capacity <<= 1;
-    }
-    return capacity;
-}
-
-template <typename Id> struct IdIndexSlot {
-    Id id{};
-    std::size_t nodeIndex = no_parent;
-    bool occupied = false;
+enum class InsertResult : uint8_t {
+    Inserted,
+    Duplicate,
+    ProbeLimitExceeded,
 };
 
-template <typename Id> struct IdIndexEntry {
+struct FindResult {
+    std::size_t nodeIndex = no_parent;
+    bool found = false;
+    bool probeLimitExceeded = false;
+};
+
+template <typename Id> struct RadixJoinIdEntry {
     Id id{};
     std::size_t nodeIndex = no_parent;
 };
 
-template <typename Id> struct ParentQueryEntry {
+template <typename Id> struct RadixJoinQueryEntry {
     Id parentId{};
     std::size_t childIndex = no_parent;
 };
 
-template <typename Id, typename IdTraits> class FlatIdIndex {
-  public:
-    FlatIdIndex(std::size_t itemCount, const IdTraits &idTraits)
-        : idTraits_(idTraits), slots_(nextPowerOfTwo((itemCount * 2) + 1)) {}
+template <typename Nodes, typename Traits>
+std::vector<std::size_t> buildParentIndexRadixJoin(const Nodes &nodes,
+                                                   const Traits &traits) {
+    using Id = Traits::Id;
+    std::vector<RadixJoinIdEntry<Id>> idEntries;
+    idEntries.reserve(nodes.size());
+    std::vector<RadixJoinQueryEntry<Id>> parentQueries;
+    parentQueries.reserve(nodes.size());
 
-    void insert(const Id &nodeId, std::size_t nodeIndex) {
-        const std::size_t mask = slots_.size() - 1;
-        std::size_t slotIndex = idTraits_.hash(nodeId) & mask;
-        while (slots_[slotIndex].occupied) {
-            if (idTraits_.equal(slots_[slotIndex].id, nodeId)) {
-                throw std::runtime_error("duplicate node id");
-            }
-            slotIndex = (slotIndex + 1) & mask;
+    for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
+        idEntries.push_back(
+            RadixJoinIdEntry<Id>{traits.id(nodes[nodeIdx]), nodeIdx});
+        const Id parentId = traits.parent_id(nodes[nodeIdx]);
+        if (!traits.is_root_parent(parentId)) {
+            parentQueries.push_back(RadixJoinQueryEntry<Id>{parentId, nodeIdx});
         }
-
-        slots_[slotIndex] = IdIndexSlot<Id>{nodeId, nodeIndex, true};
     }
 
-    std::size_t find(const Id &nodeId) const noexcept {
-        const std::size_t mask = slots_.size() - 1;
-        std::size_t slotIndex = idTraits_.hash(nodeId) & mask;
-        while (slots_[slotIndex].occupied) {
-            if (idTraits_.equal(slots_[slotIndex].id, nodeId)) {
-                return slots_[slotIndex].nodeIndex;
-            }
-            slotIndex = (slotIndex + 1) & mask;
-        }
+    radixMsdSortEntriesById(
+        idEntries, [](const RadixJoinIdEntry<Id> &entry) { return entry.id; },
+        traits);
+    radixMsdSortEntriesById(
+        parentQueries,
+        [](const RadixJoinQueryEntry<Id> &entry) { return entry.parentId; },
+        traits);
 
-        return no_parent;
+    for (std::size_t entryIdx = 1; entryIdx < idEntries.size(); ++entryIdx) {
+        if (traits.equal(idEntries[entryIdx - 1].id, idEntries[entryIdx].id)) {
+            throw std::runtime_error("duplicate node id");
+        }
     }
 
-  private:
-    const IdTraits &idTraits_;
-    std::vector<IdIndexSlot<Id>> slots_;
-};
+    std::vector<std::size_t> parent(nodes.size(), no_parent);
+    std::size_t idOffset = 0;
+    for (const RadixJoinQueryEntry<Id> &query : parentQueries) {
+        while (idOffset < idEntries.size() &&
+               idLess(idEntries[idOffset].id, query.parentId, traits)) {
+            ++idOffset;
+        }
+        if (idOffset < idEntries.size() &&
+            traits.equal(idEntries[idOffset].id, query.parentId)) {
+            parent[query.childIndex] = idEntries[idOffset].nodeIndex;
+        }
+    }
 
-template <typename Id, typename IdTraits> class ControlByteFlatIdIndex {
+    return parent;
+}
+
+template <typename Id, typename IdTraits> class IdIndexTable {
   public:
-    ControlByteFlatIdIndex(std::size_t itemCount, const IdTraits &idTraits)
+    IdIndexTable(std::size_t itemCount, const IdTraits &idTraits)
         : idTraits_(idTraits), mask_(nextPowerOfTwo((itemCount * 2) + 1) - 1),
           control_(mask_ + 1 + 8, empty_control_byte), ids_(mask_ + 1),
           nodeIndexes_(mask_ + 1, no_parent) {}
 
-    void insert(const Id &nodeId, std::size_t nodeIndex) {
+    InsertResult insertBounded(const Id &nodeId, std::size_t nodeIndex,
+                               std::size_t maxProbeGroups) {
         const std::size_t hashValue = idTraits_.hash(nodeId);
         const uint8_t fingerprint = fingerprintForHash(hashValue);
         std::size_t slotIndex = hashValue & mask_;
 
-        // NOLINTNEXTLINE(bugprone-infinite-loop)
-        while (true) {
+        for (std::size_t groupIdx = 0; groupIdx < maxProbeGroups; ++groupIdx) {
             for (std::size_t offset = 0; offset < 8; ++offset) {
-                const std::size_t idx = (slotIndex + offset) & mask_;
-                const uint8_t ctrl = control_[idx];
+                const std::size_t fullIdx = (slotIndex + offset) & mask_;
+                const uint8_t ctrl = control_[fullIdx];
                 if (ctrl == empty_control_byte) {
-                    control_[idx] = fingerprint;
-                    if (idx < 8) {
-                        control_[mask_ + 1 + idx] = fingerprint;
+                    // Control bytes intentionally store only empty markers and
+                    // 7-bit fingerprints. IDs and indexes stay in separate
+                    // arrays so group scans do not pull payload cache lines.
+                    control_[fullIdx] = fingerprint;
+                    if (fullIdx < 8) {
+                        control_[mask_ + 1 + fullIdx] = fingerprint;
                     }
-                    ids_[idx] = nodeId;
-                    nodeIndexes_[idx] = nodeIndex;
-                    return;
+                    ids_[fullIdx] = nodeId;
+                    nodeIndexes_[fullIdx] = nodeIndex;
+                    return InsertResult::Inserted;
                 }
-                if (ctrl == fingerprint && idTraits_.equal(ids_[idx], nodeId)) {
-                    throw std::runtime_error("duplicate node id");
+                if (ctrl == fingerprint &&
+                    idTraits_.equal(ids_[fullIdx], nodeId)) {
+                    return InsertResult::Duplicate;
                 }
             }
             slotIndex = (slotIndex + 8) & mask_;
         }
+
+        return InsertResult::ProbeLimitExceeded;
     }
 
-    std::size_t find(const Id &nodeId) const noexcept {
+    FindResult findBounded(const Id &nodeId,
+                           std::size_t maxProbeGroups) const noexcept {
         const std::size_t hashValue = idTraits_.hash(nodeId);
         const uint8_t fingerprint = fingerprintForHash(hashValue);
         std::size_t slotIndex = hashValue & mask_;
@@ -118,8 +137,7 @@ template <typename Id, typename IdTraits> class ControlByteFlatIdIndex {
         const uint64_t empty_mask =
             static_cast<uint64_t>(empty_control_byte) * 0x0101010101010101ULL;
 
-        // NOLINTNEXTLINE(bugprone-infinite-loop)
-        while (true) {
+        for (std::size_t groupIdx = 0; groupIdx < maxProbeGroups; ++groupIdx) {
             uint64_t group;
             std::memcpy(&group, &control_[slotIndex], 8);
 
@@ -134,11 +152,11 @@ template <typename Id, typename IdTraits> class ControlByteFlatIdIndex {
             uint64_t currentMatches = matchBits;
             // NOLINTNEXTLINE(bugprone-infinite-loop)
             while (currentMatches != 0) {
-                const int matchIdx = __builtin_ctzll(currentMatches) >> 3;
-                const std::size_t idx =
+                const int matchIdx = std::countr_zero(currentMatches) >> 3;
+                const std::size_t fullIdx =
                     (slotIndex + static_cast<std::size_t>(matchIdx)) & mask_;
-                if (idTraits_.equal(ids_[idx], nodeId)) {
-                    return nodeIndexes_[idx];
+                if (idTraits_.equal(ids_[fullIdx], nodeId)) {
+                    return FindResult{nodeIndexes_[fullIdx], true, false};
                 }
                 const uint64_t nextMatches =
                     currentMatches & (currentMatches - 1);
@@ -146,10 +164,12 @@ template <typename Id, typename IdTraits> class ControlByteFlatIdIndex {
             }
 
             if (emptyBits != 0) {
-                return no_parent;
+                return FindResult{no_parent, false, false};
             }
             slotIndex = (slotIndex + 8) & mask_;
         }
+
+        return FindResult{no_parent, false, true};
     }
 
   private:
@@ -165,89 +185,35 @@ template <typename Id, typename IdTraits> class ControlByteFlatIdIndex {
 };
 
 template <typename Nodes, typename Traits>
-std::vector<std::size_t>
-buildParentIndexControlByteFlatHash(const Nodes &nodes, const Traits &traits) {
+std::vector<std::size_t> buildParentIndex(const Nodes &nodes,
+                                          const Traits &traits) {
     using Id = Traits::Id;
-    ControlByteFlatIdIndex<Id, Traits> idToIndex(nodes.size(), traits);
+    IdIndexTable<Id, Traits> idToIndex(nodes.size(), traits);
     for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        idToIndex.insert(traits.id(nodes[nodeIdx]), nodeIdx);
-    }
-
-    std::vector<std::size_t> parent(nodes.size(), no_parent);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        const Id parentId = traits.parent_id(nodes[nodeIdx]);
-        if (traits.is_root_parent(parentId)) {
-            continue;
-        }
-        parent[nodeIdx] = idToIndex.find(parentId);
-    }
-
-    return parent;
-}
-
-template <typename Nodes, typename Traits>
-std::vector<std::size_t> buildParentIndexFlatHash(const Nodes &nodes,
-                                                  const Traits &traits) {
-    using Id = Traits::Id;
-    FlatIdIndex<Id, Traits> idToIndex(nodes.size(), traits);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        idToIndex.insert(traits.id(nodes[nodeIdx]), nodeIdx);
-    }
-
-    std::vector<std::size_t> parent(nodes.size(), no_parent);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        const Id parentId = traits.parent_id(nodes[nodeIdx]);
-        if (traits.is_root_parent(parentId)) {
-            continue;
-        }
-        parent[nodeIdx] = idToIndex.find(parentId);
-    }
-
-    return parent;
-}
-
-template <typename Nodes, typename Traits>
-std::vector<std::size_t> buildParentIndexRadixJoin(const Nodes &nodes,
-                                                   const Traits &traits) {
-    using Id = Traits::Id;
-    std::vector<IdIndexEntry<Id>> idEntries;
-    idEntries.reserve(nodes.size());
-    std::vector<ParentQueryEntry<Id>> parentQueries;
-    parentQueries.reserve(nodes.size());
-
-    for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        idEntries.push_back(
-            IdIndexEntry<Id>{traits.id(nodes[nodeIdx]), nodeIdx});
-        const Id parentId = traits.parent_id(nodes[nodeIdx]);
-        if (!traits.is_root_parent(parentId)) {
-            parentQueries.push_back(ParentQueryEntry<Id>{parentId, nodeIdx});
-        }
-    }
-
-    radixSortEntriesById(
-        idEntries, [](const IdIndexEntry<Id> &entry) { return entry.id; },
-        traits);
-    radixSortEntriesById(
-        parentQueries,
-        [](const ParentQueryEntry<Id> &entry) { return entry.parentId; },
-        traits);
-
-    for (std::size_t entryIdx = 1; entryIdx < idEntries.size(); ++entryIdx) {
-        if (traits.equal(idEntries[entryIdx - 1].id, idEntries[entryIdx].id)) {
+        const InsertResult insertResult =
+            idToIndex.insertBounded(traits.id(nodes[nodeIdx]), nodeIdx,
+                                    max_probe_groups_before_fallback);
+        if (insertResult == InsertResult::Duplicate) {
             throw std::runtime_error("duplicate node id");
         }
+        if (insertResult == InsertResult::ProbeLimitExceeded) {
+            return buildParentIndexRadixJoin(nodes, traits);
+        }
     }
 
     std::vector<std::size_t> parent(nodes.size(), no_parent);
-    std::size_t idOffset = 0;
-    for (const ParentQueryEntry<Id> &query : parentQueries) {
-        while (idOffset < idEntries.size() &&
-               idLess(idEntries[idOffset].id, query.parentId, traits)) {
-            ++idOffset;
+    for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
+        const Id parentId = traits.parent_id(nodes[nodeIdx]);
+        if (traits.is_root_parent(parentId)) {
+            continue;
         }
-        if (idOffset < idEntries.size() &&
-            traits.equal(idEntries[idOffset].id, query.parentId)) {
-            parent[query.childIndex] = idEntries[idOffset].nodeIndex;
+        const FindResult findResult =
+            idToIndex.findBounded(parentId, max_probe_groups_before_fallback);
+        if (findResult.probeLimitExceeded) {
+            return buildParentIndexRadixJoin(nodes, traits);
+        }
+        if (findResult.found) {
+            parent[nodeIdx] = findResult.nodeIndex;
         }
     }
 

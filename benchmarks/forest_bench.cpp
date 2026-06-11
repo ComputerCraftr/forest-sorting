@@ -1,22 +1,15 @@
-#include "../tests/parent_index_baselines.hpp"
-#include "forest_sorting/detail/adaptive_sort.hpp"
-#include "forest_sorting/detail/constants.hpp"
-#include "forest_sorting/detail/depth.hpp"
-#include "forest_sorting/detail/parent_index.hpp"
-#include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
+#include "parent_index_baselines.hpp"
+#include "sort_baselines.hpp"
+#include "uint128_fixtures.hpp"
 
-#include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <iomanip>
 #include <iostream>
-#include <numeric>
-#include <random>
 #include <ratio>
 #include <stdexcept>
 #include <string>
@@ -27,20 +20,8 @@ using forest_sorting::Node;
 using forest_sorting::sortForestByDepthAndId;
 using forest_sorting::UInt128;
 using forest_sorting::UInt128NodeTraits;
-using forest_sorting::UInt128Traits;
 using forest_sorting::verifySortedByDepthAndId;
-
-constexpr std::size_t uint128_byte_count = UInt128Traits::id_byte_count;
-constexpr std::size_t depth_byte_count = 2;
-
-uint8_t idByte(UInt128 value, std::size_t byteIndex) noexcept {
-    return static_cast<uint8_t>(
-        value >> (byteIndex * forest_sorting::detail::radix_bits));
-}
-
-UInt128 makeId(uint64_t high, uint64_t low) {
-    return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
-}
+using namespace forest_sorting::test_support;
 
 constexpr int kDatasetColumnWidth = 24;
 constexpr int kCountColumnWidth = 12;
@@ -73,9 +54,13 @@ enum class ParentKind : uint8_t {
 
 enum class SortKind : uint8_t {
     Comparison,
-    BucketLsd,
+    DepthBucketDepth2Lsd,
     CompositeLsd,
-    AdaptiveMsd,
+    DepthBucketDepth2Msd,
+    CompositeMsd,
+    AdaptiveDepth2Msd,
+    AdaptiveDepth2MsdBinarySmall,
+    AdaptiveDepth4Msd,
 };
 
 struct Options {
@@ -94,9 +79,12 @@ struct Options {
     };
     std::vector<SortKind> sorts = {
         SortKind::Comparison,
-        SortKind::BucketLsd,
+        SortKind::DepthBucketDepth2Lsd,
         SortKind::CompositeLsd,
-        SortKind::AdaptiveMsd,
+        SortKind::DepthBucketDepth2Msd,
+        SortKind::CompositeMsd,
+        SortKind::AdaptiveDepth2Msd,
+        SortKind::AdaptiveDepth2MsdBinarySmall,
     };
     int iterations = 1;
     bool help = false;
@@ -112,172 +100,6 @@ struct BenchmarkResult {
     double verifyMs = 0.0;
     std::string status = "ok";
 };
-
-using forest_sorting::detail::buildParentIndexControlByteFlatHash;
-using forest_sorting::detail::buildParentIndexFlatHash;
-using forest_sorting::detail::buildParentIndexRadixJoin;
-using forest_sorting::detail::depthByte;
-using forest_sorting::detail::radix_bucket_count;
-using forest_sorting::detail::radixPass;
-using forest_sorting::detail::sortOrderByDepthAndId;
-
-std::vector<std::size_t>
-buildParentIndexForUInt128(const std::vector<Node> &nodes) {
-    return buildParentIndexControlByteFlatHash(nodes, UInt128NodeTraits{});
-}
-
-std::vector<uint32_t>
-computeDepthsForUInt128(const std::vector<Node> &nodes,
-                        const std::vector<std::size_t> &parentIndex) {
-    return forest_sorting::detail::computeDepths(nodes, parentIndex,
-                                                 UInt128NodeTraits{});
-}
-
-std::vector<Node> makeGeneratedForest(std::size_t nodeCount,
-                                      uint32_t maxDepth) {
-    // NOLINTNEXTLINE(bugprone-random-generator-seed)
-    std::mt19937_64 rng(0x5eed1234ULL);
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-
-    std::vector<std::size_t> lastIndexAtDepth(
-        static_cast<std::size_t>(maxDepth) + 1,
-        forest_sorting::detail::no_parent);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        uint32_t targetDepth = static_cast<uint32_t>(
-            nodeIdx % (static_cast<std::size_t>(maxDepth) + 1));
-        UInt128 parentId = 0;
-        if (targetDepth > 0 &&
-            lastIndexAtDepth[static_cast<std::size_t>(targetDepth - 1)] !=
-                forest_sorting::detail::no_parent) {
-            parentId = nodes[lastIndexAtDepth[static_cast<std::size_t>(
-                                 targetDepth - 1)]]
-                           .id;
-        } else {
-            targetDepth = 0;
-        }
-
-        const uint64_t high = rng();
-        const uint64_t low = static_cast<uint64_t>(nodeIdx) + 1ULL;
-        nodes.push_back(Node{makeId(high, low), parentId});
-        lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = nodeIdx;
-    }
-
-    std::shuffle(nodes.begin(), nodes.end(), rng);
-    return nodes;
-}
-
-void appendDeepChain(std::vector<Node> &nodes, uint32_t chainDepth,
-                     uint64_t idBase) {
-    UInt128 parentId = 0;
-    for (uint32_t depth = 0; depth <= chainDepth; ++depth) {
-        const UInt128 nodeId =
-            makeId(idBase, static_cast<uint64_t>(depth) + 1ULL);
-        nodes.push_back(Node{nodeId, parentId});
-        parentId = nodeId;
-    }
-}
-
-std::vector<Node> shuffledCopy(std::vector<Node> nodes, uint64_t seed) {
-    std::mt19937_64 rng(seed); // NOLINT(bugprone-random-generator-seed)
-    std::shuffle(nodes.begin(), nodes.end(), rng);
-    return nodes;
-}
-
-std::vector<Node> makeGeneratedForestWithOutliers(std::size_t nodeCount,
-                                                  uint32_t commonMaxDepth) {
-    std::vector<Node> nodes = makeGeneratedForest(nodeCount, commonMaxDepth);
-    appendDeepChain(nodes, 128, 0x1000ULL);
-    appendDeepChain(nodes, 512, 0x2000ULL);
-    appendDeepChain(nodes, 1024, 0x3000ULL);
-    return shuffledCopy(nodes, 0xabcdef00ULL);
-}
-
-std::vector<Node>
-makeGeneratedForestWithHighWordCollisions(std::size_t nodeCount,
-                                          uint32_t maxDepth) {
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-
-    constexpr uint64_t sharedHighWord = 0x123456789abcdef0ULL;
-    std::vector<std::size_t> lastIndexAtDepth(
-        static_cast<std::size_t>(maxDepth) + 1,
-        forest_sorting::detail::no_parent);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        uint32_t targetDepth = static_cast<uint32_t>(
-            nodeIdx % (static_cast<std::size_t>(maxDepth) + 1));
-        UInt128 parentId = 0;
-        if (targetDepth > 0 &&
-            lastIndexAtDepth[static_cast<std::size_t>(targetDepth - 1)] !=
-                forest_sorting::detail::no_parent) {
-            parentId = nodes[lastIndexAtDepth[static_cast<std::size_t>(
-                                 targetDepth - 1)]]
-                           .id;
-        } else {
-            targetDepth = 0;
-        }
-
-        const uint64_t low = static_cast<uint64_t>(nodeCount - nodeIdx);
-        nodes.push_back(Node{makeId(sharedHighWord, low), parentId});
-        lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = nodeIdx;
-    }
-
-    return shuffledCopy(nodes, 0xfeedfaceULL);
-}
-
-std::vector<Node> makeSequentialIdForest(std::size_t nodeCount,
-                                         uint32_t maxDepth) {
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-    std::vector<std::size_t> lastIndexAtDepth(
-        static_cast<std::size_t>(maxDepth) + 1,
-        forest_sorting::detail::no_parent);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        uint32_t targetDepth = static_cast<uint32_t>(
-            nodeIdx % (static_cast<std::size_t>(maxDepth) + 1));
-        UInt128 parentId = 0;
-        if (targetDepth > 0 &&
-            lastIndexAtDepth[static_cast<std::size_t>(targetDepth - 1)] !=
-                forest_sorting::detail::no_parent) {
-            parentId = nodes[lastIndexAtDepth[static_cast<std::size_t>(
-                                 targetDepth - 1)]]
-                           .id;
-        } else {
-            targetDepth = 0;
-        }
-
-        nodes.push_back(
-            Node{makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL), parentId});
-        lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = nodeIdx;
-    }
-
-    return shuffledCopy(nodes, 0x1234abcdULL);
-}
-
-std::vector<Node> makeManyExternalParentForest(std::size_t nodeCount) {
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        const UInt128 nodeId =
-            makeId(0x1000ULL, static_cast<uint64_t>(nodeIdx) + 1ULL);
-        const UInt128 parentId =
-            makeId(0x2000ULL, static_cast<uint64_t>(nodeIdx) + 1ULL);
-        nodes.push_back(Node{nodeId, parentId});
-    }
-    return shuffledCopy(nodes, 0x44445555ULL);
-}
-
-std::vector<Node> makeManySiblingsForest(std::size_t nodeCount) {
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-    const UInt128 rootId = makeId(0, 1);
-    nodes.push_back(Node{rootId, 0});
-    for (std::size_t nodeIdx = 1; nodeIdx < nodeCount; ++nodeIdx) {
-        nodes.push_back(
-            Node{makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL), rootId});
-    }
-    return shuffledCopy(nodes, 0x9999aaaaULL);
-}
 
 std::string_view datasetName(DatasetKind datasetKind) {
     switch (datasetKind) {
@@ -315,12 +137,20 @@ std::string_view sortName(SortKind sortKind) {
     switch (sortKind) {
     case SortKind::Comparison:
         return "comparison";
-    case SortKind::BucketLsd:
-        return "bucket-lsd";
+    case SortKind::DepthBucketDepth2Lsd:
+        return "depth-bucket-depth2-lsd";
     case SortKind::CompositeLsd:
-        return "composite-lsd";
-    case SortKind::AdaptiveMsd:
-        return "adaptive-msd";
+        return "composite-depth2-lsd";
+    case SortKind::DepthBucketDepth2Msd:
+        return "depth-bucket-depth2-msd";
+    case SortKind::CompositeMsd:
+        return "composite-depth2-msd";
+    case SortKind::AdaptiveDepth2Msd:
+        return "adaptive-depth2-msd";
+    case SortKind::AdaptiveDepth2MsdBinarySmall:
+        return "adaptive-depth2-msd-binary-small";
+    case SortKind::AdaptiveDepth4Msd:
+        return "adaptive-depth4-msd";
     }
     return "unknown";
 }
@@ -351,193 +181,13 @@ buildParentIndexForKind(ParentKind parentKind, const std::vector<Node> &nodes) {
     case ParentKind::Unordered:
         return buildParentIndexStdUnorderedMap(nodes);
     case ParentKind::Flat:
-        return buildParentIndexFlatHash(nodes, UInt128NodeTraits{});
+        return buildParentIndexFlatHashForUInt128(nodes);
     case ParentKind::Control:
-        return buildParentIndexControlByteFlatHash(nodes, UInt128NodeTraits{});
+        return buildParentIndexTableForUInt128(nodes);
     case ParentKind::Radix:
-        return buildParentIndexRadixJoin(nodes, UInt128NodeTraits{});
+        return buildParentIndexRadixJoinForUInt128(nodes);
     }
     throw std::runtime_error("unknown parent builder");
-}
-
-std::vector<Node>
-sortForestByComparisonWithParent(const std::vector<Node> &nodes,
-                                 const std::vector<std::size_t> &parentIndex) {
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
-
-    std::vector<std::size_t> order(nodes.size());
-    std::iota(order.begin(), order.end(), 0);
-
-    std::sort(order.begin(), order.end(),
-              [&](std::size_t lhsIndex, std::size_t rhsIndex) {
-                  if (depths[lhsIndex] != depths[rhsIndex]) {
-                      return depths[lhsIndex] < depths[rhsIndex];
-                  }
-                  return nodes[lhsIndex].id < nodes[rhsIndex].id;
-              });
-
-    std::vector<Node> sorted;
-    sorted.reserve(nodes.size());
-    for (std::size_t nodeIndex : order) {
-        sorted.push_back(nodes[nodeIndex]);
-    }
-
-    return sorted;
-}
-
-std::vector<Node> sortForestByComparison(const std::vector<Node> &nodes) {
-    return sortForestByComparisonWithParent(nodes,
-                                            buildParentIndexForUInt128(nodes));
-}
-
-void radixSortBucketById(std::vector<std::size_t> &bucket,
-                         const std::vector<Node> &nodes) {
-    if (bucket.size() <= 1) {
-        return;
-    }
-
-    std::vector<std::size_t> scratch(bucket.size());
-    for (std::size_t byteIndex = 0; byteIndex < uint128_byte_count;
-         ++byteIndex) {
-        std::array<std::size_t, radix_bucket_count> counts{};
-        for (std::size_t nodeIndex : bucket) {
-            ++counts[idByte(nodes[nodeIndex].id, byteIndex)];
-        }
-
-        std::size_t offset = 0;
-        for (std::size_t &count : counts) {
-            const std::size_t bucketSize = count;
-            count = offset;
-            offset += bucketSize;
-        }
-
-        for (std::size_t nodeIndex : bucket) {
-            const uint8_t digit = idByte(nodes[nodeIndex].id, byteIndex);
-            scratch[counts[digit]] = nodeIndex;
-            ++counts[digit];
-        }
-
-        bucket.swap(scratch);
-    }
-}
-
-std::vector<Node> sortForestByBucketedRadixWithParent(
-    const std::vector<Node> &nodes,
-    const std::vector<std::size_t> &parentIndex) {
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
-
-    uint32_t maxDepth = 0;
-    for (uint32_t depth : depths) {
-        if (depth > forest_sorting::detail::maxDepthForPrefix<2>()) {
-            throw std::runtime_error(
-                "forest depth exceeds sortable depth limit");
-        }
-        maxDepth = std::max(maxDepth, depth);
-    }
-
-    std::vector<std::vector<std::size_t>> buckets(
-        static_cast<std::size_t>(maxDepth) + 1);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        buckets[depths[nodeIdx]].push_back(nodeIdx);
-    }
-
-    for (auto &bucket : buckets) {
-        radixSortBucketById(bucket, nodes);
-    }
-
-    std::vector<Node> sorted;
-    sorted.reserve(nodes.size());
-    for (const auto &bucket : buckets) {
-        for (std::size_t nodeIndex : bucket) {
-            sorted.push_back(nodes[nodeIndex]);
-        }
-    }
-
-    return sorted;
-}
-
-std::vector<Node> sortForestByBucketedRadix(const std::vector<Node> &nodes) {
-    return sortForestByBucketedRadixWithParent(
-        nodes, buildParentIndexForUInt128(nodes));
-}
-
-std::vector<Node> sortForestByCompositeRadixWithParent(
-    const std::vector<Node> &nodes,
-    const std::vector<std::size_t> &parentIndex) {
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
-
-    std::vector<std::size_t> order(nodes.size());
-    std::iota(order.begin(), order.end(), 0);
-
-    for (uint32_t depth : depths) {
-        if (depth > forest_sorting::detail::maxDepthForPrefix<2>()) {
-            throw std::runtime_error(
-                "forest depth exceeds sortable depth limit");
-        }
-    }
-
-    std::vector<std::size_t> scratch(order.size());
-    for (std::size_t byteIndex = 0; byteIndex < uint128_byte_count;
-         ++byteIndex) {
-        radixPass(order, scratch, [&](std::size_t nodeIndex) {
-            return idByte(nodes[nodeIndex].id, byteIndex);
-        });
-    }
-
-    for (std::size_t byteIndex = 0; byteIndex < depth_byte_count; ++byteIndex) {
-        radixPass(order, scratch, [&](std::size_t nodeIndex) {
-            return depthByte(depths[nodeIndex], byteIndex);
-        });
-    }
-
-    std::vector<Node> sorted;
-    sorted.reserve(nodes.size());
-    for (std::size_t nodeIndex : order) {
-        sorted.push_back(nodes[nodeIndex]);
-    }
-
-    return sorted;
-}
-
-std::vector<Node> sortForestByCompositeRadix(const std::vector<Node> &nodes) {
-    return sortForestByCompositeRadixWithParent(
-        nodes, buildParentIndexForUInt128(nodes));
-}
-
-std::vector<Node>
-sortForestByAdaptiveWithParent(const std::vector<Node> &nodes,
-                               const std::vector<std::size_t> &parentIndex) {
-    const std::size_t nodeCount = nodes.size();
-    if (nodeCount == 0) {
-        return {};
-    }
-
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
-
-    std::vector<std::size_t> order(nodeCount);
-    std::iota(order.begin(), order.end(), 0);
-    for (uint32_t depth : depths) {
-        if (depth > forest_sorting::detail::maxDepthForPrefix<2>()) {
-            throw std::runtime_error(
-                "forest depth exceeds sortable depth limit");
-        }
-    }
-
-    std::vector<std::size_t> scratch(nodeCount);
-    uint32_t maxDepth = 0;
-    for (uint32_t depth : depths) {
-        maxDepth = std::max(maxDepth, depth);
-    }
-    sortOrderByDepthAndId(order, scratch, nodes, UInt128NodeTraits{}, depths,
-                          maxDepth);
-
-    std::vector<Node> sorted;
-    sorted.reserve(nodeCount);
-    for (std::size_t nodeIndex : order) {
-        sorted.push_back(nodes[nodeIndex]);
-    }
-
-    return sorted;
 }
 
 std::vector<Node>
@@ -546,23 +196,23 @@ sortForestForKind(SortKind sortKind, const std::vector<Node> &nodes,
     switch (sortKind) {
     case SortKind::Comparison:
         return sortForestByComparisonWithParent(nodes, parentIndex);
-    case SortKind::BucketLsd:
-        return sortForestByBucketedRadixWithParent(nodes, parentIndex);
+    case SortKind::DepthBucketDepth2Lsd:
+        return sortForestByDenseDepth2BucketedLsdWithParent(nodes, parentIndex);
     case SortKind::CompositeLsd:
-        return sortForestByCompositeRadixWithParent(nodes, parentIndex);
-    case SortKind::AdaptiveMsd:
-        return sortForestByAdaptiveWithParent(nodes, parentIndex);
+        return sortForestByCompositeDepth2LsdWithParent(nodes, parentIndex);
+    case SortKind::DepthBucketDepth2Msd:
+        return sortForestByDenseDepth2BucketedMsdWithParent(nodes, parentIndex);
+    case SortKind::CompositeMsd:
+        return sortForestByCompositeDepth2MsdWithParent(nodes, parentIndex);
+    case SortKind::AdaptiveDepth2Msd:
+        return sortForestByAdaptiveDepth2WithParent(nodes, parentIndex);
+    case SortKind::AdaptiveDepth2MsdBinarySmall:
+        return sortForestByAdaptiveDepth2BinarySmallWithParent(nodes,
+                                                               parentIndex);
+    case SortKind::AdaptiveDepth4Msd:
+        return sortForestByAdaptiveDepth4WithParent(nodes, parentIndex);
     }
     throw std::runtime_error("unknown sort algorithm");
-}
-
-UInt128 checksumIds(const std::vector<Node> &nodes) {
-    UInt128 checksum = 0;
-    for (const auto &node : nodes) {
-        checksum ^= node.id;
-        checksum = (checksum << 1) | (checksum >> 127);
-    }
-    return checksum;
 }
 
 double timeParentBuildMs(const std::vector<Node> &nodes, ParentKind parentKind,
@@ -573,11 +223,11 @@ double timeParentBuildMs(const std::vector<Node> &nodes, ParentKind parentKind,
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-double timeSortMs(const std::vector<Node> &nodes, ParentKind parentKind,
+double timeSortMs(const std::vector<Node> &nodes,
+                  const std::vector<std::size_t> &parentIndex,
                   SortKind sortKind, std::vector<Node> &sorted,
                   UInt128 &checksum) {
     const auto start = std::chrono::steady_clock::now();
-    const auto parentIndex = buildParentIndexForKind(parentKind, nodes);
     sorted = sortForestForKind(sortKind, nodes, parentIndex);
     const auto end = std::chrono::steady_clock::now();
     checksum = checksumIds(sorted);
@@ -603,8 +253,14 @@ void appendAllParents(std::vector<ParentKind> &parents) {
 }
 
 void appendAllSorts(std::vector<SortKind> &sorts) {
-    sorts = {SortKind::Comparison, SortKind::BucketLsd, SortKind::CompositeLsd,
-             SortKind::AdaptiveMsd};
+    sorts = {SortKind::Comparison,
+             SortKind::DepthBucketDepth2Lsd,
+             SortKind::CompositeLsd,
+             SortKind::DepthBucketDepth2Msd,
+             SortKind::CompositeMsd,
+             SortKind::AdaptiveDepth2Msd,
+             SortKind::AdaptiveDepth2MsdBinarySmall,
+             SortKind::AdaptiveDepth4Msd};
 }
 
 OutputFormat parseFormat(std::string_view value) {
@@ -665,14 +321,26 @@ SortKind parseSort(std::string_view value) {
     if (value == "comparison") {
         return SortKind::Comparison;
     }
-    if (value == "bucket-lsd") {
-        return SortKind::BucketLsd;
+    if (value == "depth-bucket-depth2-lsd") {
+        return SortKind::DepthBucketDepth2Lsd;
     }
-    if (value == "composite-lsd") {
+    if (value == "composite-depth2-lsd") {
         return SortKind::CompositeLsd;
     }
-    if (value == "adaptive-msd") {
-        return SortKind::AdaptiveMsd;
+    if (value == "depth-bucket-depth2-msd") {
+        return SortKind::DepthBucketDepth2Msd;
+    }
+    if (value == "composite-depth2-msd") {
+        return SortKind::CompositeMsd;
+    }
+    if (value == "adaptive-depth2-msd") {
+        return SortKind::AdaptiveDepth2Msd;
+    }
+    if (value == "adaptive-depth2-msd-binary-small") {
+        return SortKind::AdaptiveDepth2MsdBinarySmall;
+    }
+    if (value == "adaptive-depth4-msd") {
+        return SortKind::AdaptiveDepth4Msd;
     }
     throw std::runtime_error("unknown sort algorithm: " + std::string(value));
 }
@@ -769,7 +437,13 @@ void printHelp() {
            "random|outliers|same-high64|sequential|external-parents|siblings|"
            "all\n"
         << "  --parent unordered|flat|control|radix|all\n"
-        << "  --sort comparison|bucket-lsd|composite-lsd|adaptive-msd|all\n"
+        << "  --sort "
+           "comparison|depth-bucket-depth2-lsd|composite-depth2-lsd|"
+           "depth-bucket-depth2-msd|composite-depth2-msd|adaptive-depth2-msd|"
+           "adaptive-depth2-msd-binary-small|adaptive-depth4-msd|all\n"
+        << "                                   depth2 labels are fixed-prefix "
+           "benchmarks; adaptive-depth4-msd exercises the 4-byte adaptive "
+           "wrapper\n"
         << "  --iterations N\n"
         << "  --help\n";
 }
@@ -803,7 +477,7 @@ BenchmarkResult runBenchmarkRow(const std::vector<Node> &nodes,
     for (int iteration = 0; iteration < iterations; ++iteration) {
         result.parentMs += timeParentBuildMs(nodes, parentKind, parentIndex);
         result.sortMs +=
-            timeSortMs(nodes, parentKind, sortKind, sorted, checksum);
+            timeSortMs(nodes, parentIndex, sortKind, sorted, checksum);
         result.verifyMs += timeVerifyMs(sorted, verified);
     }
 
@@ -830,8 +504,7 @@ std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
     for (std::size_t nodeCount : options.sizes) {
         for (DatasetKind datasetKind : options.datasets) {
             const auto nodes = makeDataset(datasetKind, nodeCount);
-            const auto expectedParent =
-                buildParentIndexControlByteFlatHash(nodes, UInt128NodeTraits{});
+            const auto expectedParent = buildParentIndexTableForUInt128(nodes);
             const auto canonicalSorted =
                 sortForestForKind(SortKind::Comparison, nodes, expectedParent);
             const UInt128 expectedChecksum = checksumIds(canonicalSorted);

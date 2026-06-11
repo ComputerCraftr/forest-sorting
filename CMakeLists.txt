@@ -12,113 +12,41 @@ find_program(FOREST_CLANG_TIDY
     DOC "Path to clang-tidy"
 )
 
-add_library(forest-sorting-lib INTERFACE)
-
-target_include_directories(forest-sorting-lib INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-
-add_executable(forest-sorting
-    src/main.cpp
-)
-
-target_link_libraries(forest-sorting PRIVATE forest-sorting-lib)
-
-add_executable(forest-sorting-tests
-    tests/forest_tests.cpp
-)
-
-target_link_libraries(forest-sorting-tests PRIVATE forest-sorting-lib)
-
-add_executable(forest-sorting-portable-include-tests
-    tests/portable_include_tests.cpp
-)
-
-target_link_libraries(forest-sorting-portable-include-tests
-    PRIVATE forest-sorting-lib
-)
-
-add_executable(forest-sorting-bench
-    benchmarks/forest_bench.cpp
-)
-
-target_link_libraries(forest-sorting-bench PRIVATE forest-sorting-lib)
-
-set(_forest_targets
-    forest-sorting-lib
-    forest-sorting
-    forest-sorting-tests
-    forest-sorting-portable-include-tests
-    forest-sorting-bench
-)
-
-target_compile_features(forest-sorting-lib INTERFACE cxx_std_20)
-
-foreach(target
-        forest-sorting
-        forest-sorting-tests
-        forest-sorting-portable-include-tests
-        forest-sorting-bench)
-    target_compile_features(${target} PRIVATE cxx_std_20)
+# Common compiler options
+function(forest_sorting_apply_common_options target)
     target_compile_options(${target} PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
         $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -pedantic>
-        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fsanitize=address,undefined -fno-omit-frame-pointer>
-        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3>
+        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fsanitize=address,undefined>
+        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fno-omit-frame-pointer>
     )
     target_link_options(${target} PRIVATE
         $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fsanitize=address,undefined>
-        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3>
     )
-endforeach()
+endfunction()
 
 enable_testing()
-add_test(NAME forest-sorting-tests COMMAND forest-sorting-tests)
-add_test(NAME forest-sorting-portable-include-tests
-    COMMAND forest-sorting-portable-include-tests
-)
-add_test(NAME forest-sorting-bench-help
-    COMMAND forest-sorting-bench --help
-)
-add_test(NAME forest-sorting-bench-csv
-    COMMAND forest-sorting-bench
-            --format csv
-            --size 10000
-            --dataset random
-            --parent all
-            --sort adaptive-msd
-)
-add_test(NAME forest-sorting-bench-tsv
-    COMMAND forest-sorting-bench
-            --format tsv
-            --size 10000
-            --dataset siblings
-            --parent control
-            --sort all
-)
-add_test(NAME forest-sorting-bench-json
-    COMMAND forest-sorting-bench
-            --format json
-            --size 10000
-            --dataset same-high64
-            --parent all
-            --sort adaptive-msd
-)
+
+add_subdirectory(include)
+add_subdirectory(src)
+add_subdirectory(tests)
+add_subdirectory(benchmarks)
 
 if(FOREST_CLANG_TIDY)
     file(GLOB_RECURSE _forest_tidy_headers CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/include/forest_sorting/*.hpp"
     )
+    file(GLOB_RECURSE _forest_tidy_support_headers CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/*.hpp"
+    )
 
     set(_forest_tidy_files
         "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/forest_tests.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/parent_index_baselines.hpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/portable_include_tests.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bytes.hpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/forest_bench.cpp"
         ${_forest_tidy_headers}
+        ${_forest_tidy_support_headers}
     )
     add_custom_target(tidy
         COMMAND "${FOREST_CLANG_TIDY}"

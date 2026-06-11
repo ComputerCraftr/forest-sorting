@@ -1,5 +1,7 @@
-#ifndef FOREST_SORTING_TEST_BYTES_HPP
-#define FOREST_SORTING_TEST_BYTES_HPP
+#ifndef FOREST_SORTING_SUPPORT_TEST_BYTES_HPP
+#define FOREST_SORTING_SUPPORT_TEST_BYTES_HPP
+
+#include "forest_sorting/detail/hash.hpp"
 
 #include <algorithm>
 #include <array>
@@ -23,16 +25,6 @@ template <std::size_t ByteCount> struct TestNode {
     TestBytes<ByteCount> parentId;
 };
 
-template <std::size_t ByteCount>
-std::size_t testHashBytes(const TestBytes<ByteCount> &nodeId) noexcept {
-    uint64_t hashValue = 14695981039346656037ULL;
-    for (uint8_t byteValue : nodeId.bytes) {
-        hashValue ^= byteValue;
-        hashValue *= 1099511628211ULL;
-    }
-    return static_cast<std::size_t>(hashValue);
-}
-
 template <std::size_t ByteCount> struct TestBytesTraits {
     using Id = TestBytes<ByteCount>;
     static constexpr std::size_t id_byte_count = ByteCount;
@@ -53,7 +45,9 @@ template <std::size_t ByteCount> struct TestBytesTraits {
     }
 
     std::size_t hash(const Id &nodeId) const noexcept {
-        return testHashBytes(nodeId);
+        return forest_sorting::detail::fold_fnv1a128(
+            forest_sorting::detail::fnv1a128_hash_bytes(nodeId.bytes.data(),
+                                                        ByteCount));
     }
 
     uint8_t byte_msb_first(const Id &nodeId,
@@ -83,4 +77,4 @@ TestBytes<ByteCount> makeTestBytes(uint8_t high, uint8_t low) {
     return nodeId;
 }
 
-#endif // FOREST_SORTING_TEST_BYTES_HPP
+#endif // FOREST_SORTING_SUPPORT_TEST_BYTES_HPP

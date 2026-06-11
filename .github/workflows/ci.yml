@@ -47,7 +47,7 @@ jobs:
               run: cmake --build --preset release
 
             - name: Benchmark smoke test (Release)
-              run: ./out/build/release/forest-sorting-bench
+              run: ./out/build/release/benchmarks/forest-sorting-bench
 
             - name: Test (Release)
               run: ctest --preset release --output-on-failure

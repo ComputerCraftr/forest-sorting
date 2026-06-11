@@ -61,11 +61,13 @@ struct UInt128Traits {
         return static_cast<uint64_t>(nodeId);
     }
 
+    // Deterministic default hash for the optional UInt128 compatibility type.
+    // This hash is used only for internal parent-index placement; canonical
+    // ordering is still by depth and MSB-first ID bytes. Applications that
+    // accept adversarial IDs should provide their own traits with a keyed or
+    // otherwise hardened hash policy.
     static std::size_t hash(UInt128 nodeId) noexcept {
-        const uint64_t high = static_cast<uint64_t>(nodeId >> 64U);
-        const uint64_t low = static_cast<uint64_t>(nodeId);
-        return static_cast<std::size_t>(
-            detail::mix64(high ^ detail::mix64(low)));
+        return detail::hashUint128(nodeId);
     }
 };
 
