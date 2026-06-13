@@ -1,6 +1,7 @@
 #ifndef FOREST_SORTING_DETAIL_ADAPTIVE_SORT_HPP
 #define FOREST_SORTING_DETAIL_ADAPTIVE_SORT_HPP
 
+#include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include <algorithm>
 #include <array>
@@ -68,11 +69,14 @@ inline bool shouldUseDenseDepthGrouping(std::size_t nodeCount,
     return bucketCount <= nodeCount * dense_depth_bucket_multiplier;
 }
 
-inline std::vector<DepthRange> groupOrderByDepthDense(
-    std::vector<std::size_t> &order, std::vector<std::size_t> &scratch,
-    const std::vector<uint32_t> &depths, uint32_t observedMaxDepth) {
-    std::vector<std::size_t> depthStarts(
-        static_cast<std::size_t>(observedMaxDepth) + 2, 0);
+inline void groupOrderByDepthDense(std::vector<std::size_t> &order,
+                                   std::vector<std::size_t> &scratch,
+                                   const std::vector<uint32_t> &depths,
+                                   uint32_t observedMaxDepth,
+                                   std::vector<DepthRange> &ranges,
+                                   std::vector<std::size_t> &depthStarts,
+                                   std::vector<std::size_t> &depthOffsets) {
+    depthStarts.assign(static_cast<std::size_t>(observedMaxDepth) + 2, 0);
     for (std::size_t nodeIndex : order) {
         ++depthStarts[static_cast<std::size_t>(depths[nodeIndex]) + 1];
     }
@@ -81,7 +85,7 @@ inline std::vector<DepthRange> groupOrderByDepthDense(
         depthStarts[depthIdx] += depthStarts[depthIdx - 1];
     }
 
-    std::vector<std::size_t> depthOffsets = depthStarts;
+    depthOffsets = depthStarts;
     for (std::size_t nodeIndex : order) {
         const std::size_t depthValue =
             static_cast<std::size_t>(depths[nodeIndex]);
@@ -91,8 +95,8 @@ inline std::vector<DepthRange> groupOrderByDepthDense(
 
     order.swap(scratch);
 
-    std::vector<DepthRange> ranges;
-    ranges.reserve(128);
+    ranges.clear();
+    ranges.reserve(initial_range_stack_capacity);
     for (std::size_t depthIdx = 0; depthIdx <= observedMaxDepth; ++depthIdx) {
         const std::size_t rangeBegin = depthStarts[depthIdx];
         const std::size_t rangeEnd = depthStarts[depthIdx + 1];
@@ -101,16 +105,15 @@ inline std::vector<DepthRange> groupOrderByDepthDense(
                 {static_cast<uint32_t>(depthIdx), rangeBegin, rangeEnd});
         }
     }
-    return ranges;
 }
 
 template <std::size_t DepthPrefixBytes>
-inline std::vector<DepthRange>
-groupOrderByDepthMsd(std::vector<std::size_t> &order,
-                     std::vector<std::size_t> &scratch,
-                     const std::vector<uint32_t> &depths) {
-    std::vector<DepthRange> ranges;
-    ranges.reserve(128);
+inline void groupOrderByDepthMsd(std::vector<std::size_t> &order,
+                                 std::vector<std::size_t> &scratch,
+                                 const std::vector<uint32_t> &depths,
+                                 std::vector<DepthRange> &ranges) {
+    ranges.clear();
+    ranges.reserve(initial_range_stack_capacity);
 
     constexpr std::size_t firstDepthByte = 4 - DepthPrefixBytes;
 
@@ -126,8 +129,6 @@ groupOrderByDepthMsd(std::vector<std::size_t> &order,
 
     radixMsdPartitionRanges(order, scratch, 0, order.size(), firstDepthByte, 4,
                             digitForIndex, rangeDone);
-
-    return ranges;
 }
 
 // -----------------------------------------------------------------------------
@@ -171,12 +172,70 @@ void stableSortRangeSmall(std::vector<std::size_t> &order, const Nodes &nodes,
     }
 }
 
+template <typename Nodes, typename IdTraits, typename SmallRangeSorter>
+void sortRangeByIdBytesWithSmallSorter(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &scratch,
+    const Nodes &nodes, const IdTraits &traits, std::size_t rangeBegin,
+    std::size_t rangeEnd, std::size_t digitIndex,
+    std::vector<RadixRange> &pending, SmallRangeSorter smallRangeSorter) {
+    if (rangeEnd - rangeBegin <= 1 || digitIndex >= IdTraits::id_byte_count) {
+        return;
+    }
+
+    auto digitForOffset = [&](std::size_t offset, std::size_t currentDigit) {
+        const std::size_t nodeIndex = order[offset];
+        return traits.byte_msb_first(traits.id(nodes[nodeIndex]), currentDigit);
+    };
+    auto moveToScratch = [&](std::size_t offset, std::size_t scratchOffset) {
+        scratch[scratchOffset] = order[offset];
+    };
+    auto copyFromScratch = [&](std::size_t currentBegin,
+                               std::size_t currentEnd) {
+        for (std::size_t offset = currentBegin; offset < currentEnd; ++offset) {
+            order[offset] = scratch[offset];
+        }
+    };
+    auto rangeDone = [](std::size_t, std::size_t) {};
+    auto smallRangeHandler = [&](std::size_t currentBegin,
+                                 std::size_t currentEnd, std::size_t) {
+        if (currentEnd - currentBegin > small_id_range_sort_threshold) {
+            return false;
+        }
+        smallRangeSorter(order, nodes, traits, currentBegin, currentEnd);
+        return true;
+    };
+
+    radixMsdPartitionCoreWithStack(
+        rangeBegin, rangeEnd, digitIndex, IdTraits::id_byte_count, pending,
+        digitForOffset, moveToScratch, copyFromScratch, rangeDone,
+        smallRangeHandler);
+}
+
 template <typename Nodes, typename IdTraits>
-void stableSortRangeByIdWord(std::vector<std::size_t> &order,
-                             const Nodes &nodes, const IdTraits &traits,
-                             std::size_t rangeBegin, std::size_t rangeEnd,
-                             std::size_t chunkIndex, ChunkedIndex *current,
-                             ChunkedIndex *next) {
+void sortRangeByIdBytes(std::vector<std::size_t> &order,
+                        std::vector<std::size_t> &scratch, const Nodes &nodes,
+                        const IdTraits &traits, std::size_t rangeBegin,
+                        std::size_t rangeEnd, std::size_t digitIndex,
+                        std::vector<RadixRange> &pending) {
+    auto linearSmallRangeSorter =
+        [](std::vector<std::size_t> &sortOrder, const Nodes &sortNodes,
+           const IdTraits &sortTraits, std::size_t sortBegin,
+           std::size_t sortEnd) {
+            stableSortRangeSmall(sortOrder, sortNodes, sortTraits, sortBegin,
+                                 sortEnd);
+        };
+
+    sortRangeByIdBytesWithSmallSorter(order, scratch, nodes, traits, rangeBegin,
+                                      rangeEnd, digitIndex, pending,
+                                      linearSmallRangeSorter);
+}
+
+template <typename Nodes, typename IdTraits>
+void stableLsdSortRangeByIdChunk(std::vector<std::size_t> &order,
+                                 const Nodes &nodes, const IdTraits &traits,
+                                 std::size_t rangeBegin, std::size_t rangeEnd,
+                                 std::size_t chunkIndex, ChunkedIndex *current,
+                                 ChunkedIndex *next) {
     const std::size_t rangeSize = rangeEnd - rangeBegin;
     if (rangeSize <= 1) {
         return;
@@ -215,19 +274,18 @@ void stableSortRangeByIdWord(std::vector<std::size_t> &order,
     }
 }
 
-template <typename Nodes, typename IdTraits>
-void sortRangeByIdWords(std::vector<std::size_t> &order, const Nodes &nodes,
-                        const IdTraits &traits, std::size_t rangeBegin,
-                        std::size_t rangeEnd, std::size_t chunkIndex,
-                        std::vector<IdWordRange> &pending,
-                        ChunkedIndex *chunkBufferCurrent,
-                        ChunkedIndex *chunkBufferNext) {
+template <typename Nodes, typename IdTraits, typename SmallRangeSorter>
+void sortRangeByIdWordsWithSmallSorter(
+    std::vector<std::size_t> &order, const Nodes &nodes, const IdTraits &traits,
+    std::size_t rangeBegin, std::size_t rangeEnd, std::size_t chunkIndex,
+    std::vector<IdWordRange> &pending, ChunkedIndex *chunkBufferCurrent,
+    ChunkedIndex *chunkBufferNext, SmallRangeSorter smallRangeSorter) {
     if (rangeEnd - rangeBegin <= 1) {
         return;
     }
 
     if (rangeEnd - rangeBegin <= small_id_range_sort_threshold) {
-        stableSortRangeSmall(order, nodes, traits, rangeBegin, rangeEnd);
+        smallRangeSorter(order, nodes, traits, rangeBegin, rangeEnd);
         return;
     }
 
@@ -246,12 +304,12 @@ void sortRangeByIdWords(std::vector<std::size_t> &order, const Nodes &nodes,
 
         if (currentRange.end - currentRange.begin <=
             small_id_range_sort_threshold) {
-            stableSortRangeSmall(order, nodes, traits, currentRange.begin,
-                                 currentRange.end);
+            smallRangeSorter(order, nodes, traits, currentRange.begin,
+                             currentRange.end);
         } else {
-            stableSortRangeByIdWord(order, nodes, traits, currentRange.begin,
-                                    currentRange.end, currentRange.chunkIndex,
-                                    chunkBufferCurrent, chunkBufferNext);
+            stableLsdSortRangeByIdChunk(
+                order, nodes, traits, currentRange.begin, currentRange.end,
+                currentRange.chunkIndex, chunkBufferCurrent, chunkBufferNext);
         }
 
         const std::size_t nextChunkIndex = currentRange.chunkIndex + 1;
@@ -281,6 +339,26 @@ void sortRangeByIdWords(std::vector<std::size_t> &order, const Nodes &nodes,
     }
 }
 
+template <typename Nodes, typename IdTraits>
+void sortRangeByIdWords(std::vector<std::size_t> &order, const Nodes &nodes,
+                        const IdTraits &traits, std::size_t rangeBegin,
+                        std::size_t rangeEnd, std::size_t chunkIndex,
+                        std::vector<IdWordRange> &pending,
+                        ChunkedIndex *chunkBufferCurrent,
+                        ChunkedIndex *chunkBufferNext) {
+    auto linearSmallRangeSorter =
+        [](std::vector<std::size_t> &sortOrder, const Nodes &sortNodes,
+           const IdTraits &sortTraits, std::size_t sortBegin,
+           std::size_t sortEnd) {
+            stableSortRangeSmall(sortOrder, sortNodes, sortTraits, sortBegin,
+                                 sortEnd);
+        };
+
+    sortRangeByIdWordsWithSmallSorter(
+        order, nodes, traits, rangeBegin, rangeEnd, chunkIndex, pending,
+        chunkBufferCurrent, chunkBufferNext, linearSmallRangeSorter);
+}
+
 // -----------------------------------------------------------------------------
 // Public detail entry point
 // -----------------------------------------------------------------------------
@@ -299,16 +377,20 @@ void sortOrderByDepthAndId(std::vector<std::size_t> &order,
     // histogram; sparse high-depth ranges avoid huge allocations and use MSD
     // depth grouping instead.
     std::vector<DepthRange> depthRanges;
+    depthRanges.reserve(initial_range_stack_capacity);
+    std::vector<std::size_t> depthStarts;
+    std::vector<std::size_t> depthOffsets;
+
     if (shouldUseDenseDepthGrouping(order.size(), observedMaxDepth)) {
-        depthRanges =
-            groupOrderByDepthDense(order, scratch, depths, observedMaxDepth);
+        groupOrderByDepthDense(order, scratch, depths, observedMaxDepth,
+                               depthRanges, depthStarts, depthOffsets);
     } else {
-        depthRanges =
-            groupOrderByDepthMsd<DepthPrefixBytes>(order, scratch, depths);
+        groupOrderByDepthMsd<DepthPrefixBytes>(order, scratch, depths,
+                                               depthRanges);
     }
 
     std::vector<IdWordRange> pending;
-    pending.reserve(128);
+    pending.reserve(initial_range_stack_capacity);
 
     std::size_t maxRadixRangeSize = 0;
     for (const DepthRange &range : depthRanges) {

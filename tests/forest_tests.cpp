@@ -6,10 +6,12 @@
 #include "forest_sorting/uint128_forest.hpp"
 #include "parent_index_baselines.hpp"
 #include "sort_baselines.hpp"
+#include "sort_registry.hpp"
 #include "test_bytes.hpp"
 #include "uint128_fixtures.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -61,65 +63,78 @@ void runTest(const char *testName, void (*testFunction)()) {
     std::cout << "PASS " << testName << "\n";
 }
 
+void requireUniqueDatasetParentAndSortRegistries() {
+    const auto datasetKinds = allDatasetKinds();
+    require(!datasetKinds.empty(), "dataset registry is empty");
+    for (std::size_t kindIdx = 0; kindIdx < datasetKinds.size(); ++kindIdx) {
+        require(!datasetName(datasetKinds[kindIdx]).empty(),
+                "dataset registry contains an empty name");
+        for (std::size_t otherIdx = kindIdx + 1; otherIdx < datasetKinds.size();
+             ++otherIdx) {
+            require(datasetKinds[kindIdx] != datasetKinds[otherIdx],
+                    "dataset registry contains duplicate kind");
+            require(datasetName(datasetKinds[kindIdx]) !=
+                        datasetName(datasetKinds[otherIdx]),
+                    "dataset registry contains duplicate name");
+        }
+    }
+
+    const auto parentKinds = allParentKinds();
+    require(!parentKinds.empty(), "parent registry is empty");
+    for (std::size_t kindIdx = 0; kindIdx < parentKinds.size(); ++kindIdx) {
+        require(!parentName(parentKinds[kindIdx]).empty(),
+                "parent registry contains an empty name");
+        for (std::size_t otherIdx = kindIdx + 1; otherIdx < parentKinds.size();
+             ++otherIdx) {
+            require(parentKinds[kindIdx] != parentKinds[otherIdx],
+                    "parent registry contains duplicate kind");
+            require(parentName(parentKinds[kindIdx]) !=
+                        parentName(parentKinds[otherIdx]),
+                    "parent registry contains duplicate name");
+        }
+    }
+
+    validateSortRegistry();
+}
+
 void assertParentBuildersMatch(const std::vector<Node> &nodes) {
-    const auto unorderedParent = buildParentIndexStdUnorderedMap(nodes);
-    const auto flatParent = buildParentIndexFlatHashForUInt128(nodes);
-    const auto controlParent = buildParentIndexTableForUInt128(nodes);
-    const auto radixParent = buildParentIndexRadixJoinForUInt128(nodes);
-
-    if (unorderedParent != flatParent) {
-        throw std::runtime_error(
-            "flat hash parent builder differs from unordered map");
-    }
-    if (unorderedParent != controlParent) {
-        throw std::runtime_error(
-            "control-byte flat hash parent builder differs from unordered map");
-    }
-    if (unorderedParent != radixParent) {
-        throw std::runtime_error(
-            "radix join parent builder differs from unordered map");
+    const auto expected = buildParentIndexForKind(ParentKind::Unordered, nodes);
+    for (ParentKind parentKind : allParentKinds()) {
+        const auto actual = buildParentIndexForKind(parentKind, nodes);
+        if (actual != expected) {
+            throw std::runtime_error(std::string(parentName(parentKind)) +
+                                     " parent builder differs from unordered "
+                                     "map");
+        }
     }
 }
 
-template <typename ParentBuilder>
-void assertParentBuilderRejectsDuplicate(const std::vector<Node> &nodes,
-                                         ParentBuilder parentBuilder,
-                                         const char *builderName) {
-    bool rejected = false;
-    try {
-        (void)parentBuilder(nodes);
-    } catch (const std::runtime_error &) {
-        rejected = true;
+void requireAllRegisteredSortsMatch(const std::vector<Node> &nodes,
+                                    const std::vector<Node> &expected) {
+    const auto parentIndex =
+        buildParentIndexForKind(ParentKind::Control, nodes);
+    for (const SortRegistryEntry &entry : kSortRegistry) {
+        const auto sorted = entry.sortFunction(nodes, parentIndex);
+        if (!sameNodes(sorted, expected)) {
+            throw std::runtime_error(std::string(entry.name) +
+                                     " sort differed from canonical order");
+        }
+        if (!verifySortedByDepthAndId(sorted)) {
+            throw std::runtime_error(std::string(entry.name) +
+                                     " output failed verification");
+        }
     }
+}
 
-    if (!rejected) {
-        throw std::runtime_error(std::string(builderName) +
-                                 " accepted duplicate full id");
+void test_support_registries_are_unique() {
+    requireUniqueDatasetParentAndSortRegistries();
+}
+
+void test_parent_builders_match_for_registered_datasets() {
+    for (DatasetKind datasetKind : allDatasetKinds()) {
+        assertParentBuildersMatch(
+            makeGeneratedForestForKind(datasetKind, 10000));
     }
-}
-
-void test_parent_builders_match_for_random_uint128_ids() {
-    assertParentBuildersMatch(makeGeneratedForest(10000, 30));
-}
-
-void test_parent_builders_match_for_depth_outliers() {
-    assertParentBuildersMatch(makeGeneratedForestWithOutliers(10000, 30));
-}
-
-void test_parent_builders_match_for_same_high64_ids() {
-    assertParentBuildersMatch(makeSameHigh64Forest(10000));
-}
-
-void test_parent_builders_match_for_sequential_ids() {
-    assertParentBuildersMatch(makeSequentialIdForest(10000));
-}
-
-void test_parent_builders_match_for_external_parent_ids() {
-    assertParentBuildersMatch(makeManyExternalParentForest(10000));
-}
-
-void test_parent_builders_match_for_many_siblings() {
-    assertParentBuildersMatch(makeManySiblingsForest(10000));
 }
 
 void test_parent_builders_reject_duplicate_full_uint128_id() {
@@ -129,15 +144,20 @@ void test_parent_builders_reject_duplicate_full_uint128_id() {
         {duplicateId, 0},
     };
 
-    assertParentBuilderRejectsDuplicate(nodes, buildParentIndexStdUnorderedMap,
-                                        "unordered parent builder");
-    assertParentBuilderRejectsDuplicate(
-        nodes, buildParentIndexFlatHashForUInt128, "flat hash parent builder");
-    assertParentBuilderRejectsDuplicate(nodes, buildParentIndexTableForUInt128,
-                                        "control-byte parent builder");
-    assertParentBuilderRejectsDuplicate(nodes,
-                                        buildParentIndexRadixJoinForUInt128,
-                                        "radix join parent builder");
+    for (ParentKind parentKind : allParentKinds()) {
+        bool rejected = false;
+        try {
+            (void)buildParentIndexForKind(parentKind, nodes);
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        }
+
+        if (!rejected) {
+            throw std::runtime_error(std::string(parentName(parentKind)) +
+                                     " parent builder accepted duplicate full "
+                                     "id");
+        }
+    }
 }
 
 template <typename Traits>
@@ -201,7 +221,8 @@ void test_compute_depths_simple_chain() {
         {makeId(0, 3), makeId(0, 2)}, // depth 2
     };
 
-    const auto parentIndex = buildParentIndexForUInt128(nodes);
+    const auto parentIndex =
+        buildParentIndexForKind(ParentKind::Control, nodes);
     const auto depths = computeDepthsForUInt128(nodes, parentIndex);
 
     require(depths.size() == 3);
@@ -242,17 +263,12 @@ void test_adaptive_sort_orders_by_high64_before_low64() {
     };
 
     const auto sorted = sortForestByDepthAndId(nodes);
-    const auto expected = sortForestByComparison(nodes);
-    const auto bucketedLsd = sortForestByDenseDepth2BucketedLsd(nodes);
-    const auto compositeLsd = sortForestByCompositeDepth2Lsd(nodes);
-    const auto bucketedMsd = sortForestByDenseDepth2BucketedMsd(nodes);
-    const auto compositeMsd = sortForestByCompositeDepth2Msd(nodes);
+    const auto parentIndex =
+        buildParentIndexForKind(ParentKind::Control, nodes);
+    const auto expected = sortForestByComparisonWithParent(nodes, parentIndex);
 
     require(sameNodes(sorted, expected));
-    require(sameNodes(bucketedLsd, expected));
-    require(sameNodes(compositeLsd, expected));
-    require(sameNodes(bucketedMsd, expected));
-    require(sameNodes(compositeMsd, expected));
+    requireAllRegisteredSortsMatch(nodes, expected);
     require(sorted[0].id == makeId(0, UINT64_MAX));
     require(sorted[1].id == makeId(1, 0));
     require(sorted[2].id == makeId(1, UINT64_MAX));
@@ -268,17 +284,12 @@ void test_adaptive_sort_uses_low64_when_high64_matches() {
     };
 
     const auto sorted = sortForestByDepthAndId(nodes);
-    const auto expected = sortForestByComparison(nodes);
-    const auto bucketedLsd = sortForestByDenseDepth2BucketedLsd(nodes);
-    const auto compositeLsd = sortForestByCompositeDepth2Lsd(nodes);
-    const auto bucketedMsd = sortForestByDenseDepth2BucketedMsd(nodes);
-    const auto compositeMsd = sortForestByCompositeDepth2Msd(nodes);
+    const auto parentIndex =
+        buildParentIndexForKind(ParentKind::Control, nodes);
+    const auto expected = sortForestByComparisonWithParent(nodes, parentIndex);
 
     require(sameNodes(sorted, expected));
-    require(sameNodes(bucketedLsd, expected));
-    require(sameNodes(compositeLsd, expected));
-    require(sameNodes(bucketedMsd, expected));
-    require(sameNodes(compositeMsd, expected));
+    requireAllRegisteredSortsMatch(nodes, expected);
     require(verifySortedByDepthAndId(sorted));
     require(sorted[0].id == makeId(8, UINT64_MAX));
     require(sorted[1].id == makeId(9, 1));
@@ -300,17 +311,13 @@ void test_adaptive_sort_matches_comparison_for_shuffled_input() {
     };
 
     const auto sorted = sortForestByDepthAndId(shuffled);
-    const auto expected = sortForestByComparison(nodes);
-    const auto bucketedLsd = sortForestByDenseDepth2BucketedLsd(shuffled);
-    const auto compositeLsd = sortForestByCompositeDepth2Lsd(shuffled);
-    const auto bucketedMsd = sortForestByDenseDepth2BucketedMsd(shuffled);
-    const auto compositeMsd = sortForestByCompositeDepth2Msd(shuffled);
+    const auto expectedParent =
+        buildParentIndexForKind(ParentKind::Control, nodes);
+    const auto expected =
+        sortForestByComparisonWithParent(nodes, expectedParent);
 
     require(sameNodes(sorted, expected));
-    require(sameNodes(bucketedLsd, expected));
-    require(sameNodes(compositeLsd, expected));
-    require(sameNodes(bucketedMsd, expected));
-    require(sameNodes(compositeMsd, expected));
+    requireAllRegisteredSortsMatch(shuffled, expected);
     require(verifySortedByDepthAndId(sorted));
 }
 
@@ -320,17 +327,12 @@ void test_adaptive_sort_matches_baselines_for_100k_common_depth_forest() {
 
     const auto nodes = makeGeneratedForest(nodeCount, commonMaxDepth);
     const auto sorted = sortForestByDepthAndId(nodes);
-    const auto expected = sortForestByComparison(nodes);
-    const auto bucketedLsd = sortForestByDenseDepth2BucketedLsd(nodes);
-    const auto compositeLsd = sortForestByCompositeDepth2Lsd(nodes);
-    const auto bucketedMsd = sortForestByDenseDepth2BucketedMsd(nodes);
-    const auto compositeMsd = sortForestByCompositeDepth2Msd(nodes);
+    const auto parentIndex =
+        buildParentIndexForKind(ParentKind::Control, nodes);
+    const auto expected = sortForestByComparisonWithParent(nodes, parentIndex);
 
     require(sameNodes(sorted, expected));
-    require(sameNodes(bucketedLsd, expected));
-    require(sameNodes(compositeLsd, expected));
-    require(sameNodes(bucketedMsd, expected));
-    require(sameNodes(compositeMsd, expected));
+    requireAllRegisteredSortsMatch(nodes, expected);
     require(verifySortedByDepthAndId(sorted));
 }
 
@@ -339,7 +341,10 @@ void test_all_sort_methods_match_canonical_order_across_permutations() {
     constexpr uint32_t commonMaxDepth = 30;
 
     const auto nodes = makeGeneratedForest(nodeCount, commonMaxDepth);
-    const auto canonical = sortForestByComparison(nodes);
+    const auto canonicalParent =
+        buildParentIndexForKind(ParentKind::Control, nodes);
+    const auto canonical =
+        sortForestByComparisonWithParent(nodes, canonicalParent);
 
     const std::vector<std::vector<Node>> permutations = {
         nodes,
@@ -348,45 +353,14 @@ void test_all_sort_methods_match_canonical_order_across_permutations() {
     };
 
     for (const auto &permutation : permutations) {
-        const auto comparison = sortForestByComparison(permutation);
-        const auto bucketedLsd =
-            sortForestByDenseDepth2BucketedLsd(permutation);
-        const auto compositeLsd = sortForestByCompositeDepth2Lsd(permutation);
-        const auto bucketedMsd =
-            sortForestByDenseDepth2BucketedMsd(permutation);
-        const auto compositeMsd = sortForestByCompositeDepth2Msd(permutation);
         const auto adaptive = sortForestByDepthAndId(permutation);
 
-        if (!sameNodes(comparison, canonical)) {
-            throw std::runtime_error(
-                "comparison sort changed across input permutations");
-        }
-        if (!sameNodes(bucketedLsd, canonical)) {
-            throw std::runtime_error(
-                "bucketed LSD sort changed across input permutations");
-        }
-        if (!sameNodes(compositeLsd, canonical)) {
-            throw std::runtime_error(
-                "composite LSD sort changed across input permutations");
-        }
-        if (!sameNodes(bucketedMsd, canonical)) {
-            throw std::runtime_error(
-                "bucketed MSD sort changed across input permutations");
-        }
-        if (!sameNodes(compositeMsd, canonical)) {
-            throw std::runtime_error(
-                "composite MSD sort changed across input permutations");
-        }
+        requireAllRegisteredSortsMatch(permutation, canonical);
         if (!sameNodes(adaptive, canonical)) {
             throw std::runtime_error(
                 "adaptive radix sort changed across input permutations");
         }
-        if (!verifySortedByDepthAndId(comparison) ||
-            !verifySortedByDepthAndId(bucketedLsd) ||
-            !verifySortedByDepthAndId(compositeLsd) ||
-            !verifySortedByDepthAndId(bucketedMsd) ||
-            !verifySortedByDepthAndId(compositeMsd) ||
-            !verifySortedByDepthAndId(adaptive)) {
+        if (!verifySortedByDepthAndId(adaptive)) {
             throw std::runtime_error("sorted output failed verification");
         }
     }
@@ -399,17 +373,12 @@ void test_adaptive_sort_matches_baselines_with_deep_depth_outliers() {
     const auto nodes =
         makeGeneratedForestWithOutliers(nodeCount, commonMaxDepth);
     const auto sorted = sortForestByDepthAndId(nodes);
-    const auto expected = sortForestByComparison(nodes);
-    const auto bucketedLsd = sortForestByDenseDepth2BucketedLsd(nodes);
-    const auto compositeLsd = sortForestByCompositeDepth2Lsd(nodes);
-    const auto bucketedMsd = sortForestByDenseDepth2BucketedMsd(nodes);
-    const auto compositeMsd = sortForestByCompositeDepth2Msd(nodes);
+    const auto parentIndex =
+        buildParentIndexForKind(ParentKind::Control, nodes);
+    const auto expected = sortForestByComparisonWithParent(nodes, parentIndex);
 
     require(sameNodes(sorted, expected));
-    require(sameNodes(bucketedLsd, expected));
-    require(sameNodes(compositeLsd, expected));
-    require(sameNodes(bucketedMsd, expected));
-    require(sameNodes(compositeMsd, expected));
+    requireAllRegisteredSortsMatch(nodes, expected);
     require(verifySortedByDepthAndId(sorted));
 }
 
@@ -913,7 +882,10 @@ void test_dense_depth2_baseline_limits() {
     {
         std::vector<Node> nodes;
         appendDeepChain(nodes, 65535, 0x111ULL);
-        const auto sorted = sortForestByDenseDepth2BucketedMsd(nodes);
+        const auto parentIndex =
+            buildParentIndexForKind(ParentKind::Control, nodes);
+        const auto sorted =
+            sortForestByDenseDepth2BucketedMsdWithParent(nodes, parentIndex);
         require(verifySortedByDepthAndId(sorted));
     }
 
@@ -921,9 +893,12 @@ void test_dense_depth2_baseline_limits() {
     {
         std::vector<Node> nodes;
         appendDeepChain(nodes, 65536, 0x222ULL);
+        const auto parentIndex =
+            buildParentIndexForKind(ParentKind::Control, nodes);
         bool rejected = false;
         try {
-            (void)sortForestByDenseDepth2BucketedMsd(nodes);
+            (void)sortForestByDenseDepth2BucketedMsdWithParent(nodes,
+                                                               parentIndex);
         } catch (const std::runtime_error &) {
             rejected = true;
         }
@@ -936,20 +911,12 @@ void test_dense_depth2_baseline_limits() {
 int main() {
     try {
         std::cout << "forest sorting tests\n";
+        runTest("support registries are unique",
+                test_support_registries_are_unique);
         runTest("compute depths for simple parent chain",
                 test_compute_depths_simple_chain);
-        runTest("parent builders match for random UInt128 IDs",
-                test_parent_builders_match_for_random_uint128_ids);
-        runTest("parent builders match for depth outliers",
-                test_parent_builders_match_for_depth_outliers);
-        runTest("parent builders match for same high64 IDs",
-                test_parent_builders_match_for_same_high64_ids);
-        runTest("parent builders match for sequential IDs",
-                test_parent_builders_match_for_sequential_ids);
-        runTest("parent builders match for external parent IDs",
-                test_parent_builders_match_for_external_parent_ids);
-        runTest("parent builders match for many siblings",
-                test_parent_builders_match_for_many_siblings);
+        runTest("parent builders match for registered datasets",
+                test_parent_builders_match_for_registered_datasets);
         runTest("parent builders reject duplicate full UInt128 ID",
                 test_parent_builders_reject_duplicate_full_uint128_id);
         runTest(

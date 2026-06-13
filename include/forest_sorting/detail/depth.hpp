@@ -36,7 +36,7 @@ std::vector<uint32_t> computeDepths(const Nodes &nodes,
     }
 
     std::vector<std::size_t> stack;
-    stack.reserve(128);
+    stack.reserve(initial_range_stack_capacity);
 
     for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
         if (depth[nodeIdx] != UINT32_MAX) {

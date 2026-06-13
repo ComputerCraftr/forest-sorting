@@ -3,16 +3,16 @@
 
 #include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/depth.hpp"
-#include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 
-#include "parent_index_baselines.hpp"
-
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace forest_sorting::test_support {
@@ -21,24 +21,41 @@ inline UInt128 makeId(uint64_t high, uint64_t low) {
     return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
 }
 
-inline std::vector<std::size_t>
-buildParentIndexFlatHashForUInt128(const std::vector<Node> &nodes) {
-    return buildParentIndexFlatHashBaseline(nodes, UInt128NodeTraits{});
+enum class DatasetKind : uint8_t {
+    Random,
+    Outliers,
+    SameHigh64,
+    Sequential,
+    ExternalParents,
+    Siblings,
+};
+
+inline constexpr std::array<DatasetKind, 6> kAllDatasetKinds = {
+    DatasetKind::Random,          DatasetKind::Outliers,
+    DatasetKind::SameHigh64,      DatasetKind::Sequential,
+    DatasetKind::ExternalParents, DatasetKind::Siblings,
+};
+
+constexpr std::array<DatasetKind, 6> allDatasetKinds() noexcept {
+    return kAllDatasetKinds;
 }
 
-inline std::vector<std::size_t>
-buildParentIndexTableForUInt128(const std::vector<Node> &nodes) {
-    return detail::buildParentIndex(nodes, UInt128NodeTraits{});
-}
-
-inline std::vector<std::size_t>
-buildParentIndexRadixJoinForUInt128(const std::vector<Node> &nodes) {
-    return detail::buildParentIndexRadixJoin(nodes, UInt128NodeTraits{});
-}
-
-inline std::vector<std::size_t>
-buildParentIndexForUInt128(const std::vector<Node> &nodes) {
-    return buildParentIndexTableForUInt128(nodes);
+inline std::string_view datasetName(DatasetKind datasetKind) {
+    switch (datasetKind) {
+    case DatasetKind::Random:
+        return "random";
+    case DatasetKind::Outliers:
+        return "outliers";
+    case DatasetKind::SameHigh64:
+        return "same-high64";
+    case DatasetKind::Sequential:
+        return "sequential";
+    case DatasetKind::ExternalParents:
+        return "external-parents";
+    case DatasetKind::Siblings:
+        return "siblings";
+    }
+    return "unknown";
 }
 
 inline std::vector<uint32_t>
@@ -236,6 +253,27 @@ inline std::vector<Node> makeManySiblingsForest(std::size_t nodeCount) {
             Node{makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL), rootId});
     }
     return shuffledCopy(nodes, 0x9999aaaaULL);
+}
+
+inline std::vector<Node> makeGeneratedForestForKind(DatasetKind datasetKind,
+                                                    std::size_t nodeCount) {
+    constexpr uint32_t commonMaxDepth = 30;
+    switch (datasetKind) {
+    case DatasetKind::Random:
+        return makeGeneratedForest(nodeCount, commonMaxDepth);
+    case DatasetKind::Outliers:
+        return makeGeneratedForestWithOutliers(nodeCount, commonMaxDepth);
+    case DatasetKind::SameHigh64:
+        return makeGeneratedForestWithHighWordCollisions(nodeCount,
+                                                         commonMaxDepth);
+    case DatasetKind::Sequential:
+        return makeSequentialIdForest(nodeCount, commonMaxDepth);
+    case DatasetKind::ExternalParents:
+        return makeManyExternalParentForest(nodeCount);
+    case DatasetKind::Siblings:
+        return makeManySiblingsForest(nodeCount);
+    }
+    throw std::runtime_error("unknown dataset");
 }
 
 struct UInt128LowIdentityHashTraits : UInt128NodeTraits {

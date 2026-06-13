@@ -1,19 +1,24 @@
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "parent_index_baselines.hpp"
-#include "sort_baselines.hpp"
+#include "sort_registry.hpp"
 #include "uint128_fixtures.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <random>
 #include <ratio>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using forest_sorting::Node;
@@ -36,58 +41,29 @@ enum class OutputFormat : uint8_t {
     Json,
 };
 
-enum class DatasetKind : uint8_t {
-    Random,
-    Outliers,
-    SameHigh64,
-    Sequential,
-    ExternalParents,
-    Siblings,
-};
-
-enum class ParentKind : uint8_t {
-    Unordered,
-    Flat,
-    Control,
-    Radix,
-};
-
-enum class SortKind : uint8_t {
-    Comparison,
-    DepthBucketDepth2Lsd,
-    CompositeLsd,
-    DepthBucketDepth2Msd,
-    CompositeMsd,
-    AdaptiveDepth2Msd,
-    AdaptiveDepth2MsdBinarySmall,
-    AdaptiveDepth4Msd,
-};
+template <typename Value, std::size_t Count>
+std::vector<Value> vectorFromArray(const std::array<Value, Count> &values) {
+    return {values.begin(), values.end()};
+}
 
 struct Options {
     OutputFormat format = OutputFormat::Table;
     std::vector<std::size_t> sizes = {10000, 100000};
-    std::vector<DatasetKind> datasets = {
-        DatasetKind::Random,          DatasetKind::Outliers,
-        DatasetKind::SameHigh64,      DatasetKind::Sequential,
-        DatasetKind::ExternalParents, DatasetKind::Siblings,
-    };
-    std::vector<ParentKind> parents = {
-        ParentKind::Unordered,
-        ParentKind::Flat,
-        ParentKind::Control,
-        ParentKind::Radix,
-    };
-    std::vector<SortKind> sorts = {
-        SortKind::Comparison,
-        SortKind::DepthBucketDepth2Lsd,
-        SortKind::CompositeLsd,
-        SortKind::DepthBucketDepth2Msd,
-        SortKind::CompositeMsd,
-        SortKind::AdaptiveDepth2Msd,
-        SortKind::AdaptiveDepth2MsdBinarySmall,
-    };
+    std::vector<DatasetKind> datasets = vectorFromArray(allDatasetKinds());
+    std::vector<ParentKind> parents = vectorFromArray(allParentKinds());
+    std::vector<SortKind> sorts = allSortKinds();
     int iterations = 1;
+    bool shuffle = false;
+    uint32_t seed = 0x5eed;
     bool help = false;
+};
+
+struct DatasetContext {
+    std::size_t nodeCount = 0;
+    DatasetKind datasetKind = DatasetKind::Random;
+    std::vector<Node> nodes;
+    std::vector<std::size_t> expectedParent;
+    std::vector<UInt128> expectedIds;
 };
 
 struct BenchmarkResult {
@@ -101,120 +77,6 @@ struct BenchmarkResult {
     std::string status = "ok";
 };
 
-std::string_view datasetName(DatasetKind datasetKind) {
-    switch (datasetKind) {
-    case DatasetKind::Random:
-        return "random";
-    case DatasetKind::Outliers:
-        return "outliers";
-    case DatasetKind::SameHigh64:
-        return "same-high64";
-    case DatasetKind::Sequential:
-        return "sequential";
-    case DatasetKind::ExternalParents:
-        return "external-parents";
-    case DatasetKind::Siblings:
-        return "siblings";
-    }
-    return "unknown";
-}
-
-std::string_view parentName(ParentKind parentKind) {
-    switch (parentKind) {
-    case ParentKind::Unordered:
-        return "unordered";
-    case ParentKind::Flat:
-        return "flat";
-    case ParentKind::Control:
-        return "control";
-    case ParentKind::Radix:
-        return "radix";
-    }
-    return "unknown";
-}
-
-std::string_view sortName(SortKind sortKind) {
-    switch (sortKind) {
-    case SortKind::Comparison:
-        return "comparison";
-    case SortKind::DepthBucketDepth2Lsd:
-        return "depth-bucket-depth2-lsd";
-    case SortKind::CompositeLsd:
-        return "composite-depth2-lsd";
-    case SortKind::DepthBucketDepth2Msd:
-        return "depth-bucket-depth2-msd";
-    case SortKind::CompositeMsd:
-        return "composite-depth2-msd";
-    case SortKind::AdaptiveDepth2Msd:
-        return "adaptive-depth2-msd";
-    case SortKind::AdaptiveDepth2MsdBinarySmall:
-        return "adaptive-depth2-msd-binary-small";
-    case SortKind::AdaptiveDepth4Msd:
-        return "adaptive-depth4-msd";
-    }
-    return "unknown";
-}
-
-std::vector<Node> makeDataset(DatasetKind datasetKind, std::size_t nodeCount) {
-    constexpr uint32_t commonMaxDepth = 30;
-    switch (datasetKind) {
-    case DatasetKind::Random:
-        return makeGeneratedForest(nodeCount, commonMaxDepth);
-    case DatasetKind::Outliers:
-        return makeGeneratedForestWithOutliers(nodeCount, commonMaxDepth);
-    case DatasetKind::SameHigh64:
-        return makeGeneratedForestWithHighWordCollisions(nodeCount,
-                                                         commonMaxDepth);
-    case DatasetKind::Sequential:
-        return makeSequentialIdForest(nodeCount, commonMaxDepth);
-    case DatasetKind::ExternalParents:
-        return makeManyExternalParentForest(nodeCount);
-    case DatasetKind::Siblings:
-        return makeManySiblingsForest(nodeCount);
-    }
-    throw std::runtime_error("unknown dataset");
-}
-
-std::vector<std::size_t>
-buildParentIndexForKind(ParentKind parentKind, const std::vector<Node> &nodes) {
-    switch (parentKind) {
-    case ParentKind::Unordered:
-        return buildParentIndexStdUnorderedMap(nodes);
-    case ParentKind::Flat:
-        return buildParentIndexFlatHashForUInt128(nodes);
-    case ParentKind::Control:
-        return buildParentIndexTableForUInt128(nodes);
-    case ParentKind::Radix:
-        return buildParentIndexRadixJoinForUInt128(nodes);
-    }
-    throw std::runtime_error("unknown parent builder");
-}
-
-std::vector<Node>
-sortForestForKind(SortKind sortKind, const std::vector<Node> &nodes,
-                  const std::vector<std::size_t> &parentIndex) {
-    switch (sortKind) {
-    case SortKind::Comparison:
-        return sortForestByComparisonWithParent(nodes, parentIndex);
-    case SortKind::DepthBucketDepth2Lsd:
-        return sortForestByDenseDepth2BucketedLsdWithParent(nodes, parentIndex);
-    case SortKind::CompositeLsd:
-        return sortForestByCompositeDepth2LsdWithParent(nodes, parentIndex);
-    case SortKind::DepthBucketDepth2Msd:
-        return sortForestByDenseDepth2BucketedMsdWithParent(nodes, parentIndex);
-    case SortKind::CompositeMsd:
-        return sortForestByCompositeDepth2MsdWithParent(nodes, parentIndex);
-    case SortKind::AdaptiveDepth2Msd:
-        return sortForestByAdaptiveDepth2WithParent(nodes, parentIndex);
-    case SortKind::AdaptiveDepth2MsdBinarySmall:
-        return sortForestByAdaptiveDepth2BinarySmallWithParent(nodes,
-                                                               parentIndex);
-    case SortKind::AdaptiveDepth4Msd:
-        return sortForestByAdaptiveDepth4WithParent(nodes, parentIndex);
-    }
-    throw std::runtime_error("unknown sort algorithm");
-}
-
 double timeParentBuildMs(const std::vector<Node> &nodes, ParentKind parentKind,
                          std::vector<std::size_t> &parentIndex) {
     const auto start = std::chrono::steady_clock::now();
@@ -225,12 +87,10 @@ double timeParentBuildMs(const std::vector<Node> &nodes, ParentKind parentKind,
 
 double timeSortMs(const std::vector<Node> &nodes,
                   const std::vector<std::size_t> &parentIndex,
-                  SortKind sortKind, std::vector<Node> &sorted,
-                  UInt128 &checksum) {
+                  SortKind sortKind, std::vector<Node> &sorted) {
     const auto start = std::chrono::steady_clock::now();
     sorted = sortForestForKind(sortKind, nodes, parentIndex);
     const auto end = std::chrono::steady_clock::now();
-    checksum = checksumIds(sorted);
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
@@ -239,28 +99,6 @@ double timeVerifyMs(const std::vector<Node> &nodes, bool &verified) {
     verified = verifySortedByDepthAndId(nodes);
     const auto end = std::chrono::steady_clock::now();
     return std::chrono::duration<double, std::milli>(end - start).count();
-}
-
-void appendAllDatasets(std::vector<DatasetKind> &datasets) {
-    datasets = {DatasetKind::Random,          DatasetKind::Outliers,
-                DatasetKind::SameHigh64,      DatasetKind::Sequential,
-                DatasetKind::ExternalParents, DatasetKind::Siblings};
-}
-
-void appendAllParents(std::vector<ParentKind> &parents) {
-    parents = {ParentKind::Unordered, ParentKind::Flat, ParentKind::Control,
-               ParentKind::Radix};
-}
-
-void appendAllSorts(std::vector<SortKind> &sorts) {
-    sorts = {SortKind::Comparison,
-             SortKind::DepthBucketDepth2Lsd,
-             SortKind::CompositeLsd,
-             SortKind::DepthBucketDepth2Msd,
-             SortKind::CompositeMsd,
-             SortKind::AdaptiveDepth2Msd,
-             SortKind::AdaptiveDepth2MsdBinarySmall,
-             SortKind::AdaptiveDepth4Msd};
 }
 
 OutputFormat parseFormat(std::string_view value) {
@@ -280,70 +118,24 @@ OutputFormat parseFormat(std::string_view value) {
 }
 
 DatasetKind parseDataset(std::string_view value) {
-    if (value == "random") {
-        return DatasetKind::Random;
-    }
-    if (value == "outliers") {
-        return DatasetKind::Outliers;
-    }
-    if (value == "same-high64") {
-        return DatasetKind::SameHigh64;
-    }
-    if (value == "sequential") {
-        return DatasetKind::Sequential;
-    }
-    if (value == "external-parents") {
-        return DatasetKind::ExternalParents;
-    }
-    if (value == "siblings") {
-        return DatasetKind::Siblings;
+    for (DatasetKind datasetKind : allDatasetKinds()) {
+        if (value == datasetName(datasetKind)) {
+            return datasetKind;
+        }
     }
     throw std::runtime_error("unknown dataset: " + std::string(value));
 }
 
 ParentKind parseParent(std::string_view value) {
-    if (value == "unordered") {
-        return ParentKind::Unordered;
-    }
-    if (value == "flat") {
-        return ParentKind::Flat;
-    }
-    if (value == "control") {
-        return ParentKind::Control;
-    }
-    if (value == "radix") {
-        return ParentKind::Radix;
+    for (ParentKind parentKind : allParentKinds()) {
+        if (value == parentName(parentKind)) {
+            return parentKind;
+        }
     }
     throw std::runtime_error("unknown parent builder: " + std::string(value));
 }
 
-SortKind parseSort(std::string_view value) {
-    if (value == "comparison") {
-        return SortKind::Comparison;
-    }
-    if (value == "depth-bucket-depth2-lsd") {
-        return SortKind::DepthBucketDepth2Lsd;
-    }
-    if (value == "composite-depth2-lsd") {
-        return SortKind::CompositeLsd;
-    }
-    if (value == "depth-bucket-depth2-msd") {
-        return SortKind::DepthBucketDepth2Msd;
-    }
-    if (value == "composite-depth2-msd") {
-        return SortKind::CompositeMsd;
-    }
-    if (value == "adaptive-depth2-msd") {
-        return SortKind::AdaptiveDepth2Msd;
-    }
-    if (value == "adaptive-depth2-msd-binary-small") {
-        return SortKind::AdaptiveDepth2MsdBinarySmall;
-    }
-    if (value == "adaptive-depth4-msd") {
-        return SortKind::AdaptiveDepth4Msd;
-    }
-    throw std::runtime_error("unknown sort algorithm: " + std::string(value));
-}
+SortKind parseSort(std::string_view value) { return parseSortKind(value); }
 
 std::size_t parseSize(std::string_view value) {
     return static_cast<std::size_t>(std::stoull(std::string(value)));
@@ -358,6 +150,25 @@ int parsePositiveInt(std::string_view value, const char *optionName) {
     return parsed;
 }
 
+uint32_t parseSeed(std::string_view value) {
+    if (value == "random") {
+        std::random_device device;
+        std::uniform_int_distribution<uint32_t> distribution(
+            std::numeric_limits<uint32_t>::min(),
+            std::numeric_limits<uint32_t>::max());
+        return distribution(device);
+    }
+
+    std::size_t parsedLength = 0;
+    const unsigned long parsed =
+        std::stoul(std::string(value), &parsedLength, 0);
+    if (parsedLength != value.size() ||
+        parsed > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error("--seed must be a uint32 value or random");
+    }
+    return static_cast<uint32_t>(parsed);
+}
+
 Options parseOptions(int argc, char **argv) {
     Options options;
     bool customSizes = false;
@@ -370,6 +181,10 @@ Options parseOptions(int argc, char **argv) {
         if (option == "--help") {
             options.help = true;
             return options;
+        }
+        if (option == "--shuffle") {
+            options.shuffle = true;
+            continue;
         }
 
         if (argIndex + 1 >= argc) {
@@ -392,7 +207,7 @@ Options parseOptions(int argc, char **argv) {
                 customDatasets = true;
             }
             if (value == "all") {
-                appendAllDatasets(options.datasets);
+                options.datasets = vectorFromArray(allDatasetKinds());
             } else {
                 options.datasets.push_back(parseDataset(value));
             }
@@ -402,7 +217,7 @@ Options parseOptions(int argc, char **argv) {
                 customParents = true;
             }
             if (value == "all") {
-                appendAllParents(options.parents);
+                options.parents = vectorFromArray(allParentKinds());
             } else {
                 options.parents.push_back(parseParent(value));
             }
@@ -412,12 +227,14 @@ Options parseOptions(int argc, char **argv) {
                 customSorts = true;
             }
             if (value == "all") {
-                appendAllSorts(options.sorts);
+                options.sorts = allSortKinds();
             } else {
                 options.sorts.push_back(parseSort(value));
             }
         } else if (option == "--iterations") {
             options.iterations = parsePositiveInt(value, "--iterations");
+        } else if (option == "--seed") {
+            options.seed = parseSeed(value);
         } else {
             throw std::runtime_error("unknown option: " + std::string(option));
         }
@@ -437,14 +254,24 @@ void printHelp() {
            "random|outliers|same-high64|sequential|external-parents|siblings|"
            "all\n"
         << "  --parent unordered|flat|control|radix|all\n"
-        << "  --sort "
-           "comparison|depth-bucket-depth2-lsd|composite-depth2-lsd|"
-           "depth-bucket-depth2-msd|composite-depth2-msd|adaptive-depth2-msd|"
-           "adaptive-depth2-msd-binary-small|adaptive-depth4-msd|all\n"
+        << "  --sort ";
+    for (std::size_t entryIdx = 0; entryIdx < kSortRegistry.size();
+         ++entryIdx) {
+        if (entryIdx > 0) {
+            std::cout << "|";
+        }
+        std::cout << kSortRegistry[entryIdx].name;
+    }
+    std::cout
+        << "|all\n"
         << "                                   depth2 labels are fixed-prefix "
-           "benchmarks; adaptive-depth4-msd exercises the 4-byte adaptive "
-           "wrapper\n"
+           "benchmarks; chunk-msd labels sort IDs by MSB-first 64-bit "
+           "chunks; byte-msd labels use true byte-level MSD\n"
         << "  --iterations N\n"
+        << "  --shuffle                        randomize algorithm execution "
+           "order\n"
+        << "  --seed N|random                  shuffle seed (default 0x5eed); "
+           "accepts decimal, hex, or random\n"
         << "  --help\n";
 }
 
@@ -457,27 +284,24 @@ std::string appendStatus(std::string status, std::string_view marker) {
     return status;
 }
 
-BenchmarkResult runBenchmarkRow(const std::vector<Node> &nodes,
-                                DatasetKind datasetKind, std::size_t nodeCount,
+BenchmarkResult runBenchmarkRow(const DatasetContext &context,
                                 ParentKind parentKind, SortKind sortKind,
-                                int iterations,
-                                const std::vector<std::size_t> &expectedParent,
-                                UInt128 expectedChecksum) {
+                                int iterations) {
     BenchmarkResult result;
-    result.dataset = std::string(datasetName(datasetKind));
-    result.nodeCount = nodeCount;
+    result.dataset = std::string(datasetName(context.datasetKind));
+    result.nodeCount = context.nodeCount;
     result.parentBuilder = std::string(parentName(parentKind));
     result.sortAlgorithm = std::string(sortName(sortKind));
 
     std::vector<std::size_t> parentIndex;
     std::vector<Node> sorted;
-    UInt128 checksum = 0;
     bool verified = false;
 
     for (int iteration = 0; iteration < iterations; ++iteration) {
-        result.parentMs += timeParentBuildMs(nodes, parentKind, parentIndex);
+        result.parentMs +=
+            timeParentBuildMs(context.nodes, parentKind, parentIndex);
         result.sortMs +=
-            timeSortMs(nodes, parentIndex, sortKind, sorted, checksum);
+            timeSortMs(context.nodes, parentIndex, sortKind, sorted);
         result.verifyMs += timeVerifyMs(sorted, verified);
     }
 
@@ -485,12 +309,24 @@ BenchmarkResult runBenchmarkRow(const std::vector<Node> &nodes,
     result.sortMs /= static_cast<double>(iterations);
     result.verifyMs /= static_cast<double>(iterations);
 
-    if (parentIndex != expectedParent) {
+    if (parentIndex != context.expectedParent) {
         result.status = appendStatus(result.status, "parent-mismatch");
     }
-    if (checksum != expectedChecksum) {
-        result.status = appendStatus(result.status, "checksum-mismatch");
+
+    bool sortMatch = sorted.size() == context.expectedIds.size();
+    if (sortMatch) {
+        for (std::size_t i = 0; i < sorted.size(); ++i) {
+            if (sorted[i].id != context.expectedIds[i]) {
+                sortMatch = false;
+                break;
+            }
+        }
     }
+
+    if (!sortMatch) {
+        result.status = appendStatus(result.status, "sort-mismatch");
+    }
+
     if (!verified) {
         result.status = appendStatus(result.status, "verify-failed");
     }
@@ -499,24 +335,51 @@ BenchmarkResult runBenchmarkRow(const std::vector<Node> &nodes,
 }
 
 std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
-    std::vector<BenchmarkResult> results;
-
+    std::vector<DatasetContext> contexts;
     for (std::size_t nodeCount : options.sizes) {
         for (DatasetKind datasetKind : options.datasets) {
-            const auto nodes = makeDataset(datasetKind, nodeCount);
-            const auto expectedParent = buildParentIndexTableForUInt128(nodes);
-            const auto canonicalSorted =
-                sortForestForKind(SortKind::Comparison, nodes, expectedParent);
-            const UInt128 expectedChecksum = checksumIds(canonicalSorted);
+            DatasetContext context;
+            context.nodeCount = nodeCount;
+            context.datasetKind = datasetKind;
+            context.nodes = makeGeneratedForestForKind(datasetKind, nodeCount);
+            context.expectedParent =
+                buildParentIndexForKind(ParentKind::Control, context.nodes);
+            const auto canonicalSorted = sortForestForKind(
+                SortKind::Comparison, context.nodes, context.expectedParent);
 
-            for (ParentKind parentKind : options.parents) {
-                for (SortKind sortKind : options.sorts) {
-                    results.push_back(runBenchmarkRow(
-                        nodes, datasetKind, nodeCount, parentKind, sortKind,
-                        options.iterations, expectedParent, expectedChecksum));
-                }
+            context.expectedIds.reserve(canonicalSorted.size());
+            for (const auto &node : canonicalSorted) {
+                context.expectedIds.push_back(node.id);
+            }
+            contexts.push_back(std::move(context));
+        }
+    }
+
+    struct Job {
+        const DatasetContext *context;
+        ParentKind parent;
+        SortKind sort;
+    };
+    std::vector<Job> jobs;
+
+    for (const auto &context : contexts) {
+        for (ParentKind parentKind : options.parents) {
+            for (SortKind sortKind : options.sorts) {
+                jobs.push_back({&context, parentKind, sortKind});
             }
         }
+    }
+
+    if (options.shuffle) {
+        std::mt19937 engine(options.seed);
+        std::shuffle(jobs.begin(), jobs.end(), engine);
+    }
+
+    std::vector<BenchmarkResult> results;
+    results.reserve(jobs.size());
+    for (const auto &job : jobs) {
+        results.push_back(runBenchmarkRow(*job.context, job.parent, job.sort,
+                                          options.iterations));
     }
 
     return results;
@@ -632,9 +495,12 @@ void printDelimited(const std::vector<BenchmarkResult> &results,
     }
 }
 
-void printJson(const std::vector<BenchmarkResult> &results, int iterations) {
-    std::cout << "{\n  \"iterations\": " << iterations
-              << ",\n  \"results\": [\n";
+void printJson(const std::vector<BenchmarkResult> &results,
+               const Options &options) {
+    std::cout << "{\n  \"iterations\": " << options.iterations
+              << ",\n  \"shuffle\": " << (options.shuffle ? "true" : "false")
+              << ",\n  \"seed\": \"0x" << std::hex << options.seed << std::dec
+              << "\",\n  \"results\": [\n";
     for (std::size_t resultIndex = 0; resultIndex < results.size();
          ++resultIndex) {
         const BenchmarkResult &result = results[resultIndex];
@@ -670,13 +536,14 @@ void printResults(const std::vector<BenchmarkResult> &results,
         printDelimited(results, '\t');
         break;
     case OutputFormat::Json:
-        printJson(results, options.iterations);
+        printJson(results, options);
         break;
     }
 }
 
 int main(int argc, char **argv) {
     try {
+        validateSortRegistry();
         const Options options = parseOptions(argc, argv);
         if (options.help) {
             printHelp();

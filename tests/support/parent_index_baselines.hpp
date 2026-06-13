@@ -2,15 +2,51 @@
 #define FOREST_SORTING_SUPPORT_PARENT_INDEX_BASELINES_HPP
 
 #include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace forest_sorting::test_support {
+
+enum class ParentKind : uint8_t {
+    Unordered,
+    Flat,
+    Control,
+    Radix,
+};
+
+inline constexpr std::array<ParentKind, 4> kAllParentKinds = {
+    ParentKind::Unordered,
+    ParentKind::Flat,
+    ParentKind::Control,
+    ParentKind::Radix,
+};
+
+constexpr std::array<ParentKind, 4> allParentKinds() noexcept {
+    return kAllParentKinds;
+}
+
+inline std::string_view parentName(ParentKind parentKind) {
+    switch (parentKind) {
+    case ParentKind::Unordered:
+        return "unordered";
+    case ParentKind::Flat:
+        return "flat";
+    case ParentKind::Control:
+        return "control";
+    case ParentKind::Radix:
+        return "radix";
+    }
+    return "unknown";
+}
 
 template <typename Id> struct FlatIdIndexSlot {
     Id id{};
@@ -106,6 +142,21 @@ buildParentIndexStdUnorderedMap(const std::vector<Node> &nodes) {
     }
 
     return parent;
+}
+
+inline std::vector<std::size_t>
+buildParentIndexForKind(ParentKind parentKind, const std::vector<Node> &nodes) {
+    switch (parentKind) {
+    case ParentKind::Unordered:
+        return buildParentIndexStdUnorderedMap(nodes);
+    case ParentKind::Flat:
+        return buildParentIndexFlatHashBaseline(nodes, UInt128NodeTraits{});
+    case ParentKind::Control:
+        return detail::buildParentIndex(nodes, UInt128NodeTraits{});
+    case ParentKind::Radix:
+        return detail::buildParentIndexRadixJoin(nodes, UInt128NodeTraits{});
+    }
+    throw std::runtime_error("unknown parent builder");
 }
 
 } // namespace forest_sorting::test_support

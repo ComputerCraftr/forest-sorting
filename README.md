@@ -1,13 +1,15 @@
 # forest-sorting
 
 Header-only C++20 library for sorting a forest of nodes deterministically by
-computed depth, then by node ID with an adaptive byte-width radix sort.
+computed depth, then by node ID with adaptive radix sorting.
 
 The production sorter is tuned for common depths `0-30`, handles sparse
 outliers without dense depth-bucket allocations, and rejects depths that do not
 fit the selected explicit depth prefix. IDs are exposed through fixed-width
-most-significant-first bytes; the implementation can chunk those bytes
-internally for speed. Duplicate full IDs are rejected.
+most-significant-first bytes. The current production adaptive ID sorter walks
+most-significant 64-bit chunks first, and sorts each chunk with stable LSD byte
+passes; benchmark support also includes a true byte-level MSD contender.
+Duplicate full IDs are rejected.
 
 Parent ID lookup uses a control-byte open-addressed ID-to-index hash table,
 then the rest of the sort and verifier operate on integer-indexed vectors.
@@ -83,10 +85,10 @@ ctest --preset debug              # run the test suite with sanitizers active
 ```
 
 The regression tests check deterministic ordering across multiple input
-permutations, verify the production adaptive radix sort against comparison,
-LSD, and MSD baselines, compare parent-index builders, compile the portable
-algorithm header without UInt128 compatibility headers, and cover duplicate
-full-ID rejection.
+permutations, verify the production adaptive chunk-radix sort against comparison,
+LSD, byte-MSD, and chunk-MSD baselines, compare parent-index builders, compile
+the portable algorithm header without UInt128 compatibility headers, and cover
+duplicate full-ID rejection.
 
 ## Linting
 
@@ -105,20 +107,35 @@ To use a specific `clang-tidy`, configure with
 The release build includes a deterministic benchmark matrix comparing parent
 index construction with `std::unordered_map`, the original flat hash,
 production control-byte flat hash, and radix join baselines. It can also time
-comparison plus fixed-prefix LSD/MSD/adaptive sort variants with selectable
-datasets and output formats.
+comparison plus fixed-prefix LSD, byte-MSD, and chunk-MSD/adaptive sort
+variants with selectable datasets and output formats.
 
 Parent builders are selected with `unordered`, `flat`, `control`, and `radix`.
-Sort algorithms are selected with `comparison`, `depth-bucket-depth2-lsd`,
-`composite-depth2-lsd`, `depth-bucket-depth2-msd`, `composite-depth2-msd`,
-`adaptive-depth2-msd`, `adaptive-depth2-msd-binary-small`, and
-`adaptive-depth4-msd`.
+By default, the benchmark runs every registered sort algorithm; `--sort all`
+selects the same full set explicitly. Sort algorithms are selected with:
+- `comparison`: `std::sort` over `depth || id`
+- `depth-bucket-depth2-lsd`: dense vector-of-buckets by depth, then LSD per bucket
+- `composite-depth2-lsd`: full composite key `depth[2] || id[16]`, sorted by LSD passes
+- `depth-bucket-depth2-chunk-msd`: dense vector-of-buckets by depth, then ID chunk-MSD per bucket
+- `composite-depth2-byte-msd`: full composite key `depth[2] || id[16]`, sorted by byte-MSD passes
+- `adaptive-depth2-no-dense-chunk-msd`: depth-MSD grouping + adaptive ID chunk-MSD, dense shortcut disabled
+- `adaptive-depth2-chunk-msd`: normal chunk-MSD adaptive path, dense grouping if safe, locked to 2-byte depth
+- `adaptive-depth2-byte-msd`: experimental path, sorts equal-depth ID ranges with byte-MSD
+- `adaptive-depth2-chunk-msd-binary-small`: chunk-MSD adaptive path with stable binary-insertion sort for small equal-depth ID ranges
+- `adaptive-depth4-chunk-msd`: normal chunk-MSD adaptive path, configured for a 4-byte depth prefix
+
+The `adaptive-depth2-chunk-msd` benchmark represents the current production-style adaptive
+path: adaptive depth grouping followed by MSB-first 64-bit ID chunks, with
+stable LSD byte passes inside each chunk. The `adaptive-depth2-no-dense-chunk-msd`
+variant explicitly disables the dense grouping shortcut to measure its benefit.
+The `composite-depth2-byte-msd` baseline performs a true full 18-byte byte-MSD radix sort
+over the combined depth and ID key.
 
 ```bash
 cmake --build --preset release --target forest-sorting-bench
 ./out/build/release/benchmarks/forest-sorting-bench
-./out/build/release/benchmarks/forest-sorting-bench --format csv --size 10000 --dataset random --parent all --sort adaptive-depth2-msd
-./out/build/release/benchmarks/forest-sorting-bench --size 10000 --dataset random --sort depth-bucket-depth2-lsd --sort depth-bucket-depth2-msd --sort adaptive-depth2-msd --sort adaptive-depth2-msd-binary-small
+./out/build/release/benchmarks/forest-sorting-bench --format csv --size 10000 --dataset random --parent all --sort adaptive-depth2-chunk-msd
+./out/build/release/benchmarks/forest-sorting-bench --size 10000 --dataset random --sort depth-bucket-depth2-lsd --sort depth-bucket-depth2-chunk-msd --sort adaptive-depth2-chunk-msd --sort adaptive-depth2-byte-msd --sort adaptive-depth2-chunk-msd-binary-small
 ```
 
 CI runs on GitHub Actions for macOS and Ubuntu using these presets. It builds

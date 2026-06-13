@@ -9,6 +9,11 @@ namespace forest_sorting::detail {
 inline constexpr std::size_t no_parent =
     std::numeric_limits<std::size_t>::max();
 
+// Initial capacity for explicit radix/depth work stacks. This avoids repeating
+// magic reserve values while still allowing the vectors to grow for unusual
+// inputs.
+inline constexpr std::size_t initial_range_stack_capacity = 128;
+
 inline std::size_t nextPowerOfTwo(std::size_t value) noexcept {
     std::size_t capacity = 1;
     while (capacity < value) {

@@ -30,7 +30,7 @@ add_test(NAME forest-sorting-bench-csv
             --size 10000
             --dataset random
             --parent all
-            --sort adaptive-depth4-msd
+            --sort adaptive-depth4-chunk-msd
 )
 add_test(NAME forest-sorting-bench-tsv
     COMMAND forest-sorting-bench
@@ -46,14 +46,21 @@ add_test(NAME forest-sorting-bench-json
             --size 10000
             --dataset same-high64
             --parent all
-            --sort adaptive-depth4-msd
+            --sort adaptive-depth4-chunk-msd
+)
+add_test(NAME forest-sorting-bench-default-sorts
+    COMMAND forest-sorting-bench
+            --size 10000
+            --dataset random
+            --parent control
 )
 add_test(NAME forest-sorting-bench-fixed-prefix-sorts
     COMMAND forest-sorting-bench
             --size 10000
             --dataset random
             --sort depth-bucket-depth2-lsd
-            --sort depth-bucket-depth2-msd
-            --sort adaptive-depth2-msd
-            --sort adaptive-depth2-msd-binary-small
+            --sort depth-bucket-depth2-chunk-msd
+            --sort adaptive-depth2-chunk-msd
+            --sort adaptive-depth2-byte-msd
+            --sort adaptive-depth2-chunk-msd-binary-small
 )
