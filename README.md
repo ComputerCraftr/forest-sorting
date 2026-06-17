@@ -131,11 +131,27 @@ variant explicitly disables the dense grouping shortcut to measure its benefit.
 The `composite-depth2-byte-msd` baseline performs a true full 18-byte byte-MSD radix sort
 over the combined depth and ID key.
 
+Benchmark rows use retained samples rather than one averaged run. The default
+is `--iterations 7 --warmup 1`; table output shows median timings, CSV/TSV
+include summary statistics and 95% bootstrap confidence intervals, and JSON
+defaults to compact summary output without raw sample arrays. Use
+`--sample-output raw` only when debugging individual samples, or
+`--sample-output none` for compact status/delta-only JSON. Use
+`--baseline-sort` or `--baseline-parent` for A/B deltas against a selected
+algorithm or parent builder. Winner fields are CI-aware: a candidate only wins
+when the paired percentage-delta interval is entirely below zero, a baseline
+only wins when it is entirely above zero, and noisy overlaps report `tie`.
+Repeat `--data-seed` to compare across multiple generated forests, and use
+`--order-seed` for shuffled benchmark execution order.
+
 ```bash
 cmake --build --preset release --target forest-sorting-bench
 ./out/build/release/benchmarks/forest-sorting-bench
 ./out/build/release/benchmarks/forest-sorting-bench --format csv --size 10000 --dataset random --parent all --sort adaptive-depth2-chunk-msd
 ./out/build/release/benchmarks/forest-sorting-bench --size 10000 --dataset random --sort depth-bucket-depth2-lsd --sort depth-bucket-depth2-chunk-msd --sort adaptive-depth2-chunk-msd --sort adaptive-depth2-byte-msd --sort adaptive-depth2-chunk-msd-binary-small
+./out/build/release/benchmarks/forest-sorting-bench --size 100000 --dataset random --parent control --sort adaptive-depth2-chunk-msd --sort adaptive-depth2-byte-msd --baseline-sort adaptive-depth2-chunk-msd --iterations 11 --warmup 2 --shuffle --order-seed 0x5eed --data-seed 0x5eed1234
+./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 100000 --dataset random --parent control --sort adaptive-depth2-chunk-msd --sort adaptive-depth2-byte-msd --baseline-sort adaptive-depth2-chunk-msd --iterations 30 --warmup 3 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3
+./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output raw --size 100000 --dataset random --parent flat --parent control --sort adaptive-depth2-chunk-msd --baseline-parent control --iterations 11 --warmup 2 --data-seed 0x5eed1234
 ```
 
 CI runs on GitHub Actions for macOS and Ubuntu using these presets. It builds

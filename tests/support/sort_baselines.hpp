@@ -475,15 +475,6 @@ inline std::vector<Node> sortForestByAdaptiveDepth4WithParent(
         nodes, parentIndex, true, sortDepthRangesByChunkMsdLinearSmall);
 }
 
-inline UInt128 checksumIds(const std::vector<Node> &nodes) {
-    UInt128 checksum = 0;
-    for (const auto &node : nodes) {
-        checksum ^= node.id;
-        checksum = (checksum << 1) | (checksum >> 127);
-    }
-    return checksum;
-}
-
 } // namespace forest_sorting::test_support
 
 #endif // FOREST_SORTING_SUPPORT_SORT_BASELINES_HPP

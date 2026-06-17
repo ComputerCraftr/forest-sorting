@@ -17,8 +17,31 @@
 
 namespace forest_sorting::test_support {
 
+inline constexpr uint32_t kDefaultBenchmarkDataSeed = 0x5eed1234U;
+inline constexpr uint32_t kCommonFixtureMaxDepth = 30U;
+inline constexpr uint64_t kDefaultGeneratedForestSeed = 0x5eed1234ULL;
+inline constexpr uint64_t kDefaultOutlierShuffleSeed = 0xabcdef00ULL;
+
+inline constexpr uint64_t kRandomDatasetSeedSalt = 0x200001ULL;
+inline constexpr uint64_t kOutlierBaseSeedSalt = 0x100001ULL;
+inline constexpr uint64_t kOutlierShuffleSeedSalt = 0x100002ULL;
+inline constexpr uint64_t kSameHigh64DatasetSeedSalt = 0x200003ULL;
+inline constexpr uint64_t kSequentialDatasetSeedSalt = 0x200004ULL;
+inline constexpr uint64_t kExternalParentsDatasetSeedSalt = 0x200005ULL;
+inline constexpr uint64_t kSiblingsDatasetSeedSalt = 0x200006ULL;
+
 inline UInt128 makeId(uint64_t high, uint64_t low) {
     return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
+}
+
+inline uint64_t mixFixtureSeed(uint32_t seed, uint64_t salt) {
+    uint64_t value = (static_cast<uint64_t>(seed) << 32U) ^ salt;
+    value ^= value >> 33U;
+    value *= 0xff51afd7ed558ccdULL;
+    value ^= value >> 33U;
+    value *= 0xc4ceb9fe1a85ec53ULL;
+    value ^= value >> 33U;
+    return value;
 }
 
 enum class DatasetKind : uint8_t {
@@ -86,10 +109,10 @@ inline std::vector<Node> shuffledCopy(std::vector<Node> nodes, uint64_t seed) {
     return nodes;
 }
 
-inline std::vector<Node> makeGeneratedForest(std::size_t nodeCount,
-                                             uint32_t depthCycleMax) {
-    // NOLINTNEXTLINE(bugprone-random-generator-seed)
-    std::mt19937_64 rng(0x5eed1234ULL);
+template <typename IdGenerator>
+inline std::vector<Node> makeDepthLinkedForest(std::size_t nodeCount,
+                                               uint32_t depthCycleMax,
+                                               IdGenerator idGenerator) {
     std::vector<Node> nodes;
     nodes.reserve(nodeCount);
 
@@ -109,14 +132,35 @@ inline std::vector<Node> makeGeneratedForest(std::size_t nodeCount,
             targetDepth = 0;
         }
 
-        const uint64_t high = rng();
-        const uint64_t low = static_cast<uint64_t>(nodeIdx) + 1ULL;
-        nodes.push_back(Node{makeId(high, low), parentId});
+        nodes.push_back(Node{idGenerator(nodeIdx), parentId});
         lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = nodeIdx;
     }
 
+    return nodes;
+}
+
+inline std::vector<Node> makeGeneratedForest(std::size_t nodeCount,
+                                             uint32_t depthCycleMax,
+                                             uint64_t rngSeed) {
+    // NOLINTNEXTLINE(bugprone-random-generator-seed)
+    std::mt19937_64 rng(rngSeed);
+    auto idGenerator = [&](std::size_t nodeIdx) {
+        const uint64_t high = rng();
+        const uint64_t low = static_cast<uint64_t>(nodeIdx) + 1ULL;
+        return makeId(high, low);
+    };
+
+    std::vector<Node> nodes =
+        makeDepthLinkedForest(nodeCount, depthCycleMax, idGenerator);
     std::shuffle(nodes.begin(), nodes.end(), rng);
     return nodes;
+}
+
+inline std::vector<Node>
+makeGeneratedForest(std::size_t nodeCount,
+                    uint32_t depthCycleMax = kCommonFixtureMaxDepth) {
+    return makeGeneratedForest(nodeCount, depthCycleMax,
+                               kDefaultGeneratedForestSeed);
 }
 
 inline void appendDeepChain(std::vector<Node> &nodes, uint32_t chainDepth,
@@ -130,107 +174,57 @@ inline void appendDeepChain(std::vector<Node> &nodes, uint32_t chainDepth,
     }
 }
 
-inline std::vector<Node>
-makeGeneratedForestWithOutliers(std::size_t nodeCount,
-                                uint32_t commonMaxDepth) {
-    std::vector<Node> nodes = makeGeneratedForest(nodeCount, commonMaxDepth);
+inline void appendDepthOutlierChains(std::vector<Node> &nodes) {
     appendDeepChain(nodes, 128, 0x1000ULL);
     appendDeepChain(nodes, 512, 0x2000ULL);
     appendDeepChain(nodes, 1024, 0x3000ULL);
-    return shuffledCopy(nodes, 0xabcdef00ULL);
-}
-
-inline std::vector<Node> makeSameHigh64Forest(std::size_t nodeCount) {
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-    constexpr uint64_t sharedHighWord = 0x123456789abcdef0ULL;
-    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        UInt128 parentId = 0;
-        if (nodeIdx > 0) {
-            parentId = makeId(sharedHighWord, static_cast<uint64_t>(nodeIdx));
-        }
-        nodes.push_back(Node{
-            makeId(sharedHighWord, static_cast<uint64_t>(nodeIdx) + 1ULL),
-            parentId,
-        });
-    }
-    return shuffledCopy(nodes, 0x0badcafeULL);
 }
 
 inline std::vector<Node>
-makeGeneratedForestWithHighWordCollisions(std::size_t nodeCount,
-                                          uint32_t depthCycleMax) {
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-
-    constexpr uint64_t sharedHighWord = 0x123456789abcdef0ULL;
-    std::vector<std::size_t> lastIndexAtDepth(
-        static_cast<std::size_t>(depthCycleMax) + 1, detail::no_parent);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        uint32_t targetDepth = static_cast<uint32_t>(
-            nodeIdx % (static_cast<std::size_t>(depthCycleMax) + 1));
-        UInt128 parentId = 0;
-        if (targetDepth > 0 &&
-            lastIndexAtDepth[static_cast<std::size_t>(targetDepth - 1)] !=
-                detail::no_parent) {
-            parentId = nodes[lastIndexAtDepth[static_cast<std::size_t>(
-                                 targetDepth - 1)]]
-                           .id;
-        } else {
-            targetDepth = 0;
-        }
-
-        const uint64_t low = static_cast<uint64_t>(nodeCount - nodeIdx);
-        nodes.push_back(Node{makeId(sharedHighWord, low), parentId});
-        lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = nodeIdx;
-    }
-
-    return shuffledCopy(nodes, 0xfeedfaceULL);
+makeGeneratedForestWithOutliers(std::size_t nodeCount, uint32_t commonMaxDepth,
+                                uint32_t dataSeed) {
+    std::vector<Node> nodes =
+        makeGeneratedForest(nodeCount, commonMaxDepth,
+                            mixFixtureSeed(dataSeed, kOutlierBaseSeedSalt));
+    appendDepthOutlierChains(nodes);
+    return shuffledCopy(nodes,
+                        mixFixtureSeed(dataSeed, kOutlierShuffleSeedSalt));
 }
 
-inline std::vector<Node> makeSequentialIdForest(std::size_t nodeCount) {
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        UInt128 parentId = 0;
-        if (nodeIdx > 0) {
-            parentId = makeId(0, static_cast<uint64_t>(nodeIdx));
-        }
-        nodes.push_back(
-            Node{makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL), parentId});
-    }
-    return shuffledCopy(nodes, 0x1234abcdULL);
+inline std::vector<Node> makeGeneratedForestWithOutliers(
+    std::size_t nodeCount, uint32_t commonMaxDepth = kCommonFixtureMaxDepth) {
+    std::vector<Node> nodes = makeGeneratedForest(nodeCount, commonMaxDepth);
+    appendDepthOutlierChains(nodes);
+    return shuffledCopy(nodes, kDefaultOutlierShuffleSeed);
+}
+
+inline std::vector<Node> makeGeneratedForestWithHighWordCollisions(
+    std::size_t nodeCount, uint32_t depthCycleMax, uint64_t shuffleSeed) {
+    constexpr uint64_t sharedHighWord = 0x123456789abcdef0ULL;
+    auto idGenerator = [&](std::size_t nodeIdx) {
+        const uint64_t low = static_cast<uint64_t>(nodeCount - nodeIdx);
+        return makeId(sharedHighWord, low);
+    };
+
+    std::vector<Node> nodes =
+        makeDepthLinkedForest(nodeCount, depthCycleMax, idGenerator);
+    return shuffledCopy(nodes, shuffleSeed);
 }
 
 inline std::vector<Node> makeSequentialIdForest(std::size_t nodeCount,
-                                                uint32_t depthCycleMax) {
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-    std::vector<std::size_t> lastIndexAtDepth(
-        static_cast<std::size_t>(depthCycleMax) + 1, detail::no_parent);
-    for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        uint32_t targetDepth = static_cast<uint32_t>(
-            nodeIdx % (static_cast<std::size_t>(depthCycleMax) + 1));
-        UInt128 parentId = 0;
-        if (targetDepth > 0 &&
-            lastIndexAtDepth[static_cast<std::size_t>(targetDepth - 1)] !=
-                detail::no_parent) {
-            parentId = nodes[lastIndexAtDepth[static_cast<std::size_t>(
-                                 targetDepth - 1)]]
-                           .id;
-        } else {
-            targetDepth = 0;
-        }
+                                                uint32_t depthCycleMax,
+                                                uint64_t shuffleSeed) {
+    auto idGenerator = [](std::size_t nodeIdx) {
+        return makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL);
+    };
 
-        nodes.push_back(
-            Node{makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL), parentId});
-        lastIndexAtDepth[static_cast<std::size_t>(targetDepth)] = nodeIdx;
-    }
-
-    return shuffledCopy(nodes, 0x1234abcdULL);
+    std::vector<Node> nodes =
+        makeDepthLinkedForest(nodeCount, depthCycleMax, idGenerator);
+    return shuffledCopy(nodes, shuffleSeed);
 }
 
-inline std::vector<Node> makeManyExternalParentForest(std::size_t nodeCount) {
+inline std::vector<Node> makeManyExternalParentForest(std::size_t nodeCount,
+                                                      uint64_t shuffleSeed) {
     std::vector<Node> nodes;
     nodes.reserve(nodeCount);
     for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
@@ -240,10 +234,11 @@ inline std::vector<Node> makeManyExternalParentForest(std::size_t nodeCount) {
             makeId(0x2000ULL, static_cast<uint64_t>(nodeIdx) + 1ULL);
         nodes.push_back(Node{nodeId, parentId});
     }
-    return shuffledCopy(nodes, 0x44445555ULL);
+    return shuffledCopy(nodes, shuffleSeed);
 }
 
-inline std::vector<Node> makeManySiblingsForest(std::size_t nodeCount) {
+inline std::vector<Node> makeManySiblingsForest(std::size_t nodeCount,
+                                                uint64_t shuffleSeed) {
     std::vector<Node> nodes;
     nodes.reserve(nodeCount);
     const UInt128 rootId = makeId(0, 1);
@@ -252,26 +247,35 @@ inline std::vector<Node> makeManySiblingsForest(std::size_t nodeCount) {
         nodes.push_back(
             Node{makeId(0, static_cast<uint64_t>(nodeIdx) + 1ULL), rootId});
     }
-    return shuffledCopy(nodes, 0x9999aaaaULL);
+    return shuffledCopy(nodes, shuffleSeed);
 }
 
-inline std::vector<Node> makeGeneratedForestForKind(DatasetKind datasetKind,
-                                                    std::size_t nodeCount) {
-    constexpr uint32_t commonMaxDepth = 30;
+inline std::vector<Node>
+makeGeneratedForestForKind(DatasetKind datasetKind, std::size_t nodeCount,
+                           uint32_t dataSeed = kDefaultBenchmarkDataSeed) {
     switch (datasetKind) {
     case DatasetKind::Random:
-        return makeGeneratedForest(nodeCount, commonMaxDepth);
+        return makeGeneratedForest(
+            nodeCount, kCommonFixtureMaxDepth,
+            mixFixtureSeed(dataSeed, kRandomDatasetSeedSalt));
     case DatasetKind::Outliers:
-        return makeGeneratedForestWithOutliers(nodeCount, commonMaxDepth);
+        return makeGeneratedForestWithOutliers(
+            nodeCount, kCommonFixtureMaxDepth, dataSeed);
     case DatasetKind::SameHigh64:
-        return makeGeneratedForestWithHighWordCollisions(nodeCount,
-                                                         commonMaxDepth);
+        return makeGeneratedForestWithHighWordCollisions(
+            nodeCount, kCommonFixtureMaxDepth,
+            mixFixtureSeed(dataSeed, kSameHigh64DatasetSeedSalt));
     case DatasetKind::Sequential:
-        return makeSequentialIdForest(nodeCount, commonMaxDepth);
+        return makeSequentialIdForest(
+            nodeCount, kCommonFixtureMaxDepth,
+            mixFixtureSeed(dataSeed, kSequentialDatasetSeedSalt));
     case DatasetKind::ExternalParents:
-        return makeManyExternalParentForest(nodeCount);
+        return makeManyExternalParentForest(
+            nodeCount,
+            mixFixtureSeed(dataSeed, kExternalParentsDatasetSeedSalt));
     case DatasetKind::Siblings:
-        return makeManySiblingsForest(nodeCount);
+        return makeManySiblingsForest(
+            nodeCount, mixFixtureSeed(dataSeed, kSiblingsDatasetSeedSalt));
     }
     throw std::runtime_error("unknown dataset");
 }
