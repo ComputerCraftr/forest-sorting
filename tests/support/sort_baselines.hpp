@@ -65,14 +65,42 @@ sortForestByComparisonWithParent(const std::vector<Node> &nodes,
     return materializeOrder(nodes, order);
 }
 
-inline uint8_t idByteLsbFirst(UInt128 nodeId, std::size_t byteOffset) noexcept {
-    return UInt128Traits::byte_msb_first(nodeId, UInt128Traits::id_byte_count -
-                                                     1 - byteOffset);
-}
+struct UInt128IdKey {
+    static constexpr std::size_t byte_count = UInt128Traits::id_byte_count;
 
-inline uint8_t depthByteLsbFirst(uint32_t depth,
-                                 std::size_t byteOffset) noexcept {
-    return static_cast<uint8_t>(depth >> (byteOffset * 8U));
+    const std::vector<Node> &nodes;
+
+    uint8_t byte_msb_first(std::size_t nodeIndex,
+                           std::size_t byteIndex) const noexcept {
+        return UInt128Traits::byte_msb_first(nodes[nodeIndex].id, byteIndex);
+    }
+};
+
+struct CompositeDepth2UInt128Key {
+    static constexpr std::size_t depth_byte_count = 2;
+    static constexpr std::size_t byte_count =
+        depth_byte_count + UInt128Traits::id_byte_count;
+
+    const std::vector<Node> &nodes;
+    const std::vector<uint32_t> &depths;
+
+    uint8_t byte_msb_first(std::size_t nodeIndex,
+                           std::size_t byteIndex) const noexcept {
+        if (byteIndex == 0) {
+            return static_cast<uint8_t>(depths[nodeIndex] >> 8U);
+        }
+        if (byteIndex == 1) {
+            return static_cast<uint8_t>(depths[nodeIndex]);
+        }
+        return UInt128Traits::byte_msb_first(nodes[nodeIndex].id,
+                                             byteIndex - depth_byte_count);
+    }
+};
+
+template <typename FixedKey>
+inline uint8_t lsbByteForFixedKey(const FixedKey &key, std::size_t nodeIndex,
+                                  std::size_t byteOffset) noexcept {
+    return key.byte_msb_first(nodeIndex, FixedKey::byte_count - 1 - byteOffset);
 }
 
 template <typename DigitForIndex>
@@ -98,6 +126,24 @@ void radixLsdPass(std::vector<std::size_t> &order,
     order.swap(scratch);
 }
 
+template <typename FixedKey>
+void radixLsdSortByFixedKey(std::vector<std::size_t> &order,
+                            std::vector<std::size_t> &scratch,
+                            const FixedKey &key) {
+    if (order.size() <= 1) {
+        return;
+    }
+
+    auto digitForIndex = [&](std::size_t nodeIndex, std::size_t byteOffset) {
+        return lsbByteForFixedKey(key, nodeIndex, byteOffset);
+    };
+
+    for (std::size_t byteOffset = 0; byteOffset < FixedKey::byte_count;
+         ++byteOffset) {
+        radixLsdPass(order, scratch, digitForIndex, byteOffset);
+    }
+}
+
 inline void radixLsdSortBucketById(std::vector<std::size_t> &bucket,
                                    std::vector<std::size_t> &scratch,
                                    const std::vector<Node> &nodes) {
@@ -106,14 +152,7 @@ inline void radixLsdSortBucketById(std::vector<std::size_t> &bucket,
     }
 
     scratch.resize(bucket.size());
-    auto idDigitForIndex = [&](std::size_t nodeIndex, std::size_t byteOffset) {
-        return idByteLsbFirst(nodes[nodeIndex].id, byteOffset);
-    };
-
-    for (std::size_t byteOffset = 0; byteOffset < UInt128Traits::id_byte_count;
-         ++byteOffset) {
-        radixLsdPass(bucket, scratch, idDigitForIndex, byteOffset);
-    }
+    radixLsdSortByFixedKey(bucket, scratch, UInt128IdKey{nodes});
 }
 
 template <typename BucketSorter>
@@ -180,30 +219,17 @@ inline std::vector<Node> sortForestByCompositeDepth2LsdWithParent(
     std::iota(order.begin(), order.end(), 0);
 
     std::vector<std::size_t> scratch(order.size());
-    auto idDigitForIndex = [&](std::size_t nodeIndex, std::size_t byteOffset) {
-        return idByteLsbFirst(nodes[nodeIndex].id, byteOffset);
-    };
-    auto depthDigitForIndex = [&](std::size_t nodeIndex,
-                                  std::size_t byteOffset) {
-        return depthByteLsbFirst(depths[nodeIndex], byteOffset);
-    };
-
-    for (std::size_t byteOffset = 0; byteOffset < UInt128Traits::id_byte_count;
-         ++byteOffset) {
-        radixLsdPass(order, scratch, idDigitForIndex, byteOffset);
-    }
-    for (std::size_t byteOffset = 0; byteOffset < 2; ++byteOffset) {
-        radixLsdPass(order, scratch, depthDigitForIndex, byteOffset);
-    }
+    radixLsdSortByFixedKey(order, scratch,
+                           CompositeDepth2UInt128Key{nodes, depths});
 
     return materializeOrder(nodes, order);
 }
 
-inline void radixMsdSortBucketById(std::vector<std::size_t> &bucket,
-                                   const std::vector<Node> &nodes,
-                                   std::vector<detail::IdWordRange> &pending,
-                                   detail::ChunkedIndex *chunkBufferCurrent,
-                                   detail::ChunkedIndex *chunkBufferNext) {
+inline void radixMsdSortBucketById(
+    std::vector<std::size_t> &bucket, const std::vector<Node> &nodes,
+    std::vector<detail::IdChunkRange> &pending,
+    detail::ChunkedIndex<detail::chunk_byte_count> *chunkBufferCurrent,
+    detail::ChunkedIndex<detail::chunk_byte_count> *chunkBufferNext) {
     if (bucket.size() <= 1) {
         return;
     }
@@ -213,9 +239,9 @@ inline void radixMsdSortBucketById(std::vector<std::size_t> &bucket,
            (chunkBufferCurrent != nullptr && chunkBufferNext != nullptr));
 #endif
 
-    detail::sortRangeByIdWords(bucket, nodes, UInt128NodeTraits{}, 0,
-                               bucket.size(), 0, pending, chunkBufferCurrent,
-                               chunkBufferNext);
+    detail::sortRangeByIdChunks(bucket, nodes, UInt128NodeTraits{}, 0,
+                                bucket.size(), 0, pending, chunkBufferCurrent,
+                                chunkBufferNext);
 }
 
 inline void stableSortRangeSmallBinary(std::vector<std::size_t> &order,
@@ -258,15 +284,21 @@ inline std::vector<Node> sortForestByDenseDepth2BucketedMsdWithParent(
     const std::vector<std::size_t> &parentIndex) {
     auto sortBuckets = [&](std::vector<std::vector<std::size_t>> &buckets,
                            std::size_t maxBucketSize) {
-        std::vector<detail::IdWordRange> pending;
+        std::vector<detail::IdChunkRange> pending;
         pending.reserve(detail::initial_range_stack_capacity);
-        std::unique_ptr<detail::ChunkedIndex[]> chunkBufferCurrent;
-        std::unique_ptr<detail::ChunkedIndex[]> chunkBufferNext;
+        std::unique_ptr<detail::ChunkedIndex<detail::chunk_byte_count>[]>
+            chunkBufferCurrent;
+        std::unique_ptr<detail::ChunkedIndex<detail::chunk_byte_count>[]>
+            chunkBufferNext;
         if (maxBucketSize > detail::small_id_range_sort_threshold) {
-            chunkBufferCurrent = std::unique_ptr<detail::ChunkedIndex[]>(
-                new detail::ChunkedIndex[maxBucketSize]);
-            chunkBufferNext = std::unique_ptr<detail::ChunkedIndex[]>(
-                new detail::ChunkedIndex[maxBucketSize]);
+            chunkBufferCurrent = std::unique_ptr<
+                detail::ChunkedIndex<detail::chunk_byte_count>[]>(
+                new detail::ChunkedIndex<
+                    detail::chunk_byte_count>[maxBucketSize]);
+            chunkBufferNext = std::unique_ptr<
+                detail::ChunkedIndex<detail::chunk_byte_count>[]>(
+                new detail::ChunkedIndex<
+                    detail::chunk_byte_count>[maxBucketSize]);
         }
 
         for (auto &bucket : buckets) {
@@ -280,13 +312,358 @@ inline std::vector<Node> sortForestByDenseDepth2BucketedMsdWithParent(
                                                     sortBuckets);
 }
 
-// Benchmark wrapper for Composite MSD
-// Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
-// Implements a full byte-MSD sort over the composite key (2 bytes depth + 16
-// bytes ID).
+template <typename DigitForIndex>
+inline void radixMsdPartitionRangesBranchyLowcopy(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &scratch,
+    std::size_t begin, std::size_t end, std::size_t firstDigit,
+    std::size_t digitCount, DigitForIndex digitForIndex) {
+    struct Range {
+        std::size_t begin;
+        std::size_t end;
+        std::size_t digitIndex;
+        bool sourceIsOrder;
+    };
+
+    std::vector<Range> pending;
+    pending.reserve(detail::initial_range_stack_capacity);
+    pending.push_back({begin, end, firstDigit, true});
+
+    while (!pending.empty()) {
+        const Range range = pending.back();
+        pending.pop_back();
+
+        if (range.end - range.begin <= 1 || range.digitIndex == digitCount) {
+            if (!range.sourceIsOrder) {
+                for (std::size_t offset = range.begin; offset < range.end;
+                     ++offset) {
+                    order[offset] = scratch[offset];
+                }
+            }
+            continue;
+        }
+
+        std::array<std::size_t, detail::radix_bucket_count> counts{};
+        for (std::size_t offset = range.begin; offset < range.end; ++offset) {
+            const std::size_t nodeIndex =
+                range.sourceIsOrder ? order[offset] : scratch[offset];
+            ++counts[digitForIndex(nodeIndex, range.digitIndex)];
+        }
+
+        const std::size_t nonZeroBuckets =
+            detail::countNonZeroRadixBuckets(counts);
+        if (nonZeroBuckets == 0) {
+            continue;
+        }
+
+        if (nonZeroBuckets == 1) {
+            pending.push_back({range.begin, range.end, range.digitIndex + 1,
+                               range.sourceIsOrder});
+            continue;
+        }
+
+        std::array<std::size_t, detail::radix_bucket_count> bucketStarts{};
+        std::size_t currentOffset = range.begin;
+        for (std::size_t bucketIdx = 0; bucketIdx < detail::radix_bucket_count;
+             ++bucketIdx) {
+            bucketStarts[bucketIdx] = currentOffset;
+            currentOffset += counts[bucketIdx];
+        }
+
+        std::array<std::size_t, detail::radix_bucket_count> bucketOffsets =
+            bucketStarts;
+        for (std::size_t offset = range.begin; offset < range.end; ++offset) {
+            const std::size_t nodeIndex =
+                range.sourceIsOrder ? order[offset] : scratch[offset];
+            const uint8_t digit = digitForIndex(nodeIndex, range.digitIndex);
+            if (range.sourceIsOrder) {
+                scratch[bucketOffsets[digit]++] = order[offset];
+            } else {
+                order[bucketOffsets[digit]++] = scratch[offset];
+            }
+        }
+
+        for (std::size_t reverseBucketIdx = 0;
+             reverseBucketIdx < detail::radix_bucket_count;
+             ++reverseBucketIdx) {
+            const std::size_t bucketIdx =
+                detail::radix_bucket_count - 1 - reverseBucketIdx;
+            if (counts[bucketIdx] > 0) {
+                pending.push_back({bucketStarts[bucketIdx],
+                                   bucketOffsets[bucketIdx],
+                                   range.digitIndex + 1, !range.sourceIsOrder});
+            }
+        }
+    }
+}
+
+struct SupportLowcopyRange {
+    std::size_t begin;
+    std::size_t end;
+    std::size_t digitIndex;
+    bool sourceIsOrder;
+};
+
+template <typename DigitForOffset, typename MoveToOther>
+inline void radixMsdProcessSupportLowcopyRange(
+    std::size_t begin, std::size_t end, std::size_t digitIndex,
+    std::vector<SupportLowcopyRange> &pending, DigitForOffset digitForOffset,
+    MoveToOther moveToOther, bool childSourceIsOrder) {
+    std::array<std::size_t, detail::radix_bucket_count> counts{};
+    for (std::size_t offset = begin; offset < end; ++offset) {
+        ++counts[digitForOffset(offset, digitIndex)];
+    }
+
+    const std::size_t nonZeroBuckets = detail::countNonZeroRadixBuckets(counts);
+    if (nonZeroBuckets == 0) {
+        return;
+    }
+
+    if (nonZeroBuckets == 1) {
+        pending.push_back({begin, end, digitIndex + 1, !childSourceIsOrder});
+        return;
+    }
+
+    std::array<std::size_t, detail::radix_bucket_count> bucketStarts{};
+    std::size_t currentOffset = begin;
+    for (std::size_t bucketIdx = 0; bucketIdx < detail::radix_bucket_count;
+         ++bucketIdx) {
+        bucketStarts[bucketIdx] = currentOffset;
+        currentOffset += counts[bucketIdx];
+    }
+
+    std::array<std::size_t, detail::radix_bucket_count> bucketOffsets =
+        bucketStarts;
+    for (std::size_t offset = begin; offset < end; ++offset) {
+        const uint8_t digit = digitForOffset(offset, digitIndex);
+        moveToOther(offset, bucketOffsets[digit]++);
+    }
+
+    for (std::size_t reverseBucketIdx = 0;
+         reverseBucketIdx < detail::radix_bucket_count; ++reverseBucketIdx) {
+        const std::size_t bucketIdx =
+            detail::radix_bucket_count - 1 - reverseBucketIdx;
+        if (counts[bucketIdx] > 0) {
+            pending.push_back({bucketStarts[bucketIdx],
+                               bucketOffsets[bucketIdx], digitIndex + 1,
+                               childSourceIsOrder});
+        }
+    }
+}
+
+template <typename DigitForIndex>
+inline void radixMsdPartitionRangesFlattenedLowcopy(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &scratch,
+    std::size_t begin, std::size_t end, std::size_t firstDigit,
+    std::size_t digitCount, DigitForIndex digitForIndex) {
+    std::vector<SupportLowcopyRange> pending;
+    pending.reserve(detail::initial_range_stack_capacity);
+    pending.push_back({begin, end, firstDigit, true});
+
+    while (!pending.empty()) {
+        const SupportLowcopyRange range = pending.back();
+        pending.pop_back();
+
+        if (range.end - range.begin <= 1 || range.digitIndex == digitCount) {
+            if (!range.sourceIsOrder) {
+                for (std::size_t offset = range.begin; offset < range.end;
+                     ++offset) {
+                    order[offset] = scratch[offset];
+                }
+            }
+            continue;
+        }
+
+        if (range.sourceIsOrder) {
+            auto digitFromOrder = [&](std::size_t offset,
+                                      std::size_t digitIndex) {
+                return digitForIndex(order[offset], digitIndex);
+            };
+            auto moveOrderToScratch = [&](std::size_t offset,
+                                          std::size_t scratchOffset) {
+                scratch[scratchOffset] = order[offset];
+            };
+            radixMsdProcessSupportLowcopyRange(
+                range.begin, range.end, range.digitIndex, pending,
+                digitFromOrder, moveOrderToScratch, false);
+        } else {
+            auto digitFromScratch = [&](std::size_t offset,
+                                        std::size_t digitIndex) {
+                return digitForIndex(scratch[offset], digitIndex);
+            };
+            auto moveScratchToOrder = [&](std::size_t offset,
+                                          std::size_t orderOffset) {
+                order[orderOffset] = scratch[offset];
+            };
+            radixMsdProcessSupportLowcopyRange(
+                range.begin, range.end, range.digitIndex, pending,
+                digitFromScratch, moveScratchToOrder, true);
+        }
+    }
+}
+
+inline constexpr std::size_t batched_lowcopy_digit_budget = 2;
+inline constexpr std::size_t batched_lowcopy_min_range = 4096;
+
+struct BatchedLowcopyRange {
+    std::size_t begin;
+    std::size_t end;
+    std::size_t digitIndex;
+    std::size_t remainingBudget;
+    bool sourceIsOrder;
+};
+
+inline void coalescedCopyScratchRangesToOrder(
+    std::vector<std::size_t> &order, const std::vector<std::size_t> &scratch,
+    std::vector<SupportLowcopyRange> &scratchRanges) {
+    if (scratchRanges.empty()) {
+        return;
+    }
+
+    std::sort(
+        scratchRanges.begin(), scratchRanges.end(),
+        [](const SupportLowcopyRange &lhs, const SupportLowcopyRange &rhs) {
+            return lhs.begin < rhs.begin;
+        });
+
+    std::size_t rangeBegin = scratchRanges.front().begin;
+    std::size_t rangeEnd = scratchRanges.front().end;
+    for (std::size_t rangeIdx = 1; rangeIdx < scratchRanges.size();
+         ++rangeIdx) {
+        const SupportLowcopyRange range = scratchRanges[rangeIdx];
+        if (range.begin <= rangeEnd) {
+            rangeEnd = std::max(rangeEnd, range.end);
+            continue;
+        }
+        for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
+            order[offset] = scratch[offset];
+        }
+        rangeBegin = range.begin;
+        rangeEnd = range.end;
+    }
+
+    for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
+        order[offset] = scratch[offset];
+    }
+}
+
+template <typename DigitForIndex>
+inline void radixMsdPartitionRangesBatchedLowcopy(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &scratch,
+    std::size_t begin, std::size_t end, std::size_t firstDigit,
+    std::size_t digitCount, DigitForIndex digitForIndex) {
+    std::vector<BatchedLowcopyRange> pending;
+    pending.reserve(detail::initial_range_stack_capacity);
+    pending.push_back(
+        {begin, end, firstDigit, batched_lowcopy_digit_budget, true});
+
+    std::vector<SupportLowcopyRange> scratchOwnedCompletedRanges;
+    scratchOwnedCompletedRanges.reserve(detail::initial_range_stack_capacity);
+
+    auto copyScratchToOrder = [&](std::size_t rangeBegin,
+                                  std::size_t rangeEnd) {
+        for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
+            order[offset] = scratch[offset];
+        }
+    };
+
+    while (!pending.empty()) {
+        const BatchedLowcopyRange range = pending.back();
+        pending.pop_back();
+
+        if (range.end - range.begin <= 1 || range.digitIndex == digitCount) {
+            if (!range.sourceIsOrder) {
+                scratchOwnedCompletedRanges.push_back(
+                    {range.begin, range.end, range.digitIndex, false});
+            }
+            continue;
+        }
+
+        const std::size_t rangeSize = range.end - range.begin;
+        if (range.remainingBudget == 0 ||
+            rangeSize < batched_lowcopy_min_range) {
+            if (!range.sourceIsOrder) {
+                copyScratchToOrder(range.begin, range.end);
+            }
+            auto recordCompletedRange = [](std::size_t, std::size_t) {};
+            detail::radixMsdPartitionRanges(
+                order, scratch, range.begin, range.end, range.digitIndex,
+                digitCount, digitForIndex, recordCompletedRange);
+            continue;
+        }
+
+        std::array<std::size_t, detail::radix_bucket_count> counts{};
+        if (range.sourceIsOrder) {
+            for (std::size_t offset = range.begin; offset < range.end;
+                 ++offset) {
+                ++counts[digitForIndex(order[offset], range.digitIndex)];
+            }
+        } else {
+            for (std::size_t offset = range.begin; offset < range.end;
+                 ++offset) {
+                ++counts[digitForIndex(scratch[offset], range.digitIndex)];
+            }
+        }
+
+        const std::size_t nonZeroBuckets =
+            detail::countNonZeroRadixBuckets(counts);
+        if (nonZeroBuckets == 0) {
+            continue;
+        }
+
+        if (nonZeroBuckets == 1) {
+            pending.push_back({range.begin, range.end, range.digitIndex + 1,
+                               range.remainingBudget, range.sourceIsOrder});
+            continue;
+        }
+
+        std::array<std::size_t, detail::radix_bucket_count> bucketStarts{};
+        std::size_t currentOffset = range.begin;
+        for (std::size_t bucketIdx = 0; bucketIdx < detail::radix_bucket_count;
+             ++bucketIdx) {
+            bucketStarts[bucketIdx] = currentOffset;
+            currentOffset += counts[bucketIdx];
+        }
+
+        std::array<std::size_t, detail::radix_bucket_count> bucketOffsets =
+            bucketStarts;
+        if (range.sourceIsOrder) {
+            for (std::size_t offset = range.begin; offset < range.end;
+                 ++offset) {
+                const uint8_t digit =
+                    digitForIndex(order[offset], range.digitIndex);
+                scratch[bucketOffsets[digit]++] = order[offset];
+            }
+        } else {
+            for (std::size_t offset = range.begin; offset < range.end;
+                 ++offset) {
+                const uint8_t digit =
+                    digitForIndex(scratch[offset], range.digitIndex);
+                order[bucketOffsets[digit]++] = scratch[offset];
+            }
+        }
+
+        for (std::size_t reverseBucketIdx = 0;
+             reverseBucketIdx < detail::radix_bucket_count;
+             ++reverseBucketIdx) {
+            const std::size_t bucketIdx =
+                detail::radix_bucket_count - 1 - reverseBucketIdx;
+            if (counts[bucketIdx] > 0) {
+                pending.push_back(
+                    {bucketStarts[bucketIdx], bucketOffsets[bucketIdx],
+                     range.digitIndex + 1, range.remainingBudget - 1,
+                     !range.sourceIsOrder});
+            }
+        }
+    }
+
+    coalescedCopyScratchRangesToOrder(order, scratch,
+                                      scratchOwnedCompletedRanges);
+}
+
+template <typename Partitioner>
 inline std::vector<Node> sortForestByCompositeDepth2MsdWithParent(
-    const std::vector<Node> &nodes,
-    const std::vector<std::size_t> &parentIndex) {
+    const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
+    Partitioner partitioner) {
     const std::size_t nodeCount = nodes.size();
     if (nodeCount == 0) {
         return {};
@@ -299,23 +676,81 @@ inline std::vector<Node> sortForestByCompositeDepth2MsdWithParent(
     std::iota(order.begin(), order.end(), 0);
     std::vector<std::size_t> scratch(nodeCount);
 
+    const CompositeDepth2UInt128Key key{nodes, depths};
     auto digitForIndex = [&](std::size_t nodeIndex, std::size_t digitIndex) {
-        if (digitIndex == 0) {
-            return static_cast<uint8_t>(depths[nodeIndex] >> 8U);
-        }
-        if (digitIndex == 1) {
-            return static_cast<uint8_t>(depths[nodeIndex]);
-        }
-        return UInt128Traits::byte_msb_first(nodes[nodeIndex].id,
-                                             digitIndex - 2);
+        return key.byte_msb_first(nodeIndex, digitIndex);
     };
-
-    auto recordCompletedRange = [](std::size_t, std::size_t) {};
-
-    detail::radixMsdPartitionRanges(order, scratch, 0, order.size(), 0, 18,
-                                    digitForIndex, recordCompletedRange);
+    partitioner(order, scratch, digitForIndex);
 
     return materializeOrder(nodes, order);
+}
+
+// Benchmark wrapper for Composite MSD with full copyback after each scatter.
+// Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
+inline std::vector<Node> sortForestByCompositeDepth2MsdCopybackWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    auto partitioner = [](std::vector<std::size_t> &order,
+                          std::vector<std::size_t> &scratch,
+                          const auto &digitForIndex) {
+        auto recordCompletedRange = [](std::size_t, std::size_t) {};
+        detail::radixMsdPartitionRanges(order, scratch, 0, order.size(), 0,
+                                        CompositeDepth2UInt128Key::byte_count,
+                                        digitForIndex, recordCompletedRange);
+    };
+    return sortForestByCompositeDepth2MsdWithParent(nodes, parentIndex,
+                                                    partitioner);
+}
+
+// Benchmark wrapper for the previous branchy low-copy implementation. It keeps
+// source selection inside the count/scatter loops to provide direct A/B data
+// against the copyback default and the flattened low-copy contender.
+inline std::vector<Node> sortForestByCompositeDepth2MsdLowcopyBranchyWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    auto partitioner = [](std::vector<std::size_t> &order,
+                          std::vector<std::size_t> &scratch,
+                          const auto &digitForIndex) {
+        radixMsdPartitionRangesBranchyLowcopy(
+            order, scratch, 0, order.size(), 0,
+            CompositeDepth2UInt128Key::byte_count, digitForIndex);
+    };
+    return sortForestByCompositeDepth2MsdWithParent(nodes, parentIndex,
+                                                    partitioner);
+}
+
+// Benchmark wrapper for the flattened low-copy implementation that was tested
+// as a shipped candidate before copyback won the target-workload A/B run.
+// Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
+inline std::vector<Node>
+sortForestByCompositeDepth2MsdLowcopyFlattenedWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    auto partitioner = [](std::vector<std::size_t> &order,
+                          std::vector<std::size_t> &scratch,
+                          const auto &digitForIndex) {
+        radixMsdPartitionRangesFlattenedLowcopy(
+            order, scratch, 0, order.size(), 0,
+            CompositeDepth2UInt128Key::byte_count, digitForIndex);
+    };
+    return sortForestByCompositeDepth2MsdWithParent(nodes, parentIndex,
+                                                    partitioner);
+}
+
+// Benchmark wrapper for depth-limited low-copy. It keeps ownership state only
+// for large ranges and then falls back to the measured copyback default.
+inline std::vector<Node> sortForestByCompositeDepth2MsdLowcopyBatchedWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    auto partitioner = [](std::vector<std::size_t> &order,
+                          std::vector<std::size_t> &scratch,
+                          const auto &digitForIndex) {
+        radixMsdPartitionRangesBatchedLowcopy(
+            order, scratch, 0, order.size(), 0,
+            CompositeDepth2UInt128Key::byte_count, digitForIndex);
+    };
+    return sortForestByCompositeDepth2MsdWithParent(nodes, parentIndex,
+                                                    partitioner);
 }
 
 template <std::size_t DepthPrefixBytes, typename RangeSorter>
@@ -353,14 +788,17 @@ inline std::vector<Node> sortForestByAdaptiveRangeSorterWithParent(
     return materializeOrder(nodes, order);
 }
 
-template <typename SmallRangeSorter>
+template <std::size_t ChunkBytes = detail::chunk_byte_count,
+          typename CountPolicy = detail::FullClearCounts,
+          typename SmallRangeSorter>
 inline void
 sortDepthRangesByChunkMsd(std::vector<std::size_t> &order,
                           const std::vector<Node> &nodes,
                           const std::vector<detail::DepthRange> &depthRanges,
                           SmallRangeSorter smallRangeSorter) {
-    std::vector<detail::IdWordRange> pending;
+    std::vector<detail::IdChunkRange> pending;
     pending.reserve(detail::initial_range_stack_capacity);
+    detail::CountScratch<CountPolicy> countScratch;
 
     std::size_t maxRadixRangeSize = 0;
     for (const detail::DepthRange &range : depthRanges) {
@@ -370,38 +808,26 @@ sortDepthRangesByChunkMsd(std::vector<std::size_t> &order,
         }
     }
 
-    std::unique_ptr<detail::ChunkedIndex[]> chunkBufferCurrent;
-    std::unique_ptr<detail::ChunkedIndex[]> chunkBufferNext;
+    std::unique_ptr<detail::ChunkedIndex<ChunkBytes>[]> chunkBufferCurrent;
+    std::unique_ptr<detail::ChunkedIndex<ChunkBytes>[]> chunkBufferNext;
     if (maxRadixRangeSize > 0) {
-        chunkBufferCurrent = std::unique_ptr<detail::ChunkedIndex[]>(
-            new detail::ChunkedIndex[maxRadixRangeSize]);
-        chunkBufferNext = std::unique_ptr<detail::ChunkedIndex[]>(
-            new detail::ChunkedIndex[maxRadixRangeSize]);
+        chunkBufferCurrent =
+            std::unique_ptr<detail::ChunkedIndex<ChunkBytes>[]>(
+                new detail::ChunkedIndex<ChunkBytes>[maxRadixRangeSize]);
+        chunkBufferNext = std::unique_ptr<detail::ChunkedIndex<ChunkBytes>[]>(
+            new detail::ChunkedIndex<ChunkBytes>[maxRadixRangeSize]);
     }
 
     for (const detail::DepthRange &range : depthRanges) {
-        detail::sortRangeByIdWordsWithSmallSorter(
+        detail::sortRangeByIdChunksWithSmallSorter<ChunkBytes, CountPolicy>(
             order, nodes, UInt128NodeTraits{}, range.begin, range.end, 0,
             pending, chunkBufferCurrent.get(), chunkBufferNext.get(),
-            smallRangeSorter);
+            countScratch, smallRangeSorter);
     }
 }
 
-inline void
-sortDepthRangesByByteMsd(std::vector<std::size_t> &order,
-                         std::vector<std::size_t> &scratch,
-                         const std::vector<Node> &nodes,
-                         const std::vector<detail::DepthRange> &depthRanges) {
-    std::vector<detail::RadixRange> pending;
-    pending.reserve(detail::initial_range_stack_capacity);
-
-    for (const detail::DepthRange &range : depthRanges) {
-        detail::sortRangeByIdBytes(order, scratch, nodes, UInt128NodeTraits{},
-                                   range.begin, range.end, 0, pending);
-    }
-}
-
-inline void sortDepthRangesByChunkMsdLinearSmall(
+template <std::size_t ChunkBytes, typename CountPolicy>
+inline void sortDepthRangesByChunkMsdLinearSmallWithPolicy(
     std::vector<std::size_t> &order, std::vector<std::size_t> &unusedScratch,
     const std::vector<Node> &nodes,
     const std::vector<detail::DepthRange> &depthRanges) {
@@ -413,8 +839,58 @@ inline void sortDepthRangesByChunkMsdLinearSmall(
             detail::stableSortRangeSmall(sortOrder, sortNodes, traits,
                                          sortBegin, sortEnd);
         };
-    sortDepthRangesByChunkMsd(order, nodes, depthRanges,
-                              linearSmallRangeSorter);
+    sortDepthRangesByChunkMsd<ChunkBytes, CountPolicy>(
+        order, nodes, depthRanges, linearSmallRangeSorter);
+}
+
+inline void sortDepthRangesByU8ChunkMsdLinearSmall(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &unusedScratch,
+    const std::vector<Node> &nodes,
+    const std::vector<detail::DepthRange> &depthRanges) {
+    sortDepthRangesByChunkMsdLinearSmallWithPolicy<1, detail::FullClearCounts>(
+        order, unusedScratch, nodes, depthRanges);
+}
+
+inline void sortDepthRangesByChunkMsdLinearSmall(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &unusedScratch,
+    const std::vector<Node> &nodes,
+    const std::vector<detail::DepthRange> &depthRanges) {
+    sortDepthRangesByChunkMsdLinearSmallWithPolicy<detail::chunk_byte_count,
+                                                   detail::FullClearCounts>(
+        order, unusedScratch, nodes, depthRanges);
+}
+
+inline void sortDepthRangesByU32ChunkMsdLinearSmall(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &unusedScratch,
+    const std::vector<Node> &nodes,
+    const std::vector<detail::DepthRange> &depthRanges) {
+    sortDepthRangesByChunkMsdLinearSmallWithPolicy<4, detail::FullClearCounts>(
+        order, unusedScratch, nodes, depthRanges);
+}
+
+inline void sortDepthRangesByU8ChunkMsdTouchedCounts(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &unusedScratch,
+    const std::vector<Node> &nodes,
+    const std::vector<detail::DepthRange> &depthRanges) {
+    sortDepthRangesByChunkMsdLinearSmallWithPolicy<1, detail::TouchedCounts>(
+        order, unusedScratch, nodes, depthRanges);
+}
+
+inline void sortDepthRangesByU32ChunkMsdTouchedCounts(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &unusedScratch,
+    const std::vector<Node> &nodes,
+    const std::vector<detail::DepthRange> &depthRanges) {
+    sortDepthRangesByChunkMsdLinearSmallWithPolicy<4, detail::TouchedCounts>(
+        order, unusedScratch, nodes, depthRanges);
+}
+
+inline void sortDepthRangesByChunkMsdTouchedCounts(
+    std::vector<std::size_t> &order, std::vector<std::size_t> &unusedScratch,
+    const std::vector<Node> &nodes,
+    const std::vector<detail::DepthRange> &depthRanges) {
+    sortDepthRangesByChunkMsdLinearSmallWithPolicy<detail::chunk_byte_count,
+                                                   detail::TouchedCounts>(
+        order, unusedScratch, nodes, depthRanges);
 }
 
 inline void sortDepthRangesByChunkMsdBinarySmall(
@@ -429,50 +905,82 @@ inline void sortDepthRangesByChunkMsdBinarySmall(
                                      std::size_t sortEnd) {
         stableSortRangeSmallBinary(sortOrder, sortNodes, sortBegin, sortEnd);
     };
-    sortDepthRangesByChunkMsd(order, nodes, depthRanges,
-                              binarySmallRangeSorter);
+    sortDepthRangesByChunkMsd<detail::chunk_byte_count>(
+        order, nodes, depthRanges, binarySmallRangeSorter);
 }
 
 // Benchmark wrapper for Adaptive MSD (forced Depth-MSD grouping)
 // Locked to 2-byte depth prefix. Bypasses the dense grouping shortcut.
-inline std::vector<Node> sortForestByAdaptiveDepth2NoDenseMsdWithParent(
+inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkNoDenseWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveRangeSorterWithParent<2>(
-        nodes, parentIndex, false, sortDepthRangesByChunkMsdLinearSmall);
+        nodes, parentIndex, false, sortDepthRangesByU32ChunkMsdLinearSmall);
 }
 
 // Benchmark wrapper for Adaptive MSD
 // Locked to 2-byte depth prefix for apples-to-apples benchmark comparison,
 // although the underlying public API supports 1-4 byte prefixes.
-inline std::vector<Node> sortForestByAdaptiveDepth2WithParent(
+inline std::vector<Node> sortForestByAdaptiveDepth2U64ChunkWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveRangeSorterWithParent<2>(
         nodes, parentIndex, true, sortDepthRangesByChunkMsdLinearSmall);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2BinarySmallWithParent(
+inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    return sortForestByAdaptiveRangeSorterWithParent<2>(
+        nodes, parentIndex, true, sortDepthRangesByU32ChunkMsdLinearSmall);
+}
+
+inline std::vector<Node>
+sortForestByAdaptiveDepth2U8ChunkTouchedCountsWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    return sortForestByAdaptiveRangeSorterWithParent<2>(
+        nodes, parentIndex, true, sortDepthRangesByU8ChunkMsdTouchedCounts);
+}
+
+inline std::vector<Node>
+sortForestByAdaptiveDepth2U32ChunkTouchedCountsWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    return sortForestByAdaptiveRangeSorterWithParent<2>(
+        nodes, parentIndex, true, sortDepthRangesByU32ChunkMsdTouchedCounts);
+}
+
+inline std::vector<Node>
+sortForestByAdaptiveDepth2U64ChunkTouchedCountsWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    return sortForestByAdaptiveRangeSorterWithParent<2>(
+        nodes, parentIndex, true, sortDepthRangesByChunkMsdTouchedCounts);
+}
+
+inline std::vector<Node>
+sortForestByAdaptiveDepth2U64ChunkBinarySmallWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveRangeSorterWithParent<2>(
         nodes, parentIndex, true, sortDepthRangesByChunkMsdBinarySmall);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2ByteMsdWithParent(
+inline std::vector<Node> sortForestByAdaptiveDepth2U8ChunkWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveRangeSorterWithParent<2>(
-        nodes, parentIndex, true, sortDepthRangesByByteMsd);
+        nodes, parentIndex, true, sortDepthRangesByU8ChunkMsdLinearSmall);
 }
 
 // Benchmark wrapper for Adaptive MSD (4-byte depth prefix)
 // Demonstrates production-like capabilities with full 32-bit depth support.
-inline std::vector<Node> sortForestByAdaptiveDepth4WithParent(
+inline std::vector<Node> sortForestByAdaptiveDepth4U32ChunkWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveRangeSorterWithParent<4>(
-        nodes, parentIndex, true, sortDepthRangesByChunkMsdLinearSmall);
+        nodes, parentIndex, true, sortDepthRangesByU32ChunkMsdLinearSmall);
 }
 
 } // namespace forest_sorting::test_support

@@ -349,8 +349,9 @@ void printHelp() {
     std::cout
         << "|all\n"
         << "                                   depth2 labels are fixed-prefix "
-           "benchmarks; chunk-msd labels sort IDs by MSB-first 64-bit "
-           "chunks; byte-msd labels use true byte-level MSD\n"
+           "benchmarks; adaptive byte/u32/chunk labels use the unified "
+           "1/4/8-byte chunk-MSD engine; all selects the default set and "
+           "excludes touched-counts experiments\n"
         << "  --iterations N\n"
         << "  --warmup N\n"
         << "  --baseline-sort NAME             compare selected sorts against "

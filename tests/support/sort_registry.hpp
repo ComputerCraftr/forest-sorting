@@ -19,12 +19,19 @@ enum class SortKind : uint8_t {
     DepthBucketDepth2Lsd,
     CompositeLsd,
     DepthBucketDepth2ChunkMsd,
-    CompositeByteMsd,
-    AdaptiveDepth2ChunkMsd,
-    AdaptiveDepth2NoDenseChunkMsd,
-    AdaptiveDepth2ByteMsd,
-    AdaptiveDepth2ChunkMsdBinarySmall,
-    AdaptiveDepth4ChunkMsd,
+    CompositeByteMsdCopyback,
+    CompositeByteMsdLowcopyBranchy,
+    CompositeByteMsdLowcopyFlattened,
+    CompositeByteMsdLowcopyBatched,
+    AdaptiveDepth2U32ChunkMsdNoDense,
+    AdaptiveDepth2U32ChunkMsd,
+    AdaptiveDepth2U8ChunkMsd,
+    AdaptiveDepth2U64ChunkMsd,
+    AdaptiveDepth2U8ChunkMsdTouchedCounts,
+    AdaptiveDepth2U32ChunkMsdTouchedCounts,
+    AdaptiveDepth2U64ChunkMsdTouchedCounts,
+    AdaptiveDepth2U64ChunkMsdBinarySmall,
+    AdaptiveDepth4U32ChunkMsd,
 };
 
 using SortFunction = std::vector<Node> (*)(const std::vector<Node> &,
@@ -34,37 +41,61 @@ struct SortRegistryEntry {
     SortKind kind;
     std::string_view name;
     SortFunction sortFunction;
+    bool includeByDefault;
 };
 
-inline constexpr std::array<SortRegistryEntry, 10> kSortRegistry = {{
-    {SortKind::Comparison, "comparison", sortForestByComparisonWithParent},
+inline constexpr std::array<SortRegistryEntry, 17> kSortRegistry = {{
+    {SortKind::Comparison, "comparison", sortForestByComparisonWithParent,
+     true},
     {SortKind::DepthBucketDepth2Lsd, "depth-bucket-depth2-lsd",
-     sortForestByDenseDepth2BucketedLsdWithParent},
+     sortForestByDenseDepth2BucketedLsdWithParent, true},
     {SortKind::CompositeLsd, "composite-depth2-lsd",
-     sortForestByCompositeDepth2LsdWithParent},
+     sortForestByCompositeDepth2LsdWithParent, true},
     {SortKind::DepthBucketDepth2ChunkMsd, "depth-bucket-depth2-chunk-msd",
-     sortForestByDenseDepth2BucketedMsdWithParent},
-    {SortKind::CompositeByteMsd, "composite-depth2-byte-msd",
-     sortForestByCompositeDepth2MsdWithParent},
-    {SortKind::AdaptiveDepth2ChunkMsd, "adaptive-depth2-chunk-msd",
-     sortForestByAdaptiveDepth2WithParent},
-    {SortKind::AdaptiveDepth2NoDenseChunkMsd,
-     "adaptive-depth2-no-dense-chunk-msd",
-     sortForestByAdaptiveDepth2NoDenseMsdWithParent},
-    {SortKind::AdaptiveDepth2ByteMsd, "adaptive-depth2-byte-msd",
-     sortForestByAdaptiveDepth2ByteMsdWithParent},
-    {SortKind::AdaptiveDepth2ChunkMsdBinarySmall,
-     "adaptive-depth2-chunk-msd-binary-small",
-     sortForestByAdaptiveDepth2BinarySmallWithParent},
-    {SortKind::AdaptiveDepth4ChunkMsd, "adaptive-depth4-chunk-msd",
-     sortForestByAdaptiveDepth4WithParent},
+     sortForestByDenseDepth2BucketedMsdWithParent, true},
+    {SortKind::CompositeByteMsdCopyback, "composite-depth2-byte-msd-copyback",
+     sortForestByCompositeDepth2MsdCopybackWithParent, true},
+    {SortKind::CompositeByteMsdLowcopyBranchy,
+     "composite-depth2-byte-msd-lowcopy-branchy",
+     sortForestByCompositeDepth2MsdLowcopyBranchyWithParent, true},
+    {SortKind::CompositeByteMsdLowcopyFlattened,
+     "composite-depth2-byte-msd-lowcopy-flattened",
+     sortForestByCompositeDepth2MsdLowcopyFlattenedWithParent, true},
+    {SortKind::CompositeByteMsdLowcopyBatched,
+     "composite-depth2-byte-msd-lowcopy-batched",
+     sortForestByCompositeDepth2MsdLowcopyBatchedWithParent, true},
+    {SortKind::AdaptiveDepth2U32ChunkMsdNoDense,
+     "adaptive-depth2-u32-chunk-msd-no-dense",
+     sortForestByAdaptiveDepth2U32ChunkNoDenseWithParent, true},
+    {SortKind::AdaptiveDepth2U32ChunkMsd, "adaptive-depth2-u32-chunk-msd",
+     sortForestByAdaptiveDepth2U32ChunkWithParent, true},
+    {SortKind::AdaptiveDepth2U8ChunkMsd, "adaptive-depth2-u8-chunk-msd",
+     sortForestByAdaptiveDepth2U8ChunkWithParent, true},
+    {SortKind::AdaptiveDepth2U64ChunkMsd, "adaptive-depth2-u64-chunk-msd",
+     sortForestByAdaptiveDepth2U64ChunkWithParent, true},
+    {SortKind::AdaptiveDepth2U8ChunkMsdTouchedCounts,
+     "adaptive-depth2-u8-chunk-msd-touched-counts",
+     sortForestByAdaptiveDepth2U8ChunkTouchedCountsWithParent, false},
+    {SortKind::AdaptiveDepth2U32ChunkMsdTouchedCounts,
+     "adaptive-depth2-u32-chunk-msd-touched-counts",
+     sortForestByAdaptiveDepth2U32ChunkTouchedCountsWithParent, false},
+    {SortKind::AdaptiveDepth2U64ChunkMsdTouchedCounts,
+     "adaptive-depth2-u64-chunk-msd-touched-counts",
+     sortForestByAdaptiveDepth2U64ChunkTouchedCountsWithParent, false},
+    {SortKind::AdaptiveDepth2U64ChunkMsdBinarySmall,
+     "adaptive-depth2-u64-chunk-msd-binary-small",
+     sortForestByAdaptiveDepth2U64ChunkBinarySmallWithParent, true},
+    {SortKind::AdaptiveDepth4U32ChunkMsd, "adaptive-depth4-u32-chunk-msd",
+     sortForestByAdaptiveDepth4U32ChunkWithParent, true},
 }};
 
 inline std::vector<SortKind> allSortKinds() {
     std::vector<SortKind> sorts;
     sorts.reserve(kSortRegistry.size());
     for (const SortRegistryEntry &entry : kSortRegistry) {
-        sorts.push_back(entry.kind);
+        if (entry.includeByDefault) {
+            sorts.push_back(entry.kind);
+        }
     }
     return sorts;
 }

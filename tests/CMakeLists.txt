@@ -1,5 +1,7 @@
 add_executable(forest-sorting-tests
     forest_tests.cpp
+    benchmark_support_tests.cpp
+    generic_api_tests.cpp
 )
 
 target_link_libraries(forest-sorting-tests PRIVATE forest-sorting-lib)

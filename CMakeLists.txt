@@ -43,6 +43,8 @@ if(FOREST_CLANG_TIDY)
     set(_forest_tidy_files
         "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/forest_tests.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_support_tests.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/generic_api_tests.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/portable_include_tests.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/forest_bench.cpp"
         ${_forest_tidy_headers}

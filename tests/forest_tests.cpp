@@ -1,32 +1,30 @@
-#include "benchmark_stats.hpp"
 #include "forest_sorting/algorithms.hpp"
 #include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/hash.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
+#include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "parent_index_baselines.hpp"
 #include "sort_baselines.hpp"
 #include "sort_registry.hpp"
-#include "test_bytes.hpp"
+#include "test_harness.hpp"
 #include "uint128_fixtures.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 using forest_sorting::Node;
-using forest_sorting::sortedCopyByDepthAndId;
-using forest_sorting::sortedOrderByDepthAndId;
 using forest_sorting::sortForestByDepthAndId;
 using forest_sorting::UInt128;
 using forest_sorting::UInt128NodeTraits;
@@ -34,43 +32,11 @@ using forest_sorting::UInt128Traits;
 using forest_sorting::verifySortedByDepthAndId;
 using namespace forest_sorting::test_support;
 
-inline void require(bool condition,
-                    std::string_view message = "test condition failed") {
-    if (!condition) {
-        throw std::runtime_error(std::string(message));
-    }
-}
-
-void requireNear(double actual, double expected, double tolerance,
-                 std::string_view message) {
-    if (std::fabs(actual - expected) > tolerance) {
-        throw std::runtime_error(std::string(message));
-    }
-}
-
-void requireSortedByDepthThenId(const std::vector<std::size_t> &order,
-                                const std::vector<Node> &nodes,
-                                const std::vector<uint32_t> &depths) {
-    for (std::size_t nodeIdx = 1; nodeIdx < order.size(); ++nodeIdx) {
-        const uint32_t depth0 = depths[order[nodeIdx - 1]];
-        const uint32_t depth1 = depths[order[nodeIdx]];
-        if (depth0 != depth1) {
-            require(depth0 < depth1, "depths not in ascending order");
-        } else {
-            require(nodes[order[nodeIdx - 1]].id < nodes[order[nodeIdx]].id,
-                    "ids not in ascending order for same depth");
-        }
-    }
-}
-
 using forest_sorting::detail::buildParentIndex;
 using forest_sorting::detail::buildParentIndexRadixJoin;
 
-void runTest(const char *testName, void (*testFunction)()) {
-    std::cout << "RUN  " << testName << "\n";
-    testFunction();
-    std::cout << "PASS " << testName << "\n";
-}
+void runGenericApiAndDepthTests();
+void runBenchmarkSupportTests();
 
 void requireUniqueDatasetParentAndSortRegistries() {
     const auto datasetKinds = allDatasetKinds();
@@ -137,99 +103,59 @@ void requireAllRegisteredSortsMatch(const std::vector<Node> &nodes,
 
 void test_support_registries_are_unique() {
     requireUniqueDatasetParentAndSortRegistries();
+    require(parseSortKind("composite-depth2-byte-msd-copyback") ==
+                SortKind::CompositeByteMsdCopyback,
+            "copyback composite byte-MSD label is not registered");
+    require(parseSortKind("composite-depth2-byte-msd-lowcopy-branchy") ==
+                SortKind::CompositeByteMsdLowcopyBranchy,
+            "branchy low-copy composite byte-MSD label is not registered");
+    require(parseSortKind("composite-depth2-byte-msd-lowcopy-flattened") ==
+                SortKind::CompositeByteMsdLowcopyFlattened,
+            "flattened low-copy composite byte-MSD label is not registered");
+    require(parseSortKind("composite-depth2-byte-msd-lowcopy-batched") ==
+                SortKind::CompositeByteMsdLowcopyBatched,
+            "batched low-copy composite byte-MSD label is not registered");
+    require(parseSortKind("adaptive-depth2-u8-chunk-msd-touched-counts") ==
+                SortKind::AdaptiveDepth2U8ChunkMsdTouchedCounts,
+            "byte touched-count label is not registered");
+    require(parseSortKind("adaptive-depth2-u32-chunk-msd-touched-counts") ==
+                SortKind::AdaptiveDepth2U32ChunkMsdTouchedCounts,
+            "u32 touched-count label is not registered");
+    require(parseSortKind("adaptive-depth2-u64-chunk-msd-touched-counts") ==
+                SortKind::AdaptiveDepth2U64ChunkMsdTouchedCounts,
+            "u64 touched-count label is not registered");
+
+    const auto defaultSorts = allSortKinds();
+    require(
+        std::ranges::find(defaultSorts,
+                          SortKind::AdaptiveDepth2U8ChunkMsdTouchedCounts) ==
+            defaultSorts.end(),
+        "byte touched-count sort should be explicit opt-in");
+    require(
+        std::ranges::find(defaultSorts,
+                          SortKind::AdaptiveDepth2U32ChunkMsdTouchedCounts) ==
+            defaultSorts.end(),
+        "u32 touched-count sort should be explicit opt-in");
+    require(
+        std::ranges::find(defaultSorts,
+                          SortKind::AdaptiveDepth2U64ChunkMsdTouchedCounts) ==
+            defaultSorts.end(),
+        "u64 touched-count sort should be explicit opt-in");
 }
 
-void test_benchmark_stats_median_and_stddev() {
-    const auto oddStats = computeSampleStats({3.0, 1.0, 2.0});
-    requireNear(oddStats.median, 2.0, 0.0000001,
-                "odd benchmark median was wrong");
-    requireNear(oddStats.mean, 2.0, 0.0000001, "benchmark mean was wrong");
-    requireNear(oddStats.stddev, 1.0, 0.0000001,
-                "benchmark sample stddev was wrong");
+void test_touched_count_generation_overflow_resets_seen_state() {
+    forest_sorting::detail::TouchedCountScratch scratch;
+    scratch.seenGeneration.fill(std::numeric_limits<uint32_t>::max());
+    scratch.generation = std::numeric_limits<uint32_t>::max();
 
-    const auto evenStats = computeSampleStats({4.0, 1.0, 2.0, 3.0});
-    requireNear(evenStats.median, 2.5, 0.0000001,
-                "even benchmark median was wrong");
+    scratch.advanceGeneration();
 
-    const auto singleStats = computeSampleStats({7.0});
-    requireNear(singleStats.stddev, 0.0, 0.0000001,
-                "single-sample stddev should be zero");
-}
-
-void test_benchmark_bootstrap_ci_is_deterministic() {
-    const std::vector<double> samples = {1.0, 2.0, 4.0, 8.0};
-    const auto ci0 = bootstrapMeanCi95(samples, 123U, 128U);
-    const auto ci1 = bootstrapMeanCi95(samples, 123U, 128U);
-    requireNear(ci0.low, ci1.low, 0.0000001,
-                "bootstrap low CI was not deterministic");
-    requireNear(ci0.high, ci1.high, 0.0000001,
-                "bootstrap high CI was not deterministic");
-}
-
-void test_benchmark_paired_relative_delta() {
-    const std::vector<double> samples = {8.0, 16.0, 24.0};
-    const std::vector<double> baseline = {10.0, 20.0, 30.0};
-    const auto absoluteDeltas = pairedAbsoluteDeltas(samples, baseline);
-    require(absoluteDeltas.size() == 3U,
-            "paired absolute delta count was wrong");
-    requireNear(medianOfSamples(absoluteDeltas), -4.0, 0.0000001,
-                "paired absolute delta median was wrong");
-
-    const auto deltas = pairedRelativeDeltas(samples, baseline);
-    require(deltas.size() == 3U, "paired delta count was wrong");
-    for (double delta : deltas) {
-        requireNear(delta, -20.0, 0.0000001,
-                    "paired relative delta did not use matching samples");
-    }
-
-    const auto interval =
-        bootstrapPairedRelativeDeltaCi95(samples, baseline, 456U, 128U);
-    requireNear(interval.low, -20.0, 0.0000001,
-                "paired relative delta CI low was wrong");
-    requireNear(interval.high, -20.0, 0.0000001,
-                "paired relative delta CI high was wrong");
-}
-
-void test_benchmark_winner_classification_is_ci_aware() {
-    require(classifyBenchmarkWinner(-5.0, {-8.0, -1.0}) == "candidate",
-            "candidate should win when CI is entirely below zero");
-    require(classifyBenchmarkWinner(5.0, {1.0, 8.0}) == "baseline",
-            "baseline should win when CI is entirely above zero");
-    require(classifyBenchmarkWinner(-5.0, {-8.0, 1.0}) == "tie",
-            "candidate should not win when CI crosses zero");
-    require(classifyBenchmarkWinner(5.0, {-1.0, 8.0}) == "tie",
-            "baseline should not win when CI crosses zero");
-    require(classifyBenchmarkWinner(0.0, {0.0, 0.0}) == "tie",
-            "zero delta should classify as tie");
-}
-
-void test_benchmark_order_seed_controls_shuffle() {
-    std::vector<std::size_t> order0 = makeSequentialIndexOrder(16);
-    std::vector<std::size_t> order1 = makeSequentialIndexOrder(16);
-    std::vector<std::size_t> order2 = makeSequentialIndexOrder(16);
-
-    shuffleBenchmarkOrder(order0, 123U, 0);
-    shuffleBenchmarkOrder(order1, 123U, 0);
-    shuffleBenchmarkOrder(order2, 124U, 0);
-
-    require(order0 == order1,
-            "same order seed did not reproduce shuffled schedule");
-    require(order0 != order2,
-            "different order seed unexpectedly produced same schedule");
-}
-
-void test_benchmark_data_seed_controls_generated_data() {
-    const auto nodes0 =
-        makeGeneratedForestForKind(DatasetKind::Random, 1000, 123U);
-    const auto nodes1 =
-        makeGeneratedForestForKind(DatasetKind::Random, 1000, 123U);
-    const auto nodes2 =
-        makeGeneratedForestForKind(DatasetKind::Random, 1000, 124U);
-
-    require(sameNodes(nodes0, nodes1),
-            "same data seed did not reproduce generated data");
-    require(!sameNodes(nodes0, nodes2),
-            "different data seed unexpectedly produced same generated data");
+    require(scratch.generation == 1,
+            "touched-count generation did not reset after overflow");
+    require(std::ranges::all_of(
+                scratch.seenGeneration,
+                [](uint32_t generation) { return generation == 0; }),
+            "touched-count seen-generation table was not cleared");
 }
 
 void test_parent_builders_match_for_registered_datasets() {
@@ -397,6 +323,20 @@ void test_adaptive_sort_uses_low64_when_high64_matches() {
     require(sorted[1].id == makeId(9, 1));
     require(sorted[2].id == makeId(9, 2));
     require(sorted[3].id == makeId(9, 3));
+}
+
+void test_public_sort_matches_u32_chunk_support_path() {
+    constexpr std::size_t nodeCount = 10000;
+    const auto nodes = makeGeneratedForest(nodeCount, kCommonFixtureMaxDepth);
+    const auto parentIndex =
+        buildParentIndexForKind(ParentKind::Control, nodes);
+
+    const auto productionSorted = sortForestByDepthAndId(nodes);
+    const auto u32SupportSorted =
+        sortForestByAdaptiveDepth2U32ChunkWithParent(nodes, parentIndex);
+
+    require(sameNodes(productionSorted, u32SupportSorted));
+    require(verifySortedByDepthAndId(productionSorted));
 }
 
 void test_adaptive_sort_matches_comparison_for_shuffled_input() {
@@ -610,323 +550,6 @@ void test_verify_rejects_depth_over_one_byte_prefix_limit() {
     require(!verifySortedByDepthAndId<1>(nodes));
 }
 
-template <std::size_t ByteCount>
-void assert_generic_fixed_hash_api_orders_by_depth_then_id() {
-    using Id = TestBytes<ByteCount>;
-    using Node = TestNode<ByteCount>;
-    using Traits = TestBytesTraits<ByteCount>;
-
-    const Id root = makeTestBytes<ByteCount>(0, 10);
-    const Id childLow = makeTestBytes<ByteCount>(0, 20);
-    const Id childHigh = makeTestBytes<ByteCount>(1, 1);
-    const Id sibling = makeTestBytes<ByteCount>(0, 5);
-
-    std::vector<Node> nodes = {
-        {childHigh, root},
-        {sibling, Id{}},
-        {childLow, root},
-        {root, Id{}},
-    };
-
-    const auto explicitOrder =
-        forest_sorting::sortedOrderByDepthAndId<1>(nodes, Traits{});
-    const auto order = forest_sorting::sortedOrderByDepthAndId(nodes, Traits{});
-
-    require(order == explicitOrder);
-
-    require(order.size() == nodes.size());
-    require(order[0] == 1);
-    require(order[1] == 3);
-    require(order[2] == 2);
-    require(order[3] == 0);
-
-    const auto sorted = forest_sorting::sortedCopyByDepthAndId(nodes, Traits{});
-    require(sorted[0].id == sibling);
-    require(sorted[1].id == root);
-    require(sorted[2].id == childLow);
-    require(sorted[3].id == childHigh);
-
-    auto inPlace = nodes;
-    forest_sorting::sortInPlaceByDepthAndId(inPlace, Traits{});
-    require(inPlace[0].id == sibling);
-    require(inPlace[1].id == root);
-    require(inPlace[2].id == childLow);
-    require(inPlace[3].id == childHigh);
-
-    require(forest_sorting::verifySortedByDepthAndId(sorted, Traits{}));
-    require(!forest_sorting::verifySortedByDepthAndId(nodes, Traits{}));
-}
-
-void test_generic_16_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<16>();
-}
-
-void test_generic_20_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<20>();
-}
-
-void test_generic_28_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<28>();
-}
-
-void test_generic_32_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<32>();
-}
-
-void test_generic_64_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<64>();
-}
-
-void test_generic_37_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<37>();
-}
-
-void test_sort_accepts_depth_over_two_byte_prefix_limit_with_three_byte() {
-    std::vector<Node> nodes;
-    constexpr uint32_t depthLimit = 65536;
-    nodes.reserve(depthLimit + 1);
-
-    appendDeepChain(nodes, depthLimit, 0x5555ULL);
-
-    const auto dynamicSorted = sortForestByDepthAndId(nodes);
-    require(dynamicSorted.size() == static_cast<std::size_t>(depthLimit) + 1);
-    require(verifySortedByDepthAndId(dynamicSorted));
-
-    const auto sorted = sortForestByDepthAndId<3>(nodes);
-    require(sorted.size() == static_cast<std::size_t>(depthLimit) + 1);
-    require(verifySortedByDepthAndId<3>(sorted));
-
-    bool rejected = false;
-    try {
-        (void)sortForestByDepthAndId<2>(nodes);
-    } catch (const std::runtime_error &) {
-        rejected = true;
-    }
-    require(rejected, "two-byte prefix accepted depth 65536");
-}
-
-void test_precomputed_depth_api_validates_inputs() {
-    const std::vector<Node> nodes = {
-        {makeId(0, 1), 0},
-        {makeId(0, 2), 0},
-    };
-
-    bool rejectedSize = false;
-    try {
-        (void)forest_sorting::sortedOrderByDepthAndIdWithDepths<2>(
-            nodes, UInt128NodeTraits{}, std::vector<uint32_t>{0});
-    } catch (const std::runtime_error &) {
-        rejectedSize = true;
-    }
-    require(rejectedSize, "precomputed depth API accepted wrong depth count");
-
-    bool rejectedDepth = false;
-    try {
-        (void)forest_sorting::sortedOrderByDepthAndIdWithDepths<1>(
-            nodes, UInt128NodeTraits{}, std::vector<uint32_t>{0, 256});
-    } catch (const std::runtime_error &) {
-        rejectedDepth = true;
-    }
-    require(rejectedDepth, "precomputed depth API accepted prefix overflow");
-
-    bool rejectedSingletonDepth = false;
-    try {
-        (void)forest_sorting::sortedOrderByDepthAndIdWithDepths<1>(
-            std::vector<Node>{{makeId(0, 1), 0}}, UInt128NodeTraits{},
-            std::vector<uint32_t>{256});
-    } catch (const std::runtime_error &) {
-        rejectedSingletonDepth = true;
-    }
-    require(rejectedSingletonDepth,
-            "precomputed depth API accepted singleton prefix overflow");
-}
-
-void test_sort_accepts_singleton_with_four_byte_prefix() {
-    std::vector<Node> nodes;
-    nodes.push_back(Node{makeId(0, 1), 0});
-    // A singleton at depth 0 is valid under the 4-byte prefix configuration.
-    const auto sorted = sortForestByDepthAndId<4>(nodes);
-    require(verifySortedByDepthAndId<4>(sorted));
-}
-
-void test_sort_accepts_sparse_huge_depth_outlier() {
-    using forest_sorting::detail::shouldUseDenseDepthGrouping;
-
-    // Test threshold logic
-    require(shouldUseDenseDepthGrouping(100, kCommonFixtureMaxDepth),
-            "dense threshold rejected normal depth range");
-    require(!shouldUseDenseDepthGrouping(100, 0xFFFFFFFFU),
-            "dense threshold accepted UINT32_MAX sparse range");
-
-    std::vector<Node> nodes = {
-        {makeId(0, 9), 0}, // Index 0, Depth 0x01000000 (after manual patch)
-        {makeId(0, 2), 0}, // Index 1, Depth 0x01000000
-        {makeId(0, 5), 0}, // Index 2, Depth 0x01000000
-        {makeId(0, 1), 0}, // Index 3, Depth 0
-        {makeId(0, 3), 0}, // Index 4, Depth 0x01000001
-        {makeId(0, 4), 0}, // Index 5, Depth 0x01000100
-        {makeId(0, 6), 0}, // Index 6, Depth 0x01010000
-        {makeId(0, 7), 0}, // Index 7, Depth 0x01FFFFFF
-        {makeId(0, 8), 0}, // Index 8, Depth 0x80000000
-        {makeId(0, 0), 0}  // Index 9, Depth 0xFFFFFFFF
-    };
-
-    std::vector<uint32_t> depths = {
-        0x01000000, 0x01000000, 0x01000000, 0,          0x01000001,
-        0x01000100, 0x01010000, 0x01FFFFFF, 0x80000000, 0xFFFFFFFF};
-
-    // This should trigger sparse-depth MSD grouping because observed max depth
-    // is large.
-    const auto order = forest_sorting::sortedOrderByDepthAndIdWithDepths<4>(
-        nodes, UInt128NodeTraits{}, depths);
-
-    // Expected order:
-    // 0: depth 0,          id 1 (Input index 3)
-    // 1: depth 0x01000000, id 2 (Input index 1)
-    // 2: depth 0x01000000, id 5 (Input index 2)
-    // 3: depth 0x01000000, id 9 (Input index 0)
-    // 4: depth 0x01000001, id 3 (Input index 4)
-    // 5: depth 0x01000100, id 4 (Input index 5)
-    // 6: depth 0x01010000, id 6 (Input index 6)
-    // 7: depth 0x01FFFFFF, id 7 (Input index 7)
-    // 8: depth 0x80000000, id 8 (Input index 8)
-    // 9: depth 0xFFFFFFFF, id 0 (Input index 9)
-
-    require(order[0] == 3, "unexpected sparse depth order at index 0");
-    require(order[1] == 1, "unexpected sparse depth order at index 1");
-    require(order[2] == 2, "unexpected sparse depth order at index 2");
-    require(order[3] == 0, "unexpected sparse depth order at index 3");
-    require(order[4] == 4, "unexpected sparse depth order at index 4");
-    require(order[5] == 5, "unexpected sparse depth order at index 5");
-    require(order[6] == 6, "unexpected sparse depth order at index 6");
-    require(order[7] == 7, "unexpected sparse depth order at index 7");
-    require(order[8] == 8, "unexpected sparse depth order at index 8");
-    require(order[9] == 9, "unexpected sparse depth order at index 9");
-
-    requireSortedByDepthThenId(order, nodes, depths);
-}
-
-void test_dense_threshold_boundaries() {
-    using forest_sorting::detail::shouldUseDenseDepthGrouping;
-
-    const std::size_t maxDense = std::size_t{1} << 20;
-
-    // Zero nodes: threshold should not select dense work.
-    require(!shouldUseDenseDepthGrouping(0, kCommonFixtureMaxDepth),
-            "zero nodes should not prefer dense depth grouping");
-    require(!shouldUseDenseDepthGrouping(0, 0xFFFFFFFFU),
-            "zero nodes accepted huge dense depth grouping");
-
-    // One node: threshold should not be a semantic requirement.
-    require(!shouldUseDenseDepthGrouping(1, kCommonFixtureMaxDepth),
-            "one node should reject disproportionate dense grouping");
-    require(!shouldUseDenseDepthGrouping(1, 0xFFFFFFFFU),
-            "one node accepted huge dense depth grouping");
-
-    // Normal common-depth case.
-    require(shouldUseDenseDepthGrouping(100, kCommonFixtureMaxDepth),
-            "failed on 100 nodes, common fixture depth");
-    require(!shouldUseDenseDepthGrouping(100, 0xFFFFFFFFU),
-            "failed on 100 nodes, huge depth");
-
-    // Exact hard cap boundary
-    require(shouldUseDenseDepthGrouping(maxDense,
-                                        static_cast<uint32_t>(maxDense - 2)),
-            "failed at hard cap boundary");
-    require(!shouldUseDenseDepthGrouping(maxDense,
-                                         static_cast<uint32_t>(maxDense - 1)),
-            "failed just over hard cap boundary");
-
-    // Proportionality boundary (multiplier 4)
-    require(shouldUseDenseDepthGrouping(100, 398),
-            "failed on proportional dense boundary");
-    require(!shouldUseDenseDepthGrouping(100, 399),
-            "failed on non-proportional sparse boundary");
-
-    // Proportionality bypass when node count is high enough
-    require(shouldUseDenseDepthGrouping(maxDense,
-                                        static_cast<uint32_t>(maxDense - 2)),
-            "failed on large node count proportionality bypass");
-}
-
-void test_precomputed_depth_api_accepts_empty_input() {
-    std::vector<Node> nodes;
-    std::vector<uint32_t> depths;
-    const auto order = forest_sorting::sortedOrderByDepthAndIdWithDepths<4>(
-        nodes, UInt128NodeTraits{}, depths);
-    require(order.empty(), "empty precomputed-depth order changed");
-}
-
-void test_precomputed_depth_api_accepts_singleton_uint32_depth() {
-    std::vector<Node> nodes = {
-        {makeId(0, 1), 0},
-    };
-    std::vector<uint32_t> depths = {0xFFFFFFFFU};
-    const auto order = forest_sorting::sortedOrderByDepthAndIdWithDepths<4>(
-        nodes, UInt128NodeTraits{}, depths);
-    require(order.size() == 1, "singleton order size changed");
-    require(order[0] == 0, "singleton order changed");
-}
-
-void test_sort_accepts_shared_prefix_huge_depths() {
-    std::vector<Node> nodes = {
-        {makeId(0, 3), 0}, // Index 0, Depth 0x01020303
-        {makeId(0, 1), 0}, // Index 1, Depth 0x01020301
-        {makeId(0, 0), 0}, // Index 2, Depth 0x01020300
-        {makeId(0, 2), 0}  // Index 3, Depth 0x01020302
-    };
-
-    std::vector<uint32_t> depths = {0x01020303, 0x01020301, 0x01020300,
-                                    0x01020302};
-
-    const auto order = forest_sorting::sortedOrderByDepthAndIdWithDepths<4>(
-        nodes, UInt128NodeTraits{}, depths);
-
-    require(order[0] == 2, "shared prefix failed at index 0");
-    require(order[1] == 1, "shared prefix failed at index 1");
-    require(order[2] == 3, "shared prefix failed at index 2");
-    require(order[3] == 0, "shared prefix failed at index 3");
-
-    requireSortedByDepthThenId(order, nodes, depths);
-}
-
-void test_sort_accepts_all_equal_huge_depths() {
-    std::vector<Node> nodes = {{makeId(0, 9), 0},
-                               {makeId(0, 1), 0},
-                               {makeId(0, 5), 0},
-                               {makeId(0, 2), 0}};
-
-    std::vector<uint32_t> depths(nodes.size(), 0xFFFFFFFFU);
-
-    const auto order = forest_sorting::sortedOrderByDepthAndIdWithDepths<4>(
-        nodes, UInt128NodeTraits{}, depths);
-
-    require(nodes[order[0]].id == makeId(0, 1),
-            "equal huge depths failed at index 0");
-    require(nodes[order[1]].id == makeId(0, 2),
-            "equal huge depths failed at index 1");
-    require(nodes[order[2]].id == makeId(0, 5),
-            "equal huge depths failed at index 2");
-    require(nodes[order[3]].id == makeId(0, 9),
-            "equal huge depths failed at index 3");
-
-    requireSortedByDepthThenId(order, nodes, depths);
-}
-
-void test_sort_accepts_many_sparse_singletons() {
-    std::vector<Node> nodes;
-    std::vector<uint32_t> depths;
-    for (uint32_t nodeIdx = 0; nodeIdx < 100; ++nodeIdx) {
-        nodes.push_back({makeId(0, 100 - nodeIdx), 0});
-        depths.push_back(nodeIdx * 0x01000000U);
-    }
-
-    const auto order = forest_sorting::sortedOrderByDepthAndIdWithDepths<4>(
-        nodes, UInt128NodeTraits{}, depths);
-
-    requireSortedByDepthThenId(order, nodes, depths);
-}
-
 void test_fnv1a_128_hash() {
     using forest_sorting::UInt128Traits;
 
@@ -1006,23 +629,224 @@ void test_dense_depth2_baseline_limits() {
     }
 }
 
+std::vector<Node> rootNodesFromIds(const std::vector<UInt128> &ids) {
+    std::vector<Node> nodes;
+    nodes.reserve(ids.size());
+    for (UInt128 nodeId : ids) {
+        nodes.push_back({nodeId, 0});
+    }
+    return nodes;
+}
+
+void requireChunkMsdSortsMatchComparison(const std::vector<Node> &inputNodes,
+                                         std::string_view caseName) {
+    const auto parentIndex =
+        buildParentIndexForKind(ParentKind::Control, inputNodes);
+    const auto expected =
+        sortForestByComparisonWithParent(inputNodes, parentIndex);
+    const auto adaptiveByteChunk =
+        sortForestByAdaptiveDepth2U8ChunkWithParent(inputNodes, parentIndex);
+    const auto adaptiveU32Chunk =
+        sortForestByAdaptiveDepth2U32ChunkWithParent(inputNodes, parentIndex);
+    const auto adaptiveU64Chunk =
+        sortForestByAdaptiveDepth2U64ChunkWithParent(inputNodes, parentIndex);
+    const auto adaptiveByteTouched =
+        sortForestByAdaptiveDepth2U8ChunkTouchedCountsWithParent(inputNodes,
+                                                                 parentIndex);
+    const auto adaptiveU32Touched =
+        sortForestByAdaptiveDepth2U32ChunkTouchedCountsWithParent(inputNodes,
+                                                                  parentIndex);
+    const auto adaptiveU64Touched =
+        sortForestByAdaptiveDepth2U64ChunkTouchedCountsWithParent(inputNodes,
+                                                                  parentIndex);
+    const auto compositeCopyback =
+        sortForestByCompositeDepth2MsdCopybackWithParent(inputNodes,
+                                                         parentIndex);
+    const auto compositeBranchyLowcopy =
+        sortForestByCompositeDepth2MsdLowcopyBranchyWithParent(inputNodes,
+                                                               parentIndex);
+    const auto compositeFlattenedLowcopy =
+        sortForestByCompositeDepth2MsdLowcopyFlattenedWithParent(inputNodes,
+                                                                 parentIndex);
+    const auto compositeBatchedLowcopy =
+        sortForestByCompositeDepth2MsdLowcopyBatchedWithParent(inputNodes,
+                                                               parentIndex);
+
+    require(sameNodes(adaptiveByteChunk, expected),
+            std::string("adaptive 1-byte chunk MSD failed ") +
+                std::string(caseName));
+    require(sameNodes(adaptiveU32Chunk, expected),
+            std::string("adaptive 4-byte chunk MSD failed ") +
+                std::string(caseName));
+    require(sameNodes(adaptiveU64Chunk, expected),
+            std::string("adaptive 8-byte chunk MSD failed ") +
+                std::string(caseName));
+    require(sameNodes(adaptiveByteTouched, expected),
+            std::string("adaptive 1-byte touched-count chunk MSD failed ") +
+                std::string(caseName));
+    require(sameNodes(adaptiveU32Touched, expected),
+            std::string("adaptive 4-byte touched-count chunk MSD failed ") +
+                std::string(caseName));
+    require(sameNodes(adaptiveU64Touched, expected),
+            std::string("adaptive 8-byte touched-count chunk MSD failed ") +
+                std::string(caseName));
+    require(sameNodes(compositeCopyback, expected),
+            std::string("composite full-key byte MSD copyback failed ") +
+                std::string(caseName));
+    require(
+        sameNodes(compositeBranchyLowcopy, expected),
+        std::string("composite full-key byte MSD branchy low-copy failed ") +
+            std::string(caseName));
+    require(
+        sameNodes(compositeFlattenedLowcopy, expected),
+        std::string("composite full-key byte MSD flattened low-copy failed ") +
+            std::string(caseName));
+    require(
+        sameNodes(compositeBatchedLowcopy, expected),
+        std::string("composite full-key byte MSD batched low-copy failed ") +
+            std::string(caseName));
+}
+
+void test_radix_msd_partition_materializes_scratch_at_max_digit() {
+    std::vector<std::size_t> order = {0, 1, 2, 3};
+    std::vector<std::size_t> scratch(order.size());
+    const std::vector<uint16_t> keys = {0x0201U, 0x0201U, 0x0101U, 0x0101U};
+
+    auto digitForIndex = [&](std::size_t keyIndex, std::size_t digitIndex) {
+        if (digitIndex == 0) {
+            return static_cast<uint8_t>(keys[keyIndex] >> 8U);
+        }
+        return static_cast<uint8_t>(keys[keyIndex]);
+    };
+    auto rangeDone = [](std::size_t, std::size_t) {};
+
+    forest_sorting::detail::radixMsdPartitionRanges(
+        order, scratch, 0, order.size(), 0, 2, digitForIndex, rangeDone);
+
+    const std::vector<std::size_t> expected = {2, 3, 0, 1};
+    require(order == expected,
+            "scratch-owned max-digit completion was not materialized");
+}
+
+void test_chunk_msd_materializes_scratch_owned_small_ranges() {
+    std::vector<UInt128> ids;
+    ids.reserve(forest_sorting::detail::small_id_range_sort_threshold * 2U);
+    for (uint64_t low = 0;
+         low < forest_sorting::detail::small_id_range_sort_threshold; ++low) {
+        ids.push_back(
+            makeId(0xAA00000000000000ULL,
+                   static_cast<uint64_t>(
+                       forest_sorting::detail::small_id_range_sort_threshold) -
+                       low));
+        ids.push_back(makeId(
+            0xAA01000000000000ULL,
+            1000ULL +
+                static_cast<uint64_t>(
+                    forest_sorting::detail::small_id_range_sort_threshold -
+                    low)));
+    }
+
+    requireChunkMsdSortsMatchComparison(rootNodesFromIds(ids),
+                                        "scratch-owned small ranges");
+}
+
+void test_chunk_msd_handles_sorted_and_reverse_inputs() {
+    std::vector<UInt128> sortedIds;
+    sortedIds.reserve(96);
+    for (uint64_t index = 0; index < 96; ++index) {
+        sortedIds.push_back(makeId(index >> 4U, index + 1ULL));
+    }
+
+    std::vector<UInt128> reversedIds = sortedIds;
+    std::reverse(reversedIds.begin(), reversedIds.end());
+
+    requireChunkMsdSortsMatchComparison(rootNodesFromIds(sortedIds),
+                                        "already sorted input");
+    requireChunkMsdSortsMatchComparison(rootNodesFromIds(reversedIds),
+                                        "reverse sorted input");
+}
+
+void test_chunk_msd_handles_high_prefix_collisions() {
+    std::vector<UInt128> sameHighByte;
+    std::vector<UInt128> sameHigh32;
+    std::vector<UInt128> longPrefix;
+    sameHighByte.reserve(128);
+    sameHigh32.reserve(128);
+    longPrefix.reserve(128);
+
+    for (uint64_t index = 0; index < 128; ++index) {
+        sameHighByte.push_back(makeId(
+            0x7F00000000000000ULL | ((127ULL - index) << 48U), index + 1ULL));
+        sameHigh32.push_back(makeId(
+            0x1122334400000000ULL | ((127ULL - index) << 24U), index + 1ULL));
+        longPrefix.push_back(makeId(0x1122334455667788ULL,
+                                    0xFF00000000000000ULL | (127ULL - index)));
+    }
+
+    requireChunkMsdSortsMatchComparison(rootNodesFromIds(sameHighByte),
+                                        "same high byte IDs");
+    requireChunkMsdSortsMatchComparison(rootNodesFromIds(sameHigh32),
+                                        "same high 32-bit IDs");
+    requireChunkMsdSortsMatchComparison(rootNodesFromIds(longPrefix),
+                                        "long equal-prefix IDs");
+}
+
+void test_chunk_msd_handles_small_threshold_boundaries() {
+    for (std::size_t rangeSize :
+         {forest_sorting::detail::small_id_range_sort_threshold - 1U,
+          forest_sorting::detail::small_id_range_sort_threshold,
+          forest_sorting::detail::small_id_range_sort_threshold + 1U,
+          forest_sorting::detail::touched_count_max_range_size - 1U,
+          forest_sorting::detail::touched_count_max_range_size,
+          forest_sorting::detail::touched_count_max_range_size + 1U}) {
+        std::vector<UInt128> ids;
+        ids.reserve(rangeSize);
+        for (std::size_t index = 0; index < rangeSize; ++index) {
+            ids.push_back(makeId(0xABCD000000000000ULL,
+                                 static_cast<uint64_t>(rangeSize - index)));
+        }
+
+        requireChunkMsdSortsMatchComparison(rootNodesFromIds(ids),
+                                            "small threshold boundary");
+    }
+}
+
+void test_chunk_msd_duplicate_ids_are_rejected_before_sorting() {
+    const UInt128 duplicateId = makeId(0xDEADBEEFULL, 0xCAFEBABEULL);
+    const std::vector<Node> nodes = {
+        {duplicateId, 0},
+        {duplicateId, 0},
+    };
+
+    bool rejected = false;
+    try {
+        (void)buildParentIndexForKind(ParentKind::Control, nodes);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    require(rejected, "duplicate IDs reached chunk MSD sorting path");
+}
+
 int main() {
     try {
         std::cout << "forest sorting tests\n";
         runTest("support registries are unique",
                 test_support_registries_are_unique);
-        runTest("benchmark stats median and stddev",
-                test_benchmark_stats_median_and_stddev);
-        runTest("benchmark bootstrap CI is deterministic",
-                test_benchmark_bootstrap_ci_is_deterministic);
-        runTest("benchmark paired relative delta",
-                test_benchmark_paired_relative_delta);
-        runTest("benchmark winner classification is CI-aware",
-                test_benchmark_winner_classification_is_ci_aware);
-        runTest("benchmark order seed controls shuffle",
-                test_benchmark_order_seed_controls_shuffle);
-        runTest("benchmark data seed controls generated data",
-                test_benchmark_data_seed_controls_generated_data);
+        runTest("touched-count generation overflow resets seen state",
+                test_touched_count_generation_overflow_resets_seen_state);
+        runTest("radix MSD materializes scratch at max digit",
+                test_radix_msd_partition_materializes_scratch_at_max_digit);
+        runTest("chunk MSD materializes scratch-owned small ranges",
+                test_chunk_msd_materializes_scratch_owned_small_ranges);
+        runTest("chunk MSD handles sorted and reverse inputs",
+                test_chunk_msd_handles_sorted_and_reverse_inputs);
+        runTest("chunk MSD handles high-prefix collisions",
+                test_chunk_msd_handles_high_prefix_collisions);
+        runTest("chunk MSD handles small threshold boundaries",
+                test_chunk_msd_handles_small_threshold_boundaries);
+        runTest("chunk MSD duplicate IDs are rejected before sorting",
+                test_chunk_msd_duplicate_ids_are_rejected_before_sorting);
+        runBenchmarkSupportTests();
         runTest("compute depths for simple parent chain",
                 test_compute_depths_simple_chain);
         runTest("parent builders match for registered datasets",
@@ -1043,6 +867,8 @@ int main() {
                 test_adaptive_sort_orders_by_high64_before_low64);
         runTest("adaptive sort uses low64 when high64 matches",
                 test_adaptive_sort_uses_low64_when_high64_matches);
+        runTest("public sort matches u32 chunk support path",
+                test_public_sort_matches_u32_chunk_support_path);
         runTest("adaptive sort matches comparison for shuffled input",
                 test_adaptive_sort_matches_comparison_for_shuffled_input);
         runTest(
@@ -1059,26 +885,7 @@ int main() {
                 test_sort_rejects_depth_over_one_byte_prefix_limit);
         runTest("sort accepts depth 1024 with two-byte prefix",
                 test_sort_accepts_depth_1024_with_two_byte_prefix);
-        runTest(
-            "sort accepts depth over two-byte prefix limit with three-byte",
-            test_sort_accepts_depth_over_two_byte_prefix_limit_with_three_byte);
-        runTest("precomputed depth API validates inputs",
-                test_precomputed_depth_api_validates_inputs);
-        runTest("sort accepts singleton with four-byte prefix",
-                test_sort_accepts_singleton_with_four_byte_prefix);
-        runTest("sort accepts sparse huge depth outlier",
-                test_sort_accepts_sparse_huge_depth_outlier);
-        runTest("dense threshold boundaries", test_dense_threshold_boundaries);
-        runTest("precomputed depth API accepts empty input",
-                test_precomputed_depth_api_accepts_empty_input);
-        runTest("precomputed depth API accepts singleton uint32 depth",
-                test_precomputed_depth_api_accepts_singleton_uint32_depth);
-        runTest("sort accepts shared prefix huge depths",
-                test_sort_accepts_shared_prefix_huge_depths);
-        runTest("sort accepts all equal huge depths",
-                test_sort_accepts_all_equal_huge_depths);
-        runTest("sort accepts many sparse singletons",
-                test_sort_accepts_many_sparse_singletons);
+        runGenericApiAndDepthTests();
         runTest("fnv1a 128 hash correctness", test_fnv1a_128_hash);
 #ifdef __SIZEOF_INT128__
         runTest("uint128 hash matches portable word hash",
@@ -1102,18 +909,6 @@ int main() {
                 test_verify_rejects_duplicate_full_uint128_id);
         runTest("verify rejects depth over one-byte prefix limit",
                 test_verify_rejects_depth_over_one_byte_prefix_limit);
-        runTest("generic 16-byte public API forms",
-                test_generic_16_byte_public_api_forms);
-        runTest("generic 20-byte public API forms",
-                test_generic_20_byte_public_api_forms);
-        runTest("generic 28-byte public API forms",
-                test_generic_28_byte_public_api_forms);
-        runTest("generic 32-byte public API forms",
-                test_generic_32_byte_public_api_forms);
-        runTest("generic 64-byte public API forms",
-                test_generic_64_byte_public_api_forms);
-        runTest("generic 37-byte public API forms",
-                test_generic_37_byte_public_api_forms);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "forest-sorting-tests failed: " << error.what() << "\n";

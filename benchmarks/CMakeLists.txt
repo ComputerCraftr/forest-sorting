@@ -30,7 +30,7 @@ add_test(NAME forest-sorting-bench-csv
             --size 10000
             --dataset random
             --parent all
-            --sort adaptive-depth4-chunk-msd
+            --sort adaptive-depth4-u32-chunk-msd
             --iterations 2
             --warmup 1
             --baseline-parent control
@@ -56,7 +56,7 @@ add_test(NAME forest-sorting-bench-json
             --size 10000
             --dataset same-high64
             --parent all
-            --sort adaptive-depth4-chunk-msd
+            --sort adaptive-depth4-u32-chunk-msd
             --iterations 2
             --warmup 1
             --baseline-parent control
@@ -74,7 +74,7 @@ add_test(NAME forest-sorting-bench-json-raw
             --size 10000
             --dataset random
             --parent control
-            --sort adaptive-depth2-chunk-msd
+            --sort adaptive-depth2-u32-chunk-msd
             --iterations 1
             --warmup 0
             --order-seed 0x5eed
@@ -90,7 +90,7 @@ add_test(NAME forest-sorting-bench-json-none
             --size 10000
             --dataset random
             --parent control
-            --sort adaptive-depth2-chunk-msd
+            --sort adaptive-depth2-u32-chunk-msd
             --iterations 1
             --warmup 0
             --order-seed 0x5eed
@@ -114,12 +114,45 @@ add_test(NAME forest-sorting-bench-fixed-prefix-sorts
             --dataset random
             --sort depth-bucket-depth2-lsd
             --sort depth-bucket-depth2-chunk-msd
-            --sort adaptive-depth2-chunk-msd
-            --sort adaptive-depth2-byte-msd
-            --sort adaptive-depth2-chunk-msd-binary-small
+            --sort adaptive-depth2-u64-chunk-msd
+            --sort adaptive-depth2-u8-chunk-msd
+            --sort adaptive-depth2-u32-chunk-msd
+            --sort adaptive-depth2-u64-chunk-msd-binary-small
             --iterations 2
             --warmup 1
-            --baseline-sort adaptive-depth2-chunk-msd
+            --baseline-sort adaptive-depth2-u32-chunk-msd
+            --order-seed 0x5eed
+            --data-seed 0x5eed1234
+)
+add_test(NAME forest-sorting-bench-composite-byte-msd-ab
+    COMMAND forest-sorting-bench
+            --size 10000
+            --dataset random
+            --parent control
+            --sort composite-depth2-byte-msd-copyback
+            --sort composite-depth2-byte-msd-lowcopy-branchy
+            --sort composite-depth2-byte-msd-lowcopy-flattened
+            --sort composite-depth2-byte-msd-lowcopy-batched
+            --baseline-sort composite-depth2-byte-msd-copyback
+            --iterations 1
+            --warmup 0
+            --order-seed 0x5eed
+            --data-seed 0x5eed1234
+)
+add_test(NAME forest-sorting-bench-touched-counts-ab
+    COMMAND forest-sorting-bench
+            --size 10000
+            --dataset same-high64
+            --parent control
+            --sort adaptive-depth2-u8-chunk-msd
+            --sort adaptive-depth2-u8-chunk-msd-touched-counts
+            --sort adaptive-depth2-u32-chunk-msd
+            --sort adaptive-depth2-u32-chunk-msd-touched-counts
+            --sort adaptive-depth2-u64-chunk-msd
+            --sort adaptive-depth2-u64-chunk-msd-touched-counts
+            --baseline-sort adaptive-depth2-u32-chunk-msd
+            --iterations 1
+            --warmup 0
             --order-seed 0x5eed
             --data-seed 0x5eed1234
 )

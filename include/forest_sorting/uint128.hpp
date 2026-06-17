@@ -53,12 +53,37 @@ struct UInt128Traits {
         return static_cast<uint8_t>(nodeId >> shift);
     }
 
-    static uint64_t chunk_msb_first(UInt128 nodeId,
-                                    std::size_t chunkIndex) noexcept {
+    static uint64_t chunk64_msb_first(UInt128 nodeId,
+                                      std::size_t chunkIndex) noexcept {
         if (chunkIndex == 0) {
             return static_cast<uint64_t>(nodeId >> 64U);
         }
         return static_cast<uint64_t>(nodeId);
+    }
+
+    static uint32_t chunk32_msb_first(UInt128 nodeId,
+                                      std::size_t chunkIndex) noexcept {
+        const std::size_t shift = (3U - chunkIndex) * 32U;
+        return static_cast<uint32_t>(nodeId >> shift);
+    }
+
+    template <std::size_t ChunkBytes>
+    static auto chunk_msb_first(UInt128 nodeId,
+                                std::size_t chunkIndex) noexcept {
+        static_assert(
+            ChunkBytes == 1 || ChunkBytes == 2 || ChunkBytes == 4 ||
+                ChunkBytes == 8,
+            "UInt128 chunk_msb_first supports 1, 2, 4, and 8-byte chunks");
+        if constexpr (ChunkBytes == 1) {
+            return byte_msb_first(nodeId, chunkIndex);
+        } else if constexpr (ChunkBytes == 2) {
+            const std::size_t shift = (7U - chunkIndex) * 16U;
+            return static_cast<uint16_t>(nodeId >> shift);
+        } else if constexpr (ChunkBytes == 4) {
+            return chunk32_msb_first(nodeId, chunkIndex);
+        } else {
+            return chunk64_msb_first(nodeId, chunkIndex);
+        }
     }
 
     // Deterministic default hash for the optional UInt128 compatibility type.

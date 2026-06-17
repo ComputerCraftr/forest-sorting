@@ -14,7 +14,8 @@ inline constexpr std::size_t radix_bits = 8;
 inline constexpr std::size_t radix_bucket_count = 256;
 inline constexpr std::size_t chunk_byte_count = 8;
 
-inline uint8_t wordByte(uint64_t value, std::size_t byteIndex) noexcept {
+template <typename Word>
+inline uint8_t wordByte(Word value, std::size_t byteIndex) noexcept {
     return static_cast<uint8_t>(value >> (byteIndex * radix_bits));
 }
 
@@ -106,7 +107,7 @@ void radixMsdPartitionCoreWithStack(
 
         copyFromScratch(currentRange.begin, currentRange.end);
 
-        // Push in reverse order so that bucket 0 is popped and processed first
+        // Push in reverse order so that bucket 0 is popped and processed first.
         for (std::size_t reverseBucketIdx = 0;
              reverseBucketIdx < radix_bucket_count; ++reverseBucketIdx) {
             const std::size_t bucketIdx =
@@ -168,6 +169,23 @@ concept HasChunkMsbFirst =
         } -> std::convertible_to<std::uint64_t>;
     };
 
+template <std::size_t ChunkBytes> struct ChunkValue;
+template <> struct ChunkValue<1> {
+    using Type = uint8_t;
+};
+template <> struct ChunkValue<2> {
+    using Type = uint16_t;
+};
+template <> struct ChunkValue<4> {
+    using Type = uint32_t;
+};
+template <> struct ChunkValue<8> {
+    using Type = uint64_t;
+};
+
+template <std::size_t ChunkBytes>
+using ChunkValueType = ChunkValue<ChunkBytes>::Type;
+
 template <typename Id, typename Traits>
 bool idLess(const Id &lhs, const Id &rhs, const Traits &traits) noexcept {
     for (std::size_t byteIndex = 0; byteIndex < Traits::id_byte_count;
@@ -181,28 +199,44 @@ bool idLess(const Id &lhs, const Id &rhs, const Traits &traits) noexcept {
     return false;
 }
 
-template <typename Id, typename Traits>
-uint64_t buildChunkFromBytes(const Id &nodeId, std::size_t chunkIndex,
-                             const Traits &traits) noexcept {
+template <std::size_t ChunkBytes, typename Id, typename Traits>
+ChunkValueType<ChunkBytes> buildChunkFromBytes(const Id &nodeId,
+                                               std::size_t chunkIndex,
+                                               const Traits &traits) noexcept {
     uint64_t value = 0;
-    const std::size_t firstByte = chunkIndex * chunk_byte_count;
-    for (std::size_t offset = 0; offset < chunk_byte_count; ++offset) {
+    const std::size_t firstByte = chunkIndex * ChunkBytes;
+    for (std::size_t offset = 0; offset < ChunkBytes; ++offset) {
         const std::size_t byteIndex = firstByte + offset;
         value <<= radix_bits;
         if (byteIndex < Traits::id_byte_count) {
             value |= traits.byte_msb_first(nodeId, byteIndex);
         }
     }
-    return value;
+    return static_cast<ChunkValueType<ChunkBytes>>(value);
 }
 
-template <typename Id, typename Traits>
-uint64_t chunkMsbFirst(const Id &nodeId, std::size_t chunkIndex,
-                       const Traits &traits) noexcept {
-    if constexpr (HasChunkMsbFirst<Traits, Id>) {
-        return traits.chunk_msb_first(nodeId, chunkIndex);
+template <typename Traits, typename Id, std::size_t ChunkBytes>
+concept HasTemplatedChunkMsbFirst =
+    requires(const Traits &traits, const Id &nodeId, std::size_t chunkIndex) {
+        {
+            traits.template chunk_msb_first<ChunkBytes>(nodeId, chunkIndex)
+        } -> std::convertible_to<ChunkValueType<ChunkBytes>>;
+    };
+
+template <std::size_t ChunkBytes = chunk_byte_count, typename Id,
+          typename Traits>
+ChunkValueType<ChunkBytes> chunkMsbFirst(const Id &nodeId,
+                                         std::size_t chunkIndex,
+                                         const Traits &traits) noexcept {
+    if constexpr (HasTemplatedChunkMsbFirst<Traits, Id, ChunkBytes>) {
+        return static_cast<ChunkValueType<ChunkBytes>>(
+            traits.template chunk_msb_first<ChunkBytes>(nodeId, chunkIndex));
+    } else if constexpr (ChunkBytes == chunk_byte_count &&
+                         HasChunkMsbFirst<Traits, Id>) {
+        return static_cast<ChunkValueType<ChunkBytes>>(
+            traits.chunk_msb_first(nodeId, chunkIndex));
     } else {
-        return buildChunkFromBytes(nodeId, chunkIndex, traits);
+        return buildChunkFromBytes<ChunkBytes>(nodeId, chunkIndex, traits);
     }
 }
 
