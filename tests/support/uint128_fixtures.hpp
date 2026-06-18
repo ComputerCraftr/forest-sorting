@@ -26,9 +26,10 @@ inline constexpr uint64_t kRandomDatasetSeedSalt = 0x200001ULL;
 inline constexpr uint64_t kOutlierBaseSeedSalt = 0x100001ULL;
 inline constexpr uint64_t kOutlierShuffleSeedSalt = 0x100002ULL;
 inline constexpr uint64_t kSameHigh64DatasetSeedSalt = 0x200003ULL;
-inline constexpr uint64_t kSequentialDatasetSeedSalt = 0x200004ULL;
-inline constexpr uint64_t kExternalParentsDatasetSeedSalt = 0x200005ULL;
-inline constexpr uint64_t kSiblingsDatasetSeedSalt = 0x200006ULL;
+inline constexpr uint64_t kSameHigh32DatasetSeedSalt = 0x200004ULL;
+inline constexpr uint64_t kSequentialDatasetSeedSalt = 0x200005ULL;
+inline constexpr uint64_t kExternalParentsDatasetSeedSalt = 0x200006ULL;
+inline constexpr uint64_t kSiblingsDatasetSeedSalt = 0x200007ULL;
 
 inline UInt128 makeId(uint64_t high, uint64_t low) {
     return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
@@ -48,18 +49,20 @@ enum class DatasetKind : uint8_t {
     Random,
     Outliers,
     SameHigh64,
+    SameHigh32,
     Sequential,
     ExternalParents,
     Siblings,
 };
 
-inline constexpr std::array<DatasetKind, 6> kAllDatasetKinds = {
-    DatasetKind::Random,          DatasetKind::Outliers,
-    DatasetKind::SameHigh64,      DatasetKind::Sequential,
-    DatasetKind::ExternalParents, DatasetKind::Siblings,
+inline constexpr std::array<DatasetKind, 7> kAllDatasetKinds = {
+    DatasetKind::Random,     DatasetKind::Outliers,
+    DatasetKind::SameHigh64, DatasetKind::SameHigh32,
+    DatasetKind::Sequential, DatasetKind::ExternalParents,
+    DatasetKind::Siblings,
 };
 
-constexpr std::array<DatasetKind, 6> allDatasetKinds() noexcept {
+constexpr std::array<DatasetKind, 7> allDatasetKinds() noexcept {
     return kAllDatasetKinds;
 }
 
@@ -71,6 +74,8 @@ inline std::string_view datasetName(DatasetKind datasetKind) {
         return "outliers";
     case DatasetKind::SameHigh64:
         return "same-high64";
+    case DatasetKind::SameHigh32:
+        return "same-high32";
     case DatasetKind::Sequential:
         return "sequential";
     case DatasetKind::ExternalParents:
@@ -211,6 +216,22 @@ inline std::vector<Node> makeGeneratedForestWithHighWordCollisions(
     return shuffledCopy(nodes, shuffleSeed);
 }
 
+inline std::vector<Node> makeGeneratedForestWithHigh32Collisions(
+    std::size_t nodeCount, uint32_t depthCycleMax, uint64_t shuffleSeed) {
+    constexpr uint64_t sharedHigh32 = 0x12345678ULL;
+    auto idGenerator = [&](std::size_t nodeIdx) {
+        const uint64_t high =
+            (sharedHigh32 << 32U) |
+            static_cast<uint64_t>((nodeCount - nodeIdx) & 0xffffffffULL);
+        const uint64_t low = static_cast<uint64_t>(nodeIdx) + 1ULL;
+        return makeId(high, low);
+    };
+
+    std::vector<Node> nodes =
+        makeDepthLinkedForest(nodeCount, depthCycleMax, idGenerator);
+    return shuffledCopy(nodes, shuffleSeed);
+}
+
 inline std::vector<Node> makeSequentialIdForest(std::size_t nodeCount,
                                                 uint32_t depthCycleMax,
                                                 uint64_t shuffleSeed) {
@@ -265,6 +286,10 @@ makeGeneratedForestForKind(DatasetKind datasetKind, std::size_t nodeCount,
         return makeGeneratedForestWithHighWordCollisions(
             nodeCount, kCommonFixtureMaxDepth,
             mixFixtureSeed(dataSeed, kSameHigh64DatasetSeedSalt));
+    case DatasetKind::SameHigh32:
+        return makeGeneratedForestWithHigh32Collisions(
+            nodeCount, kCommonFixtureMaxDepth,
+            mixFixtureSeed(dataSeed, kSameHigh32DatasetSeedSalt));
     case DatasetKind::Sequential:
         return makeSequentialIdForest(
             nodeCount, kCommonFixtureMaxDepth,

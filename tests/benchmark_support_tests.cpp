@@ -1,11 +1,16 @@
 #include "benchmark_stats.hpp"
+#include "forest_sorting/uint128.hpp"
+#include "forest_sorting/uint128_forest.hpp"
 #include "test_harness.hpp"
 #include "uint128_fixtures.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 using namespace forest_sorting::test_support;
+using forest_sorting::Node;
+using forest_sorting::UInt128;
 
 void test_benchmark_stats_median_and_stddev() {
     const auto oddStats = computeSampleStats({3.0, 1.0, 2.0});
@@ -100,6 +105,32 @@ void test_benchmark_data_seed_controls_generated_data() {
             "different data seed unexpectedly produced same generated data");
 }
 
+void test_same_high32_dataset_shape() {
+    const auto nodes =
+        makeGeneratedForestForKind(DatasetKind::SameHigh32, 1000, 123U);
+    require(!nodes.empty(), "same-high32 dataset was empty");
+
+    const uint64_t expectedHigh32 =
+        static_cast<uint64_t>(nodes.front().id >> 96U);
+    bool sawDifferentLowerBits = false;
+    const UInt128 firstLowerBits =
+        nodes.front().id &
+        ((static_cast<UInt128>(1) << 96U) - static_cast<UInt128>(1));
+
+    for (const Node &node : nodes) {
+        const uint64_t high32 = static_cast<uint64_t>(node.id >> 96U);
+        require(high32 == expectedHigh32,
+                "same-high32 dataset changed the top 32 bits");
+        const UInt128 lowerBits = node.id & ((static_cast<UInt128>(1) << 96U) -
+                                             static_cast<UInt128>(1));
+        sawDifferentLowerBits =
+            sawDifferentLowerBits || (lowerBits != firstLowerBits);
+    }
+
+    require(sawDifferentLowerBits,
+            "same-high32 dataset did not vary lower ID bits");
+}
+
 void runBenchmarkSupportTests() {
     runTest("benchmark stats median and stddev",
             test_benchmark_stats_median_and_stddev);
@@ -113,4 +144,5 @@ void runBenchmarkSupportTests() {
             test_benchmark_order_seed_controls_shuffle);
     runTest("benchmark data seed controls generated data",
             test_benchmark_data_seed_controls_generated_data);
+    runTest("same-high32 dataset shape", test_same_high32_dataset_shape);
 }

@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 template <std::size_t ByteCount> struct TestBytes {
     std::array<uint8_t, ByteCount> bytes{};
@@ -55,17 +56,36 @@ template <std::size_t ByteCount> struct TestBytesTraits {
         return nodeId.bytes[byteIndex];
     }
 
+    template <std::size_t ChunkBytes>
+    auto chunk_msb_first(const Id &nodeId,
+                         std::size_t chunkIndex) const noexcept {
+        static_assert(ChunkBytes == 1 || ChunkBytes == 2 || ChunkBytes == 4 ||
+                          ChunkBytes == 8,
+                      "chunk_msb_first supports 1, 2, 4, and 8-byte chunks");
+        using ValueType = std::conditional_t<
+            ChunkBytes == 1, uint8_t,
+            std::conditional_t<
+                ChunkBytes == 2, uint16_t,
+                std::conditional_t<ChunkBytes == 4, uint32_t, uint64_t>>>;
+
+        if constexpr (ChunkBytes == 1) {
+            return nodeId.bytes[chunkIndex];
+        } else {
+            ValueType value = 0;
+            const std::size_t start = chunkIndex * ChunkBytes;
+            for (std::size_t byteIdx = 0; byteIdx < ChunkBytes; ++byteIdx) {
+                value <<= 8;
+                if (start + byteIdx < ByteCount) {
+                    value |= nodeId.bytes[start + byteIdx];
+                }
+            }
+            return value;
+        }
+    }
+
     uint64_t chunk_msb_first(const Id &nodeId,
                              std::size_t chunkIndex) const noexcept {
-        uint64_t value = 0;
-        const std::size_t start = chunkIndex * 8;
-        for (std::size_t byteIdx = 0; byteIdx < 8; ++byteIdx) {
-            value <<= 8;
-            if (start + byteIdx < ByteCount) {
-                value |= nodeId.bytes[start + byteIdx];
-            }
-        }
-        return value;
+        return chunk_msb_first<8>(nodeId, chunkIndex);
     }
 };
 

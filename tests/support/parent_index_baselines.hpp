@@ -60,25 +60,32 @@ template <typename Id, typename IdTraits> class FlatIdIndex {
         : idTraits_(idTraits),
           slots_(detail::nextPowerOfTwo((itemCount * 2) + 1)) {}
 
-    void insert(const Id &nodeId, std::size_t nodeIndex) {
+    bool insert(const Id &nodeId, std::size_t nodeIndex) {
         const std::size_t mask = slots_.size() - 1;
         std::size_t slotIndex = idTraits_.hash(nodeId) & mask;
-        while (slots_[slotIndex].occupied) {
-            if (idTraits_.equal(slots_[slotIndex].id, nodeId)) {
-                throw std::runtime_error("duplicate node id");
+        for (;;) {
+            FlatIdIndexSlot<Id> &slot = slots_[slotIndex];
+            if (!slot.occupied) {
+                slot = FlatIdIndexSlot<Id>{nodeId, nodeIndex, true};
+                return true;
+            }
+            if (idTraits_.equal(slot.id, nodeId)) {
+                return false;
             }
             slotIndex = (slotIndex + 1) & mask;
         }
-
-        slots_[slotIndex] = FlatIdIndexSlot<Id>{nodeId, nodeIndex, true};
     }
 
     std::size_t find(const Id &nodeId) const noexcept {
         const std::size_t mask = slots_.size() - 1;
         std::size_t slotIndex = idTraits_.hash(nodeId) & mask;
-        while (slots_[slotIndex].occupied) {
-            if (idTraits_.equal(slots_[slotIndex].id, nodeId)) {
-                return slots_[slotIndex].nodeIndex;
+        for (;;) {
+            const FlatIdIndexSlot<Id> &slot = slots_[slotIndex];
+            if (!slot.occupied) {
+                break;
+            }
+            if (idTraits_.equal(slot.id, nodeId)) {
+                return slot.nodeIndex;
             }
             slotIndex = (slotIndex + 1) & mask;
         }
@@ -97,7 +104,9 @@ buildParentIndexFlatHashBaseline(const Nodes &nodes, const Traits &traits) {
     using Id = Traits::Id;
     FlatIdIndex<Id, Traits> idToIndex(nodes.size(), traits);
     for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        idToIndex.insert(traits.id(nodes[nodeIdx]), nodeIdx);
+        if (!idToIndex.insert(traits.id(nodes[nodeIdx]), nodeIdx)) {
+            throw std::runtime_error("duplicate node id");
+        }
     }
 
     std::vector<std::size_t> parent(nodes.size(), detail::no_parent);

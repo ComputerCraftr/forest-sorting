@@ -328,17 +328,16 @@ Options parseOptions(int argc, char **argv) {
 }
 
 void printHelp() {
-    std::cout
-        << "usage: forest-sorting-bench [options]\n"
-        << "\n"
-        << "options:\n"
-        << "  --format table|csv|tsv|json\n"
-        << "  --size N                         repeatable\n"
-        << "  --dataset "
-           "random|outliers|same-high64|sequential|external-parents|siblings|"
-           "all\n"
-        << "  --parent unordered|flat|control|radix|all\n"
-        << "  --sort ";
+    std::cout << "usage: forest-sorting-bench [options]\n"
+              << "\n"
+              << "options:\n"
+              << "  --format table|csv|tsv|json\n"
+              << "  --size N                         repeatable\n"
+              << "  --dataset "
+                 "random|outliers|same-high64|same-high32|sequential|"
+                 "external-parents|siblings|all\n"
+              << "  --parent unordered|flat|control|radix|all\n"
+              << "  --sort ";
     for (std::size_t entryIdx = 0; entryIdx < kSortRegistry.size();
          ++entryIdx) {
         if (entryIdx > 0) {
@@ -351,7 +350,7 @@ void printHelp() {
         << "                                   depth2 labels are fixed-prefix "
            "benchmarks; adaptive byte/u32/chunk labels use the unified "
            "1/4/8-byte chunk-MSD engine; all selects the default set and "
-           "excludes touched-counts experiments\n"
+           "excludes opt-in tuning experiments\n"
         << "  --iterations N\n"
         << "  --warmup N\n"
         << "  --baseline-sort NAME             compare selected sorts against "

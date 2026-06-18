@@ -49,22 +49,8 @@ struct UInt128Traits {
 
     static uint8_t byte_msb_first(UInt128 nodeId,
                                   std::size_t byteIndex) noexcept {
-        const std::size_t shift = (id_byte_count - 1 - byteIndex) * 8U;
+        const std::size_t shift = (id_byte_count - 1 - byteIndex) * 8;
         return static_cast<uint8_t>(nodeId >> shift);
-    }
-
-    static uint64_t chunk64_msb_first(UInt128 nodeId,
-                                      std::size_t chunkIndex) noexcept {
-        if (chunkIndex == 0) {
-            return static_cast<uint64_t>(nodeId >> 64U);
-        }
-        return static_cast<uint64_t>(nodeId);
-    }
-
-    static uint32_t chunk32_msb_first(UInt128 nodeId,
-                                      std::size_t chunkIndex) noexcept {
-        const std::size_t shift = (3U - chunkIndex) * 32U;
-        return static_cast<uint32_t>(nodeId >> shift);
     }
 
     template <std::size_t ChunkBytes>
@@ -77,13 +63,22 @@ struct UInt128Traits {
         if constexpr (ChunkBytes == 1) {
             return byte_msb_first(nodeId, chunkIndex);
         } else if constexpr (ChunkBytes == 2) {
-            const std::size_t shift = (7U - chunkIndex) * 16U;
+            const std::size_t shift = (7 - chunkIndex) * 16;
             return static_cast<uint16_t>(nodeId >> shift);
         } else if constexpr (ChunkBytes == 4) {
-            return chunk32_msb_first(nodeId, chunkIndex);
+            const std::size_t shift = (3 - chunkIndex) * 32;
+            return static_cast<uint32_t>(nodeId >> shift);
         } else {
-            return chunk64_msb_first(nodeId, chunkIndex);
+            if (chunkIndex == 0) {
+                return static_cast<uint64_t>(nodeId >> 64);
+            }
+            return static_cast<uint64_t>(nodeId);
         }
+    }
+
+    static uint64_t chunk_msb_first(UInt128 nodeId,
+                                    std::size_t chunkIndex) noexcept {
+        return chunk_msb_first<8>(nodeId, chunkIndex);
     }
 
     // Deterministic default hash for the optional UInt128 compatibility type.

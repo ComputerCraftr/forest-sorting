@@ -2,7 +2,9 @@
 #define FOREST_SORTING_DETAIL_RADIX_HPP
 
 #include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/radix_counts.hpp"
 #include <array>
+#include <bit>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -10,8 +12,6 @@
 
 namespace forest_sorting::detail {
 
-inline constexpr std::size_t radix_bits = 8;
-inline constexpr std::size_t radix_bucket_count = 256;
 inline constexpr std::size_t chunk_byte_count = 8;
 
 template <typename Word>
@@ -24,26 +24,99 @@ inline uint8_t depthByteMsbFirst(uint32_t depth,
     return static_cast<uint8_t>(depth >> ((3U - byteIndex) * 8U));
 }
 
-inline std::size_t countNonZeroRadixBuckets(
-    const std::array<std::size_t, radix_bucket_count> &counts) noexcept {
-    std::size_t nonZeroBuckets = 0;
-    for (std::size_t bucketIdx = 0; bucketIdx < radix_bucket_count;
-         bucketIdx += 4) {
-        nonZeroBuckets += static_cast<std::size_t>(counts[bucketIdx + 0] != 0);
-        nonZeroBuckets += static_cast<std::size_t>(counts[bucketIdx + 1] != 0);
-        nonZeroBuckets += static_cast<std::size_t>(counts[bucketIdx + 2] != 0);
-        nonZeroBuckets += static_cast<std::size_t>(counts[bucketIdx + 3] != 0);
-    }
-    return nonZeroBuckets;
-}
-
 struct RadixRange {
     std::size_t begin;
     std::size_t end;
     std::size_t digitIndex;
 };
 
-template <typename DigitForOffset, typename MoveToScratch,
+inline void pushPartitionedRanges(
+    std::vector<RadixRange> &stack,
+    const std::array<std::size_t, radix_bucket_count> &bucketStarts,
+    const FullClearCountScratch &countScratch, std::size_t nextDigitIndex) {
+    for (std::size_t reverseBucketIdx = 0;
+         reverseBucketIdx < radix_bucket_count; ++reverseBucketIdx) {
+        const std::size_t bucketIdx = radix_bucket_count - 1 - reverseBucketIdx;
+        const std::size_t start = bucketStarts[bucketIdx];
+        const std::size_t end = countScratch.counts[bucketIdx];
+        if (end > start) {
+            stack.push_back({start, end, nextDigitIndex});
+        }
+    }
+}
+
+inline void pushPartitionedRanges(
+    std::vector<RadixRange> &stack,
+    const std::array<std::size_t, radix_bucket_count> &bucketStarts,
+    const BitmaskTouchedCountScratch &countScratch,
+    std::size_t nextDigitIndex) {
+    for (std::size_t reverseMaskIdx = 0; reverseMaskIdx < 4; ++reverseMaskIdx) {
+        const std::size_t maskIdx = 3 - reverseMaskIdx;
+        uint64_t bits = countScratch.touchedMask[maskIdx];
+        while (bits != 0) {
+            const auto leadingZeros = std::countl_zero(bits);
+            const std::size_t bit =
+                63U - static_cast<std::size_t>(leadingZeros);
+            const std::size_t bucketIdx = (maskIdx * 64U) + bit;
+            const std::size_t start = bucketStarts[bucketIdx];
+            const std::size_t end = countScratch.counts[bucketIdx];
+            if (end > start) {
+                stack.push_back({start, end, nextDigitIndex});
+            }
+            bits ^= uint64_t{1} << bit;
+        }
+    }
+}
+
+template <typename CountScratch, typename DigitForOffset,
+          typename MoveToScratch, typename CopyFromScratch>
+void partitionSingleRange(const RadixRange &currentRange,
+                          std::vector<RadixRange> &stack,
+                          CountScratch &countScratch,
+                          DigitForOffset digitForOffset,
+                          MoveToScratch moveToScratch,
+                          CopyFromScratch copyFromScratch) {
+    resetRadixCounts(countScratch);
+    for (std::size_t offset = currentRange.begin; offset < currentRange.end;
+         ++offset) {
+        noteRadixDigit(countScratch,
+                       digitForOffset(offset, currentRange.digitIndex));
+    }
+
+    const std::size_t nonZeroBuckets = countNonZeroBuckets(countScratch);
+
+    if (nonZeroBuckets == 0) {
+        return;
+    }
+
+    if (nonZeroBuckets == 1) {
+        stack.push_back({currentRange.begin, currentRange.end,
+                         currentRange.digitIndex + 1});
+        clearRadixCounts(countScratch);
+        return;
+    }
+
+    prefixRadixCounts(countScratch, currentRange.begin);
+
+    std::array<std::size_t, radix_bucket_count> bucketStarts =
+        countScratch.counts;
+
+    for (std::size_t offset = currentRange.begin; offset < currentRange.end;
+         ++offset) {
+        const uint8_t digit = digitForOffset(offset, currentRange.digitIndex);
+        moveToScratch(offset, countScratch.counts[digit]++);
+    }
+
+    copyFromScratch(currentRange.begin, currentRange.end);
+
+    pushPartitionedRanges(stack, bucketStarts, countScratch,
+                          currentRange.digitIndex + 1);
+
+    clearRadixCounts(countScratch);
+}
+
+template <typename CountScratch = FullClearCountScratch,
+          typename DigitForOffset, typename MoveToScratch,
           typename CopyFromScratch, typename RangeDone,
           typename SmallRangeHandler>
 void radixMsdPartitionCoreWithStack(
@@ -54,6 +127,8 @@ void radixMsdPartitionCoreWithStack(
     SmallRangeHandler smallRangeHandler) {
     stack.clear();
     stack.push_back({begin, end, firstDigit});
+
+    CountScratch countScratch;
 
     while (!stack.empty()) {
         const auto currentRange = stack.back();
@@ -70,54 +145,8 @@ void radixMsdPartitionCoreWithStack(
             continue;
         }
 
-        std::array<std::size_t, radix_bucket_count> counts{};
-        for (std::size_t offset = currentRange.begin; offset < currentRange.end;
-             ++offset) {
-            ++counts[digitForOffset(offset, currentRange.digitIndex)];
-        }
-
-        const std::size_t nonZeroBuckets = countNonZeroRadixBuckets(counts);
-
-        if (nonZeroBuckets == 0) {
-            continue;
-        }
-
-        if (nonZeroBuckets == 1) {
-            stack.push_back({currentRange.begin, currentRange.end,
-                             currentRange.digitIndex + 1});
-            continue;
-        }
-
-        std::array<std::size_t, radix_bucket_count> bucketStarts{};
-        std::size_t currentOffset = currentRange.begin;
-        for (std::size_t bucketIdx = 0; bucketIdx < radix_bucket_count;
-             ++bucketIdx) {
-            bucketStarts[bucketIdx] = currentOffset;
-            currentOffset += counts[bucketIdx];
-        }
-
-        std::array<std::size_t, radix_bucket_count> bucketOffsets =
-            bucketStarts;
-        for (std::size_t offset = currentRange.begin; offset < currentRange.end;
-             ++offset) {
-            const uint8_t digit =
-                digitForOffset(offset, currentRange.digitIndex);
-            moveToScratch(offset, bucketOffsets[digit]++);
-        }
-
-        copyFromScratch(currentRange.begin, currentRange.end);
-
-        // Push in reverse order so that bucket 0 is popped and processed first.
-        for (std::size_t reverseBucketIdx = 0;
-             reverseBucketIdx < radix_bucket_count; ++reverseBucketIdx) {
-            const std::size_t bucketIdx =
-                radix_bucket_count - 1 - reverseBucketIdx;
-            if (counts[bucketIdx] > 0) {
-                stack.push_back({bucketStarts[bucketIdx],
-                                 bucketOffsets[bucketIdx],
-                                 currentRange.digitIndex + 1});
-            }
-        }
+        partitionSingleRange(currentRange, stack, countScratch, digitForOffset,
+                             moveToScratch, copyFromScratch);
     }
 }
 
@@ -134,9 +163,9 @@ void radixMsdPartitionCore(std::size_t begin, std::size_t end,
     auto noSmallRange = [](std::size_t, std::size_t, std::size_t) {
         return false;
     };
-    radixMsdPartitionCoreWithStack(begin, end, firstDigit, digitCount, stack,
-                                   digitForOffset, moveToScratch,
-                                   copyFromScratch, rangeDone, noSmallRange);
+    radixMsdPartitionCoreWithStack<FullClearCountScratch>(
+        begin, end, firstDigit, digitCount, stack, digitForOffset,
+        moveToScratch, copyFromScratch, rangeDone, noSmallRange);
 }
 
 template <typename DigitForIndex, typename RangeDone>

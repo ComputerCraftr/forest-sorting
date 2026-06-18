@@ -1,8 +1,10 @@
+#include "adaptive_sort_variants.hpp"
 #include "forest_sorting/algorithms.hpp"
 #include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/hash.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/detail/radix.hpp"
+#include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "parent_index_baselines.hpp"
@@ -18,7 +20,6 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -72,6 +73,12 @@ void requireUniqueDatasetParentAndSortRegistries() {
     validateSortRegistry();
 }
 
+void requireSortIsExplicitOptIn(SortKind sortKind, std::string_view message) {
+    const auto defaultSorts = allSortKinds();
+    require(std::ranges::find(defaultSorts, sortKind) == defaultSorts.end(),
+            message);
+}
+
 void assertParentBuildersMatch(const std::vector<Node> &nodes) {
     const auto expected = buildParentIndexForKind(ParentKind::Unordered, nodes);
     for (ParentKind parentKind : allParentKinds()) {
@@ -115,47 +122,107 @@ void test_support_registries_are_unique() {
     require(parseSortKind("composite-depth2-byte-msd-lowcopy-batched") ==
                 SortKind::CompositeByteMsdLowcopyBatched,
             "batched low-copy composite byte-MSD label is not registered");
-    require(parseSortKind("adaptive-depth2-u8-chunk-msd-touched-counts") ==
-                SortKind::AdaptiveDepth2U8ChunkMsdTouchedCounts,
-            "byte touched-count label is not registered");
-    require(parseSortKind("adaptive-depth2-u32-chunk-msd-touched-counts") ==
-                SortKind::AdaptiveDepth2U32ChunkMsdTouchedCounts,
-            "u32 touched-count label is not registered");
-    require(parseSortKind("adaptive-depth2-u64-chunk-msd-touched-counts") ==
-                SortKind::AdaptiveDepth2U64ChunkMsdTouchedCounts,
-            "u64 touched-count label is not registered");
+    require(parseSortKind("adaptive-depth2-u32-chunk-msd-binary-small32") ==
+                SortKind::AdaptiveDepth2U32ChunkMsdBinarySmall32,
+            "binary small32 tuning label is not registered");
+    require(
+        parseSortKind("adaptive-depth2-u32-chunk-msd-exponential-small32") ==
+            SortKind::AdaptiveDepth2U32ChunkMsdExponentialSmall32,
+        "exponential small32 tuning label is not registered");
+    require(parseSortKind("adaptive-depth2-u32-chunk-msd-full-clear") ==
+                SortKind::AdaptiveDepth2U32ChunkMsdFullClear,
+            "full-clear u32 chunk MSD comparator label is not registered");
+    require(
+        parseSortKind("adaptive-depth2-u32-chunk-msd-touched-bitmask-128") ==
+            SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask128,
+        "touched-bitmask 128 tuning label is not registered");
+    require(
+        parseSortKind("adaptive-depth2-u32-chunk-msd-touched-bitmask-256") ==
+            SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask256,
+        "touched-bitmask 256 tuning label is not registered");
+    require(
+        parseSortKind("adaptive-depth2-u32-chunk-msd-touched-bitmask-1024") ==
+            SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask1024,
+        "touched-bitmask 1024 tuning label is not registered");
+    require(
+        parseSortKind("adaptive-depth2-u32-chunk-msd-touched-bitmask-4096") ==
+            SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask4096,
+        "touched-bitmask 4096 tuning label is not registered");
+    require(datasetName(DatasetKind::SameHigh32) == "same-high32",
+            "same-high32 dataset label is not registered");
 
-    const auto defaultSorts = allSortKinds();
-    require(
-        std::ranges::find(defaultSorts,
-                          SortKind::AdaptiveDepth2U8ChunkMsdTouchedCounts) ==
-            defaultSorts.end(),
-        "byte touched-count sort should be explicit opt-in");
-    require(
-        std::ranges::find(defaultSorts,
-                          SortKind::AdaptiveDepth2U32ChunkMsdTouchedCounts) ==
-            defaultSorts.end(),
-        "u32 touched-count sort should be explicit opt-in");
-    require(
-        std::ranges::find(defaultSorts,
-                          SortKind::AdaptiveDepth2U64ChunkMsdTouchedCounts) ==
-            defaultSorts.end(),
-        "u64 touched-count sort should be explicit opt-in");
+    requireSortIsExplicitOptIn(
+        SortKind::AdaptiveDepth2U32ChunkMsdBinarySmall32,
+        "binary small32 tuning sort should be explicit opt-in");
+    requireSortIsExplicitOptIn(
+        SortKind::AdaptiveDepth2U32ChunkMsdExponentialSmall32,
+        "exponential small32 tuning sort should be explicit opt-in");
+    requireSortIsExplicitOptIn(
+        SortKind::AdaptiveDepth2U32ChunkMsdFullClear,
+        "full-clear u32 chunk MSD comparator should be explicit opt-in");
+    requireSortIsExplicitOptIn(
+        SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask128,
+        "touched-bitmask 128 tuning sort should be explicit opt-in");
+    requireSortIsExplicitOptIn(
+        SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask256,
+        "touched-bitmask 256 tuning sort should be explicit opt-in");
+    requireSortIsExplicitOptIn(
+        SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask1024,
+        "touched-bitmask 1024 tuning sort should be explicit opt-in");
+    requireSortIsExplicitOptIn(
+        SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask4096,
+        "touched-bitmask 4096 tuning sort should be explicit opt-in");
 }
 
-void test_touched_count_generation_overflow_resets_seen_state() {
-    forest_sorting::detail::TouchedCountScratch scratch;
-    scratch.seenGeneration.fill(std::numeric_limits<uint32_t>::max());
-    scratch.generation = std::numeric_limits<uint32_t>::max();
+void test_removed_generation_touched_count_labels_do_not_parse() {
+    for (std::string_view removedLabel :
+         {"adaptive-depth2-u8-chunk-msd-touched-counts",
+          "adaptive-depth2-u32-chunk-msd-touched-counts",
+          "adaptive-depth2-u64-chunk-msd-touched-counts",
+          "adaptive-depth2-u32-chunk-msd-touched-counts-128",
+          "adaptive-depth2-u32-chunk-msd-binary-small48",
+          "adaptive-depth2-u32-chunk-msd-exponential-small48"}) {
+        bool rejected = false;
+        try {
+            (void)parseSortKind(removedLabel);
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        }
+        require(rejected, std::string("removed label still parsed: ") +
+                              std::string(removedLabel));
+    }
+}
 
-    scratch.advanceGeneration();
+void test_bitmask_touched_chunk_sort_reuses_scratch() {
+    std::vector<Node> nodes = {
+        {makeId(0xF000000000000000ULL, 1), 0},
+        {makeId(0x1000000000000000ULL, 2), 0},
+        {makeId(0xA000000000000000ULL, 3), 0},
+        {makeId(0x2000000000000000ULL, 4), 0},
+    };
+    std::vector<std::size_t> order = {0, 1, 2, 3};
+    std::vector<forest_sorting::detail::ChunkedIndex<1>> current(order.size());
+    std::vector<forest_sorting::detail::ChunkedIndex<1>> next(order.size());
+    forest_sorting::detail::BitmaskTouchedCountScratch scratch;
 
-    require(scratch.generation == 1,
-            "touched-count generation did not reset after overflow");
-    require(std::ranges::all_of(
-                scratch.seenGeneration,
-                [](uint32_t generation) { return generation == 0; }),
-            "touched-count seen-generation table was not cleared");
+    forest_sorting::detail::stableLsdSortRangeByIdChunkBitmaskTouched(
+        order, nodes, UInt128NodeTraits{}, 0, order.size(), 0, current.data(),
+        next.data(), scratch);
+    require((order == std::vector<std::size_t>{1, 3, 2, 0}),
+            "first bitmask touched chunk sort produced wrong order");
+
+    nodes = {
+        {makeId(0x0300000000000000ULL, 1), 0},
+        {makeId(0x0100000000000000ULL, 2), 0},
+        {makeId(0x0200000000000000ULL, 3), 0},
+        {makeId(0x0400000000000000ULL, 4), 0},
+    };
+    order = {0, 1, 2, 3};
+    forest_sorting::detail::stableLsdSortRangeByIdChunkBitmaskTouched(
+        order, nodes, UInt128NodeTraits{}, 0, order.size(), 0, current.data(),
+        next.data(), scratch);
+    require((order == std::vector<std::size_t>{1, 2, 0, 3}),
+            "second bitmask touched chunk sort reused stale counts");
 }
 
 void test_parent_builders_match_for_registered_datasets() {
@@ -648,17 +715,24 @@ void requireChunkMsdSortsMatchComparison(const std::vector<Node> &inputNodes,
         sortForestByAdaptiveDepth2U8ChunkWithParent(inputNodes, parentIndex);
     const auto adaptiveU32Chunk =
         sortForestByAdaptiveDepth2U32ChunkWithParent(inputNodes, parentIndex);
+    const auto adaptiveU32FullClear =
+        sortForestByAdaptiveDepth2U32ChunkFullClearWithParent(inputNodes,
+                                                              parentIndex);
     const auto adaptiveU64Chunk =
         sortForestByAdaptiveDepth2U64ChunkWithParent(inputNodes, parentIndex);
-    const auto adaptiveByteTouched =
-        sortForestByAdaptiveDepth2U8ChunkTouchedCountsWithParent(inputNodes,
-                                                                 parentIndex);
-    const auto adaptiveU32Touched =
-        sortForestByAdaptiveDepth2U32ChunkTouchedCountsWithParent(inputNodes,
+    const auto adaptiveU32BinarySmall32 =
+        sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent<BinarySmallSorter,
+                                                              32>(inputNodes,
                                                                   parentIndex);
-    const auto adaptiveU64Touched =
-        sortForestByAdaptiveDepth2U64ChunkTouchedCountsWithParent(inputNodes,
-                                                                  parentIndex);
+    const auto adaptiveU32ExponentialSmall32 =
+        sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent<
+            ExponentialSmallSorter, 32>(inputNodes, parentIndex);
+    const auto adaptiveU32TouchedBitmask128 =
+        sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent<128>(
+            inputNodes, parentIndex);
+    const auto adaptiveU32TouchedBitmask4096 =
+        sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent<4096>(
+            inputNodes, parentIndex);
     const auto compositeCopyback =
         sortForestByCompositeDepth2MsdCopybackWithParent(inputNodes,
                                                          parentIndex);
@@ -678,18 +752,27 @@ void requireChunkMsdSortsMatchComparison(const std::vector<Node> &inputNodes,
     require(sameNodes(adaptiveU32Chunk, expected),
             std::string("adaptive 4-byte chunk MSD failed ") +
                 std::string(caseName));
+    require(sameNodes(adaptiveU32FullClear, expected),
+            std::string("adaptive 4-byte full-clear chunk MSD failed ") +
+                std::string(caseName));
     require(sameNodes(adaptiveU64Chunk, expected),
             std::string("adaptive 8-byte chunk MSD failed ") +
                 std::string(caseName));
-    require(sameNodes(adaptiveByteTouched, expected),
-            std::string("adaptive 1-byte touched-count chunk MSD failed ") +
+    require(sameNodes(adaptiveU32BinarySmall32, expected),
+            std::string("adaptive 4-byte binary-small32 chunk MSD failed ") +
                 std::string(caseName));
-    require(sameNodes(adaptiveU32Touched, expected),
-            std::string("adaptive 4-byte touched-count chunk MSD failed ") +
-                std::string(caseName));
-    require(sameNodes(adaptiveU64Touched, expected),
-            std::string("adaptive 8-byte touched-count chunk MSD failed ") +
-                std::string(caseName));
+    require(
+        sameNodes(adaptiveU32ExponentialSmall32, expected),
+        std::string("adaptive 4-byte exponential-small32 chunk MSD failed ") +
+            std::string(caseName));
+    require(
+        sameNodes(adaptiveU32TouchedBitmask128, expected),
+        std::string("adaptive 4-byte touched-bitmask128 chunk MSD failed ") +
+            std::string(caseName));
+    require(
+        sameNodes(adaptiveU32TouchedBitmask4096, expected),
+        std::string("adaptive 4-byte touched-bitmask4096 chunk MSD failed ") +
+            std::string(caseName));
     require(sameNodes(compositeCopyback, expected),
             std::string("composite full-key byte MSD copyback failed ") +
                 std::string(caseName));
@@ -729,12 +812,48 @@ void test_radix_msd_partition_materializes_scratch_at_max_digit() {
 }
 
 void test_chunk_msd_materializes_scratch_owned_small_ranges() {
-    std::vector<UInt128> ids;
-    ids.reserve(forest_sorting::detail::small_id_range_sort_threshold * 2U);
-    for (uint64_t low = 0;
-         low < forest_sorting::detail::small_id_range_sort_threshold; ++low) {
+    auto check = [](const std::vector<Node> &inputNodes,
+                    std::string_view caseName) {
+        const auto parentIndex =
+            buildParentIndexForKind(ParentKind::Control, inputNodes);
+        const auto expected =
+            sortForestByComparisonWithParent(inputNodes, parentIndex);
+
+        const auto adaptiveU8Chunk =
+            sortForestByAdaptiveDepth2U8ChunkWithParent(inputNodes,
+                                                        parentIndex);
+        const auto adaptiveU32Chunk =
+            sortForestByAdaptiveDepth2U32ChunkWithParent(inputNodes,
+                                                         parentIndex);
+        const auto adaptiveU64Chunk =
+            sortForestByAdaptiveDepth2U64ChunkWithParent(inputNodes,
+                                                         parentIndex);
+
+        require(sameNodes(adaptiveU8Chunk, expected),
+                std::string(caseName) + " failed for 1-byte chunks (odd swap)");
+        require(sameNodes(adaptiveU32Chunk, expected),
+                std::string(caseName) +
+                    " failed for 4-byte chunks (even swap)");
+        require(sameNodes(adaptiveU64Chunk, expected),
+                std::string(caseName) +
+                    " failed for 8-byte chunks (even swap)");
+    };
+
+    // Construct a dataset designed to create a small range that is owned by
+    // the scratch buffer when the small range sorter is invoked.
+    for (uint64_t low = 0; low < 2; ++low) {
+        std::vector<UInt128> ids;
+        ids.reserve(forest_sorting::detail::small_id_range_sort_threshold + 4U);
+        // Make enough IDs to trigger a chunk split
+        for (uint64_t i = 0;
+             i < forest_sorting::detail::small_id_range_sort_threshold + 2U;
+             ++i) {
+            ids.push_back(makeId(0xAA00000000000000ULL, i));
+        }
+
+        // Add a cluster that will fall into a specific bucket
         ids.push_back(
-            makeId(0xAA00000000000000ULL,
+            makeId(0xAA01000000000000ULL,
                    static_cast<uint64_t>(
                        forest_sorting::detail::small_id_range_sort_threshold) -
                        low));
@@ -744,10 +863,8 @@ void test_chunk_msd_materializes_scratch_owned_small_ranges() {
                 static_cast<uint64_t>(
                     forest_sorting::detail::small_id_range_sort_threshold -
                     low)));
+        check(rootNodesFromIds(ids), "scratch-owned small ranges");
     }
-
-    requireChunkMsdSortsMatchComparison(rootNodesFromIds(ids),
-                                        "scratch-owned small ranges");
 }
 
 void test_chunk_msd_handles_sorted_and_reverse_inputs() {
@@ -796,9 +913,10 @@ void test_chunk_msd_handles_small_threshold_boundaries() {
          {forest_sorting::detail::small_id_range_sort_threshold - 1U,
           forest_sorting::detail::small_id_range_sort_threshold,
           forest_sorting::detail::small_id_range_sort_threshold + 1U,
-          forest_sorting::detail::touched_count_max_range_size - 1U,
-          forest_sorting::detail::touched_count_max_range_size,
-          forest_sorting::detail::touched_count_max_range_size + 1U}) {
+          forest_sorting::detail::production_touched_count_max_range_size - 1U,
+          forest_sorting::detail::production_touched_count_max_range_size,
+          forest_sorting::detail::production_touched_count_max_range_size +
+              1U}) {
         std::vector<UInt128> ids;
         ids.reserve(rangeSize);
         for (std::size_t index = 0; index < rangeSize; ++index) {
@@ -832,8 +950,10 @@ int main() {
         std::cout << "forest sorting tests\n";
         runTest("support registries are unique",
                 test_support_registries_are_unique);
-        runTest("touched-count generation overflow resets seen state",
-                test_touched_count_generation_overflow_resets_seen_state);
+        runTest("removed generation touched-count labels do not parse",
+                test_removed_generation_touched_count_labels_do_not_parse);
+        runTest("bitmask touched chunk sort reuses scratch",
+                test_bitmask_touched_chunk_sort_reuses_scratch);
         runTest("radix MSD materializes scratch at max digit",
                 test_radix_msd_partition_materializes_scratch_at_max_digit);
         runTest("chunk MSD materializes scratch-owned small ranges",

@@ -64,9 +64,15 @@ std::vector<std::size_t> buildParentIndexRadixJoin(const Nodes &nodes,
         [](const RadixJoinQueryEntry<Id> &entry) { return entry.parentId; },
         traits);
 
-    for (std::size_t entryIdx = 1; entryIdx < idEntries.size(); ++entryIdx) {
-        if (traits.equal(idEntries[entryIdx - 1].id, idEntries[entryIdx].id)) {
-            throw std::runtime_error("duplicate node id");
+    if (!idEntries.empty()) {
+        Id prevId = idEntries[0].id;
+        for (std::size_t entryIdx = 1; entryIdx < idEntries.size();
+             ++entryIdx) {
+            const Id currId = idEntries[entryIdx].id;
+            if (traits.equal(prevId, currId)) {
+                throw std::runtime_error("duplicate node id");
+            }
+            prevId = currId;
         }
     }
 
@@ -99,27 +105,46 @@ template <typename Id, typename IdTraits> class IdIndexTable {
         const uint8_t fingerprint = fingerprintForHash(hashValue);
         std::size_t slotIndex = hashValue & mask_;
 
+        const uint64_t fp_mask =
+            static_cast<uint64_t>(fingerprint) * 0x0101010101010101ULL;
+        const uint64_t empty_mask =
+            static_cast<uint64_t>(empty_control_byte) * 0x0101010101010101ULL;
+
         for (std::size_t groupIdx = 0; groupIdx < maxProbeGroups; ++groupIdx) {
-            for (std::size_t offset = 0; offset < 8; ++offset) {
-                const std::size_t fullIdx = (slotIndex + offset) & mask_;
-                const uint8_t ctrl = control_[fullIdx];
-                if (ctrl == empty_control_byte) {
-                    // Control bytes intentionally store only empty markers and
-                    // 7-bit fingerprints. IDs and indexes stay in separate
-                    // arrays so group scans do not pull payload cache lines.
-                    control_[fullIdx] = fingerprint;
-                    if (fullIdx < 8) {
-                        control_[mask_ + 1 + fullIdx] = fingerprint;
-                    }
-                    ids_[fullIdx] = nodeId;
-                    nodeIndexes_[fullIdx] = nodeIndex;
-                    return InsertResult::Inserted;
-                }
-                if (ctrl == fingerprint &&
-                    idTraits_.equal(ids_[fullIdx], nodeId)) {
+            uint64_t group;
+            std::memcpy(&group, &control_[slotIndex], 8);
+
+            uint64_t match = group ^ fp_mask;
+            uint64_t matchBits = (match - 0x0101010101010101ULL) & ~match &
+                                 0x8080808080808080ULL;
+
+            uint64_t empty = group ^ empty_mask;
+            uint64_t emptyBits = (empty - 0x0101010101010101ULL) & ~empty &
+                                 0x8080808080808080ULL;
+
+            for (uint64_t currentMatches = matchBits; currentMatches != 0;
+                 currentMatches &= currentMatches - 1) {
+                const int matchIdx = std::countr_zero(currentMatches) >> 3;
+                const std::size_t fullIdx =
+                    (slotIndex + static_cast<std::size_t>(matchIdx)) & mask_;
+                if (idTraits_.equal(ids_[fullIdx], nodeId)) {
                     return InsertResult::Duplicate;
                 }
             }
+
+            if (emptyBits != 0) {
+                const int emptyIdx = std::countr_zero(emptyBits) >> 3;
+                const std::size_t fullIdx =
+                    (slotIndex + static_cast<std::size_t>(emptyIdx)) & mask_;
+                control_[fullIdx] = fingerprint;
+                if (fullIdx < 8) {
+                    control_[mask_ + 1 + fullIdx] = fingerprint;
+                }
+                ids_[fullIdx] = nodeId;
+                nodeIndexes_[fullIdx] = nodeIndex;
+                return InsertResult::Inserted;
+            }
+
             slotIndex = (slotIndex + 8) & mask_;
         }
 
@@ -149,18 +174,14 @@ template <typename Id, typename IdTraits> class IdIndexTable {
             uint64_t emptyBits = (empty - 0x0101010101010101ULL) & ~empty &
                                  0x8080808080808080ULL;
 
-            uint64_t currentMatches = matchBits;
-            // NOLINTNEXTLINE(bugprone-infinite-loop)
-            while (currentMatches != 0) {
+            for (uint64_t currentMatches = matchBits; currentMatches != 0;
+                 currentMatches &= currentMatches - 1) {
                 const int matchIdx = std::countr_zero(currentMatches) >> 3;
                 const std::size_t fullIdx =
                     (slotIndex + static_cast<std::size_t>(matchIdx)) & mask_;
                 if (idTraits_.equal(ids_[fullIdx], nodeId)) {
                     return FindResult{nodeIndexes_[fullIdx], true, false};
                 }
-                const uint64_t nextMatches =
-                    currentMatches & (currentMatches - 1);
-                currentMatches = nextMatches;
             }
 
             if (emptyBits != 0) {

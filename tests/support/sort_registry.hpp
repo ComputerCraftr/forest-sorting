@@ -1,6 +1,7 @@
 #ifndef FOREST_SORTING_SUPPORT_SORT_REGISTRY_HPP
 #define FOREST_SORTING_SUPPORT_SORT_REGISTRY_HPP
 
+#include "adaptive_sort_variants.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "sort_baselines.hpp"
 
@@ -25,13 +26,21 @@ enum class SortKind : uint8_t {
     CompositeByteMsdLowcopyBatched,
     AdaptiveDepth2U32ChunkMsdNoDense,
     AdaptiveDepth2U32ChunkMsd,
+    AdaptiveDepth2U32ChunkMsdFullClear,
     AdaptiveDepth2U8ChunkMsd,
     AdaptiveDepth2U64ChunkMsd,
-    AdaptiveDepth2U8ChunkMsdTouchedCounts,
-    AdaptiveDepth2U32ChunkMsdTouchedCounts,
-    AdaptiveDepth2U64ChunkMsdTouchedCounts,
     AdaptiveDepth2U64ChunkMsdBinarySmall,
     AdaptiveDepth4U32ChunkMsd,
+
+    // Track A2: Tail search strategy at the production threshold.
+    AdaptiveDepth2U32ChunkMsdBinarySmall32,
+    AdaptiveDepth2U32ChunkMsdExponentialSmall32,
+
+    // Track B2: Branch-free touched bucket counting thresholds.
+    AdaptiveDepth2U32ChunkMsdTouchedBitmask128,
+    AdaptiveDepth2U32ChunkMsdTouchedBitmask256,
+    AdaptiveDepth2U32ChunkMsdTouchedBitmask1024,
+    AdaptiveDepth2U32ChunkMsdTouchedBitmask4096,
 };
 
 using SortFunction = std::vector<Node> (*)(const std::vector<Node> &,
@@ -44,7 +53,7 @@ struct SortRegistryEntry {
     bool includeByDefault;
 };
 
-inline constexpr std::array<SortRegistryEntry, 17> kSortRegistry = {{
+inline constexpr std::array<SortRegistryEntry, 21> kSortRegistry = {{
     {SortKind::Comparison, "comparison", sortForestByComparisonWithParent,
      true},
     {SortKind::DepthBucketDepth2Lsd, "depth-bucket-depth2-lsd",
@@ -69,24 +78,44 @@ inline constexpr std::array<SortRegistryEntry, 17> kSortRegistry = {{
      sortForestByAdaptiveDepth2U32ChunkNoDenseWithParent, true},
     {SortKind::AdaptiveDepth2U32ChunkMsd, "adaptive-depth2-u32-chunk-msd",
      sortForestByAdaptiveDepth2U32ChunkWithParent, true},
+    {SortKind::AdaptiveDepth2U32ChunkMsdFullClear,
+     "adaptive-depth2-u32-chunk-msd-full-clear",
+     sortForestByAdaptiveDepth2U32ChunkFullClearWithParent, false},
     {SortKind::AdaptiveDepth2U8ChunkMsd, "adaptive-depth2-u8-chunk-msd",
      sortForestByAdaptiveDepth2U8ChunkWithParent, true},
     {SortKind::AdaptiveDepth2U64ChunkMsd, "adaptive-depth2-u64-chunk-msd",
      sortForestByAdaptiveDepth2U64ChunkWithParent, true},
-    {SortKind::AdaptiveDepth2U8ChunkMsdTouchedCounts,
-     "adaptive-depth2-u8-chunk-msd-touched-counts",
-     sortForestByAdaptiveDepth2U8ChunkTouchedCountsWithParent, false},
-    {SortKind::AdaptiveDepth2U32ChunkMsdTouchedCounts,
-     "adaptive-depth2-u32-chunk-msd-touched-counts",
-     sortForestByAdaptiveDepth2U32ChunkTouchedCountsWithParent, false},
-    {SortKind::AdaptiveDepth2U64ChunkMsdTouchedCounts,
-     "adaptive-depth2-u64-chunk-msd-touched-counts",
-     sortForestByAdaptiveDepth2U64ChunkTouchedCountsWithParent, false},
     {SortKind::AdaptiveDepth2U64ChunkMsdBinarySmall,
      "adaptive-depth2-u64-chunk-msd-binary-small",
      sortForestByAdaptiveDepth2U64ChunkBinarySmallWithParent, true},
     {SortKind::AdaptiveDepth4U32ChunkMsd, "adaptive-depth4-u32-chunk-msd",
      sortForestByAdaptiveDepth4U32ChunkWithParent, true},
+
+    // Track A2: Tail search strategy at the production threshold.
+    {SortKind::AdaptiveDepth2U32ChunkMsdBinarySmall32,
+     "adaptive-depth2-u32-chunk-msd-binary-small32",
+     sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent<BinarySmallSorter,
+                                                           32>,
+     false},
+    {SortKind::AdaptiveDepth2U32ChunkMsdExponentialSmall32,
+     "adaptive-depth2-u32-chunk-msd-exponential-small32",
+     sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent<
+         ExponentialSmallSorter, 32>,
+     false},
+
+    // Track B2: Branch-free touched bucket counting thresholds.
+    {SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask128,
+     "adaptive-depth2-u32-chunk-msd-touched-bitmask-128",
+     sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent<128>, false},
+    {SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask256,
+     "adaptive-depth2-u32-chunk-msd-touched-bitmask-256",
+     sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent<256>, false},
+    {SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask1024,
+     "adaptive-depth2-u32-chunk-msd-touched-bitmask-1024",
+     sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent<1024>, false},
+    {SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask4096,
+     "adaptive-depth2-u32-chunk-msd-touched-bitmask-4096",
+     sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent<4096>, false},
 }};
 
 inline std::vector<SortKind> allSortKinds() {

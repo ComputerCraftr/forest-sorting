@@ -50,10 +50,25 @@ if(FOREST_CLANG_TIDY)
         ${_forest_tidy_headers}
         ${_forest_tidy_support_headers}
     )
+    set(_forest_tidy_extra_args)
+    if(APPLE)
+        if(CMAKE_OSX_SYSROOT)
+            set(_forest_sysroot "${CMAKE_OSX_SYSROOT}")
+        else()
+            execute_process(
+                COMMAND xcrun --show-sdk-path
+                OUTPUT_VARIABLE _forest_sysroot
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+        endif()
+        list(APPEND _forest_tidy_extra_args "--extra-arg=-isysroot${_forest_sysroot}")
+    endif()
+
     add_custom_target(tidy
         COMMAND "${FOREST_CLANG_TIDY}"
                 -p "${CMAKE_BINARY_DIR}"
                 --extra-arg-before=-xc++
+                ${_forest_tidy_extra_args}
                 ${_forest_tidy_files}
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         COMMENT "Running clang-tidy"
