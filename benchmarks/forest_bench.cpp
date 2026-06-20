@@ -38,13 +38,6 @@ constexpr int kDeltaColumnWidth = 14;
 constexpr int kWinnerColumnWidth = 10;
 constexpr uint32_t kDefaultOrderSeed = 0x5eedU;
 
-enum class OutputFormat : uint8_t {
-    Table,
-    Csv,
-    Tsv,
-    Json,
-};
-
 enum class SampleOutput : uint8_t {
     None,
     Summary,
@@ -60,8 +53,8 @@ struct Options {
     OutputFormat format = OutputFormat::Table;
     std::vector<std::size_t> sizes = {10000, 100000};
     std::vector<DatasetKind> datasets = vectorFromArray(allDatasetKinds());
-    std::vector<ParentKind> parents = vectorFromArray(allParentKinds());
-    std::vector<SortKind> sorts = allSortKinds();
+    std::vector<ParentKind> parents = vectorFromArray(defaultParentKinds());
+    std::vector<SortKind> sorts = defaultSortKinds();
     int iterations = 7;
     int warmup = 1;
     bool shuffle = false;
@@ -135,22 +128,6 @@ double timeVerifyMs(const std::vector<Node> &nodes, bool &verified) {
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
-OutputFormat parseFormat(std::string_view value) {
-    if (value == "table") {
-        return OutputFormat::Table;
-    }
-    if (value == "csv") {
-        return OutputFormat::Csv;
-    }
-    if (value == "tsv") {
-        return OutputFormat::Tsv;
-    }
-    if (value == "json") {
-        return OutputFormat::Json;
-    }
-    throw std::runtime_error("unknown format: " + std::string(value));
-}
-
 SampleOutput parseSampleOutput(std::string_view value) {
     if (value == "none") {
         return SampleOutput::None;
@@ -186,7 +163,7 @@ DatasetKind parseDataset(std::string_view value) {
 }
 
 ParentKind parseParent(std::string_view value) {
-    for (ParentKind parentKind : allParentKinds()) {
+    for (ParentKind parentKind : registeredParentKinds()) {
         if (value == parentName(parentKind)) {
             return parentKind;
         }
@@ -197,7 +174,12 @@ ParentKind parseParent(std::string_view value) {
 SortKind parseSort(std::string_view value) { return parseSortKind(value); }
 
 std::size_t parseSize(std::string_view value) {
-    return static_cast<std::size_t>(std::stoull(std::string(value)));
+    const std::size_t size =
+        static_cast<std::size_t>(std::stoull(std::string(value)));
+    if (size == 0) {
+        throw std::runtime_error("dataset size must be greater than 0");
+    }
+    return size;
 }
 
 int parsePositiveInt(std::string_view value, const char *optionName) {
@@ -286,20 +268,28 @@ Options parseOptions(int argc, char **argv) {
                 options.parents.clear();
                 customParents = true;
             }
-            if (value == "all") {
-                options.parents = vectorFromArray(allParentKinds());
+            if (value == "default") {
+                options.parents = vectorFromArray(defaultParentKinds());
             } else {
-                options.parents.push_back(parseParent(value));
+                const ParentKind parsedParent = parseParent(value);
+                if (std::find(options.parents.begin(), options.parents.end(),
+                              parsedParent) == options.parents.end()) {
+                    options.parents.push_back(parsedParent);
+                }
             }
         } else if (option == "--sort") {
             if (!customSorts) {
                 options.sorts.clear();
                 customSorts = true;
             }
-            if (value == "all") {
-                options.sorts = allSortKinds();
+            if (value == "default") {
+                options.sorts = defaultSortKinds();
             } else {
-                options.sorts.push_back(parseSort(value));
+                const SortKind parsedSort = parseSort(value);
+                if (std::find(options.sorts.begin(), options.sorts.end(),
+                              parsedSort) == options.sorts.end()) {
+                    options.sorts.push_back(parsedSort);
+                }
             }
         } else if (option == "--iterations") {
             options.iterations = parsePositiveInt(value, "--iterations");
@@ -326,6 +316,52 @@ Options parseOptions(int argc, char **argv) {
         }
     }
 
+    if (options.sizes.empty()) {
+        throw std::runtime_error("must benchmark at least one size");
+    }
+    if (options.datasets.empty()) {
+        throw std::runtime_error("must benchmark at least one dataset kind");
+    }
+    if (options.parents.empty()) {
+        throw std::runtime_error(
+            "must benchmark at least one parent builder kind");
+    }
+    if (options.sorts.empty()) {
+        throw std::runtime_error(
+            "must benchmark at least one sort algorithm kind");
+    }
+    if (options.dataSeeds.empty()) {
+        throw std::runtime_error("must specify at least one data seed");
+    }
+
+    if (options.hasBaselineSort) {
+        bool found = false;
+        for (SortKind sort : options.sorts) {
+            if (sort == options.baselineSort) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw std::runtime_error("baseline-sort is not included in the "
+                                     "sort algorithms being benchmarked");
+        }
+    }
+
+    if (options.hasBaselineParent) {
+        bool found = false;
+        for (ParentKind parent : options.parents) {
+            if (parent == options.baselineParent) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw std::runtime_error("baseline-parent is not included in the "
+                                     "parent builders being benchmarked");
+        }
+    }
+
     return options;
 }
 
@@ -338,7 +374,9 @@ void printHelp() {
               << "  --dataset "
                  "random|outliers|same-high64|same-high32|sequential|"
                  "external-parents|siblings|all\n"
-              << "  --parent unordered|flat|control|radix|all\n"
+              << "  --parent "
+                 "unordered|flat|control|control-xor-hash|radix|radix-byte-msd|"
+                 "default\n"
               << "  --sort ";
     bool first = true;
     for (std::size_t entryIdx = 0; entryIdx < getSortRegistry().size();
@@ -353,13 +391,13 @@ void printHelp() {
         first = false;
     }
     std::cout
-        << "|all\n"
+        << "|default\n"
         << "                                   depth2 labels use typed "
            "uint16_t "
            "depth payloads; u8/u16/u32 chunk labels fix ID chunk width; "
            "range-ladder labels choose u8/u16/u32 once per equal-depth range; "
            "full-clear and bitmask-le512 suffixes identify counter policy; "
-           "all excludes opt-in tuning experiments\n"
+           "default excludes opt-in tuning experiments\n"
         << "  --iterations N\n"
         << "  --warmup N\n"
         << "  --baseline-sort NAME             compare selected sorts against "

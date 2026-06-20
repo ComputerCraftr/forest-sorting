@@ -1,6 +1,7 @@
 #ifndef FOREST_SORTING_DETAIL_HASH_HPP
 #define FOREST_SORTING_DETAIL_HASH_HPP
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -56,39 +57,19 @@ inline State fnv1a128_hash_words_msb_first(State state, uint64_t high,
                                            uint64_t low, Step step) noexcept {
     // Pre-extract bytes to allow independent shift/mask instructions before the
     // dependent hash chain.
-    const uint8_t b00 = static_cast<uint8_t>(high >> 56U);
-    const uint8_t b01 = static_cast<uint8_t>(high >> 48U);
-    const uint8_t b02 = static_cast<uint8_t>(high >> 40U);
-    const uint8_t b03 = static_cast<uint8_t>(high >> 32U);
-    const uint8_t b04 = static_cast<uint8_t>(high >> 24U);
-    const uint8_t b05 = static_cast<uint8_t>(high >> 16U);
-    const uint8_t b06 = static_cast<uint8_t>(high >> 8U);
-    const uint8_t b07 = static_cast<uint8_t>(high);
-    const uint8_t b08 = static_cast<uint8_t>(low >> 56U);
-    const uint8_t b09 = static_cast<uint8_t>(low >> 48U);
-    const uint8_t b10 = static_cast<uint8_t>(low >> 40U);
-    const uint8_t b11 = static_cast<uint8_t>(low >> 32U);
-    const uint8_t b12 = static_cast<uint8_t>(low >> 24U);
-    const uint8_t b13 = static_cast<uint8_t>(low >> 16U);
-    const uint8_t b14 = static_cast<uint8_t>(low >> 8U);
-    const uint8_t b15 = static_cast<uint8_t>(low);
+    const std::array<uint8_t, 16> bytes = {
+        static_cast<uint8_t>(high >> 56U), static_cast<uint8_t>(high >> 48U),
+        static_cast<uint8_t>(high >> 40U), static_cast<uint8_t>(high >> 32U),
+        static_cast<uint8_t>(high >> 24U), static_cast<uint8_t>(high >> 16U),
+        static_cast<uint8_t>(high >> 8U),  static_cast<uint8_t>(high),
+        static_cast<uint8_t>(low >> 56U),  static_cast<uint8_t>(low >> 48U),
+        static_cast<uint8_t>(low >> 40U),  static_cast<uint8_t>(low >> 32U),
+        static_cast<uint8_t>(low >> 24U),  static_cast<uint8_t>(low >> 16U),
+        static_cast<uint8_t>(low >> 8U),   static_cast<uint8_t>(low)};
 
-    step(state, b00);
-    step(state, b01);
-    step(state, b02);
-    step(state, b03);
-    step(state, b04);
-    step(state, b05);
-    step(state, b06);
-    step(state, b07);
-    step(state, b08);
-    step(state, b09);
-    step(state, b10);
-    step(state, b11);
-    step(state, b12);
-    step(state, b13);
-    step(state, b14);
-    step(state, b15);
+    for (std::size_t i = 0; i < 16; ++i) {
+        step(state, bytes[i]);
+    }
 
     return state;
 }

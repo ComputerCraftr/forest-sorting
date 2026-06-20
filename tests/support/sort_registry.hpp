@@ -2,7 +2,7 @@
 #define FOREST_SORTING_SUPPORT_SORT_REGISTRY_HPP
 
 #include "adaptive_sort_variants.hpp"
-#include "forest_sorting/detail/adaptive_sort.hpp"
+#include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "sort_baselines.hpp"
@@ -57,6 +57,7 @@ enum class SortKind : uint8_t {
     // Tail Experiments
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear16,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear48,
+    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32ChunkCache,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential32,
@@ -179,7 +180,7 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
     addTailExperimentEntry<                                                    \
         SortKind::                                                             \
             AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential##Threshold,   \
-        ExponentialSmallSorter, Threshold>(                                    \
+        ExponentialSmallSorter<Threshold>, Threshold>(                         \
         reg, "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-"               \
              "exponential" #Threshold)
 
@@ -313,8 +314,14 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
         FS_ADD_TAIL_LINEAR(48);
         addTailExperimentEntry<
             SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
-            BinarySmallSorter, 32>(
+            BinarySmallSorter<32>, 32>(
             reg, "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32");
+        addTailExperimentEntry<
+            SortKind::
+                AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32ChunkCache,
+            LinearCachedChunksSmallSorter<32>, 32>(
+            reg, "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-"
+                 "chunk-cache");
         FS_ADD_TAIL_EXPONENTIAL(16);
         FS_ADD_TAIL_EXPONENTIAL(32);
         FS_ADD_TAIL_EXPONENTIAL(48);
@@ -344,7 +351,7 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
     return registry;
 }
 
-inline std::vector<SortKind> allSortKinds() {
+inline std::vector<SortKind> defaultSortKinds() {
     std::vector<SortKind> sorts;
     sorts.reserve(getSortRegistry().size());
     for (const SortRegistryEntry &entry : getSortRegistry()) {

@@ -20,18 +20,27 @@ enum class ParentKind : uint8_t {
     Unordered,
     Flat,
     Control,
+    ControlXorHash,
     Radix,
+    RadixByteMsd,
 };
 
-inline constexpr std::array<ParentKind, 4> kAllParentKinds = {
-    ParentKind::Unordered,
-    ParentKind::Flat,
-    ParentKind::Control,
-    ParentKind::Radix,
+inline constexpr std::array<ParentKind, 5> kDefaultParentKinds = {
+    ParentKind::Unordered,      ParentKind::Flat,  ParentKind::Control,
+    ParentKind::ControlXorHash, ParentKind::Radix,
 };
 
-constexpr std::array<ParentKind, 4> allParentKinds() noexcept {
-    return kAllParentKinds;
+constexpr std::array<ParentKind, 5> defaultParentKinds() noexcept {
+    return kDefaultParentKinds;
+}
+
+inline constexpr std::array<ParentKind, 6> kRegisteredParentKinds = {
+    ParentKind::Unordered,      ParentKind::Flat,  ParentKind::Control,
+    ParentKind::ControlXorHash, ParentKind::Radix, ParentKind::RadixByteMsd,
+};
+
+constexpr std::array<ParentKind, 6> registeredParentKinds() noexcept {
+    return kRegisteredParentKinds;
 }
 
 inline std::string_view parentName(ParentKind parentKind) {
@@ -42,8 +51,12 @@ inline std::string_view parentName(ParentKind parentKind) {
         return "flat";
     case ParentKind::Control:
         return "control";
+    case ParentKind::ControlXorHash:
+        return "control-xor-hash";
     case ParentKind::Radix:
         return "radix";
+    case ParentKind::RadixByteMsd:
+        return "radix-byte-msd";
     }
     return "unknown";
 }
@@ -154,6 +167,35 @@ buildParentIndexStdUnorderedMap(const std::vector<Node> &nodes) {
 }
 
 inline std::vector<std::size_t>
+buildParentIndexRadixJoinByteMsdBaseline(const std::vector<Node> &nodes) {
+    std::vector<std::size_t> scratch;
+    auto sortPermutation = [&](std::vector<std::size_t> &permutation,
+                               auto idForIndex, const UInt128NodeTraits &) {
+        scratch.resize(permutation.size());
+        auto digitForIndex = [&](std::size_t entryIndex,
+                                 std::size_t digitIndex) {
+            return UInt128NodeTraits::byte_msb_first(idForIndex(entryIndex),
+                                                     digitIndex);
+        };
+        auto rangeDone = [](std::size_t, std::size_t) {};
+        detail::radixMsdPartitionRanges(
+            permutation, scratch, 0, permutation.size(), 0,
+            UInt128NodeTraits::id_byte_count, digitForIndex, rangeDone);
+    };
+    return detail::buildParentIndexRadixJoinWithPermutationSorter(
+        nodes, UInt128NodeTraits{}, sortPermutation);
+}
+
+struct UInt128NodeXorHashTraits : UInt128NodeTraits {
+    static std::size_t hash(UInt128 nodeId) noexcept {
+        const std::uint64_t highVal = static_cast<uint64_t>(nodeId >> 64);
+        const std::uint64_t lowVal = static_cast<uint64_t>(nodeId);
+        return static_cast<std::size_t>(highVal ^ lowVal ^ (highVal >> 32) ^
+                                        (lowVal >> 32));
+    }
+};
+
+inline std::vector<std::size_t>
 buildParentIndexForKind(ParentKind parentKind, const std::vector<Node> &nodes) {
     switch (parentKind) {
     case ParentKind::Unordered:
@@ -162,8 +204,12 @@ buildParentIndexForKind(ParentKind parentKind, const std::vector<Node> &nodes) {
         return buildParentIndexFlatHashBaseline(nodes, UInt128NodeTraits{});
     case ParentKind::Control:
         return detail::buildParentIndex(nodes, UInt128NodeTraits{});
+    case ParentKind::ControlXorHash:
+        return detail::buildParentIndex(nodes, UInt128NodeXorHashTraits{});
     case ParentKind::Radix:
         return detail::buildParentIndexRadixJoin(nodes, UInt128NodeTraits{});
+    case ParentKind::RadixByteMsd:
+        return buildParentIndexRadixJoinByteMsdBaseline(nodes);
     }
     throw std::runtime_error("unknown parent builder");
 }

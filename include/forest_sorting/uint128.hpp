@@ -19,6 +19,16 @@ namespace forest_sorting {
 
 using UInt128 = unsigned __int128;
 
+inline UInt128 makeId(uint64_t high, uint64_t low) noexcept {
+    return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
+}
+
+template <typename Rng> inline UInt128 makeRandomId(Rng &rng) {
+    const uint64_t high = static_cast<uint64_t>(rng());
+    const uint64_t low = static_cast<uint64_t>(rng());
+    return makeId(high, low);
+}
+
 inline std::string toHex(UInt128 value) {
     if (value == 0) {
         return "0x0";

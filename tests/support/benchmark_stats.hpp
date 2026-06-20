@@ -8,10 +8,34 @@
 #include <numeric>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
 namespace forest_sorting::test_support {
+
+enum class OutputFormat : uint8_t {
+    Table,
+    Csv,
+    Tsv,
+    Json,
+};
+
+inline OutputFormat parseFormat(std::string_view value) {
+    if (value == "table") {
+        return OutputFormat::Table;
+    }
+    if (value == "csv") {
+        return OutputFormat::Csv;
+    }
+    if (value == "tsv") {
+        return OutputFormat::Tsv;
+    }
+    if (value == "json") {
+        return OutputFormat::Json;
+    }
+    throw std::runtime_error("unknown format: " + std::string(value));
+}
 
 struct ConfidenceInterval {
     double low = 0.0;

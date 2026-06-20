@@ -48,6 +48,7 @@ if(FOREST_CLANG_TIDY)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/generic_api_tests.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/portable_include_tests.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/forest_bench.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tail_microbench.cpp"
         ${_forest_tidy_headers}
         ${_forest_tidy_support_headers}
     )

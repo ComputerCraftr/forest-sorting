@@ -1,14 +1,18 @@
 #include "forest_sorting/algorithms.hpp"
 #include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/depth.hpp"
+#include "forest_sorting/detail/id_radix.hpp"
+#include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"
 #include "uint128_fixtures.hpp"
 
+#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
 #include <stdexcept>
 #include <vector>
 
@@ -90,6 +94,101 @@ void assert_generic_fixed_hash_api_orders_by_depth_then_id() {
 
     require(forest_sorting::verifySortedByDepthAndId(sorted, Traits{}));
     require(!forest_sorting::verifySortedByDepthAndId(nodes, Traits{}));
+}
+
+template <std::size_t ByteCount> void assert_chunk_comparison_matches_bytes() {
+    using Id = TestBytes<ByteCount>;
+    const TestBytesTraits<ByteCount> traits;
+
+    const auto requireSameComparison = [&](const Id &lhs, const Id &rhs) {
+        const int chunkComparison =
+            forest_sorting::detail::compareIdsMsbFirst(lhs, rhs, traits);
+        int byteComparison = 0;
+        if (lhs < rhs) {
+            byteComparison = -1;
+        } else if (rhs < lhs) {
+            byteComparison = 1;
+        }
+        require(chunkComparison == byteComparison,
+                "chunk comparison differed from byte lexicographic order");
+        require(forest_sorting::detail::idLess(lhs, rhs, traits) ==
+                    (byteComparison < 0),
+                "idLess differed from chunk comparison");
+    };
+
+    Id equal{};
+    requireSameComparison(equal, equal);
+
+    Id firstChunkLow{};
+    Id firstChunkHigh{};
+    firstChunkLow.bytes[0] = 1;
+    firstChunkHigh.bytes[0] = 2;
+    requireSameComparison(firstChunkLow, firstChunkHigh);
+    requireSameComparison(firstChunkHigh, firstChunkLow);
+
+    Id laterChunkLow{};
+    Id laterChunkHigh{};
+    constexpr std::size_t laterByte = ByteCount > 8 ? 8 : ByteCount - 1;
+    laterChunkLow.bytes[laterByte] = 1;
+    laterChunkHigh.bytes[laterByte] = 2;
+    requireSameComparison(laterChunkLow, laterChunkHigh);
+
+    Id finalByteLow{};
+    Id finalByteHigh{};
+    finalByteLow.bytes[ByteCount - 1] = 1;
+    finalByteHigh.bytes[ByteCount - 1] = 2;
+    requireSameComparison(finalByteLow, finalByteHigh);
+}
+
+void test_chunk_comparison_matches_byte_lexicographic_order() {
+    assert_chunk_comparison_matches_bytes<16>();
+    assert_chunk_comparison_matches_bytes<20>();
+    assert_chunk_comparison_matches_bytes<28>();
+    assert_chunk_comparison_matches_bytes<32>();
+    assert_chunk_comparison_matches_bytes<37>();
+    assert_chunk_comparison_matches_bytes<64>();
+}
+
+template <std::size_t ByteCount>
+void assert_chunk_permutation_sort_matches_stable_comparison() {
+    using Id = TestBytes<ByteCount>;
+    const TestBytesTraits<ByteCount> traits;
+    std::vector<Id> ids(80);
+    for (std::size_t index = 0; index < ids.size(); ++index) {
+        ids[index].bytes[0] = static_cast<uint8_t>((index / 10) % 4);
+        ids[index].bytes[ByteCount - 1] =
+            static_cast<uint8_t>((index / 2) % 17);
+    }
+
+    std::vector<std::size_t> expected(ids.size());
+    std::iota(expected.begin(), expected.end(), 0);
+    std::reverse(expected.begin(), expected.end());
+    std::vector<std::size_t> actual = expected;
+    std::stable_sort(
+        expected.begin(), expected.end(),
+        [&](std::size_t lhs, std::size_t rhs) { return ids[lhs] < ids[rhs]; });
+
+    forest_sorting::detail::IdChunkSortWorkspace<
+        forest_sorting::detail::production_id_chunk_bytes,
+        forest_sorting::detail::ProductionIdCountPolicy>
+        workspace;
+    auto idForIndex = [&](std::size_t index) { return ids[index]; };
+    forest_sorting::detail::sortIndexRangeByIdChunks<
+        forest_sorting::detail::production_id_chunk_bytes,
+        forest_sorting::detail::ProductionIdCountPolicy>(
+        actual, idForIndex, traits, 0, actual.size(), 0, workspace);
+
+    require(actual == expected,
+            "chunk permutation sort differed from stable comparison");
+}
+
+void test_chunk_permutation_sort_generic_id_widths() {
+    assert_chunk_permutation_sort_matches_stable_comparison<16>();
+    assert_chunk_permutation_sort_matches_stable_comparison<20>();
+    assert_chunk_permutation_sort_matches_stable_comparison<28>();
+    assert_chunk_permutation_sort_matches_stable_comparison<32>();
+    assert_chunk_permutation_sort_matches_stable_comparison<37>();
+    assert_chunk_permutation_sort_matches_stable_comparison<64>();
 }
 
 void test_generic_16_byte_public_api_forms() {
@@ -417,6 +516,10 @@ void test_sort_accepts_many_sparse_singletons() {
 }
 
 void runGenericApiAndDepthTests() {
+    runTest("chunk comparison matches byte lexicographic order",
+            test_chunk_comparison_matches_byte_lexicographic_order);
+    runTest("chunk permutation sort supports generic ID widths",
+            test_chunk_permutation_sort_generic_id_widths);
     runTest("generic 16-byte public API forms",
             test_generic_16_byte_public_api_forms);
     runTest("generic 20-byte public API forms",

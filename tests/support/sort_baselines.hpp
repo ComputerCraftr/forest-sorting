@@ -1,9 +1,9 @@
 #ifndef FOREST_SORTING_SUPPORT_SORT_BASELINES_HPP
 #define FOREST_SORTING_SUPPORT_SORT_BASELINES_HPP
 
-#include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/depth.hpp"
+#include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128.hpp"

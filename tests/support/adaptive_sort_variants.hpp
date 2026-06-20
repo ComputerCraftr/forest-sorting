@@ -4,6 +4,7 @@
 #include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/depth.hpp"
+#include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128_forest.hpp"
@@ -13,25 +14,135 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <numeric>
-#include <type_traits>
+#include <stdexcept>
 #include <vector>
 
 namespace forest_sorting::test_support {
 
-template <typename Nodes, typename IdTraits>
-void stableSortRangeSmallBinary(std::vector<std::size_t> &order,
-                                const Nodes &nodes, const IdTraits &traits,
-                                std::size_t rangeBegin, std::size_t rangeEnd) {
+template <typename IdTraits>
+inline constexpr std::size_t cached_small_id_chunk_count =
+    (IdTraits::id_byte_count + detail::chunk_byte_count - 1) /
+    detail::chunk_byte_count;
+
+template <typename IdTraits>
+using CachedSmallIdChunks =
+    std::array<uint64_t, cached_small_id_chunk_count<IdTraits>>;
+
+template <std::size_t ChunkCount>
+int compareCachedIdChunks(const std::array<uint64_t, ChunkCount> &lhs,
+                          const std::array<uint64_t, ChunkCount> &rhs) {
+    for (std::size_t chunkIdx = 0; chunkIdx < ChunkCount; ++chunkIdx) {
+        if (lhs[chunkIdx] < rhs[chunkIdx]) {
+            return -1;
+        }
+        if (lhs[chunkIdx] > rhs[chunkIdx]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+template <typename Nodes, typename IdTraits, typename ChunkCache>
+void cacheSmallRangeIdChunks(const std::vector<std::size_t> &order,
+                             const Nodes &nodes, const IdTraits &traits,
+                             std::size_t rangeBegin, std::size_t rangeEnd,
+                             ChunkCache &idChunks) {
+    for (std::size_t rangeIdx = rangeBegin; rangeIdx < rangeEnd; ++rangeIdx) {
+        const std::size_t localIdx = rangeIdx - rangeBegin;
+        const auto &idValue = traits.id(nodes[order[rangeIdx]]);
+        for (std::size_t chunkIdx = 0;
+             chunkIdx < cached_small_id_chunk_count<IdTraits>; ++chunkIdx) {
+            idChunks[localIdx][chunkIdx] =
+                detail::chunkMsbFirst(idValue, chunkIdx, traits);
+        }
+    }
+}
+
+struct PendingBitRange {
+    std::size_t begin;
+    std::size_t end;
+    std::size_t bitIndex;
+};
+
+template <typename ChunkCache>
+void stableSortRangeSmallLinearCachedChunksWithCache(
+    std::vector<std::size_t> &order, std::size_t rangeBegin,
+    std::size_t rangeEnd, ChunkCache &idChunks) {
     for (std::size_t rangeIdx = rangeBegin + 1; rangeIdx < rangeEnd;
          ++rangeIdx) {
+        const std::size_t localIdx = rangeIdx - rangeBegin;
         const std::size_t nodeIndex = order[rangeIdx];
-        const auto &idValue = traits.id(nodes[nodeIndex]);
+        const auto idValue = idChunks[localIdx];
+        std::size_t innerIdx = rangeIdx;
+        for (; innerIdx > rangeBegin; --innerIdx) {
+            const std::size_t previousLocalIdx = innerIdx - 1 - rangeBegin;
+            if (compareCachedIdChunks(idChunks[previousLocalIdx], idValue) <=
+                0) {
+                break;
+            }
+            const std::size_t innerLocalIdx = innerIdx - rangeBegin;
+            order[innerIdx] = order[innerIdx - 1];
+            idChunks[innerLocalIdx] = idChunks[previousLocalIdx];
+        }
+        order[innerIdx] = nodeIndex;
+        idChunks[innerIdx - rangeBegin] = idValue;
+    }
+}
 
-        const std::size_t previousIndex = order[rangeIdx - 1];
-        if (detail::compareIdsMsbFirst(traits.id(nodes[previousIndex]), idValue,
-                                       traits) <= 0) {
+template <std::size_t MaxRangeSize, typename Nodes, typename IdTraits>
+void stableSortRangeSmallLinearCachedChunks(std::vector<std::size_t> &order,
+                                            const Nodes &nodes,
+                                            const IdTraits &traits,
+                                            std::size_t rangeBegin,
+                                            std::size_t rangeEnd) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+    if (rangeSize > MaxRangeSize) {
+        throw std::runtime_error(
+            "small sorter range exceeds fixed scratch capacity");
+    }
+
+    std::array<CachedSmallIdChunks<IdTraits>, MaxRangeSize> idChunks;
+    cacheSmallRangeIdChunks(order, nodes, traits, rangeBegin, rangeEnd,
+                            idChunks);
+
+    stableSortRangeSmallLinearCachedChunksWithCache(order, rangeBegin, rangeEnd,
+                                                    idChunks);
+}
+
+template <typename Nodes, typename IdTraits>
+void stableSortRangeSmallLinearCachedChunksDynamic(
+    std::vector<std::size_t> &order, const Nodes &nodes, const IdTraits &traits,
+    std::size_t rangeBegin, std::size_t rangeEnd) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+
+    std::vector<CachedSmallIdChunks<IdTraits>> idChunks(rangeSize);
+    cacheSmallRangeIdChunks(order, nodes, traits, rangeBegin, rangeEnd,
+                            idChunks);
+
+    stableSortRangeSmallLinearCachedChunksWithCache(order, rangeBegin, rangeEnd,
+                                                    idChunks);
+}
+
+template <typename ChunkCache>
+void stableSortRangeSmallBinaryWithCache(std::vector<std::size_t> &order,
+                                         std::size_t rangeBegin,
+                                         std::size_t rangeEnd,
+                                         ChunkCache &idChunks) {
+    for (std::size_t rangeIdx = rangeBegin + 1; rangeIdx < rangeEnd;
+         ++rangeIdx) {
+        const std::size_t localIdx = rangeIdx - rangeBegin;
+        const std::size_t nodeIndex = order[rangeIdx];
+        const auto idValue = idChunks[localIdx];
+
+        const std::size_t previousLocalIdx = localIdx - 1;
+        if (compareCachedIdChunks(idChunks[previousLocalIdx], idValue) <= 0) {
             continue;
         }
 
@@ -40,33 +151,75 @@ void stableSortRangeSmallBinary(std::vector<std::size_t> &order,
         while (searchBegin < searchEnd) {
             const std::size_t middle =
                 searchBegin + ((searchEnd - searchBegin) / 2);
+            const std::size_t middleLocalIdx = middle - rangeBegin;
             const bool insertAfterMiddle =
-                detail::compareIdsMsbFirst(traits.id(nodes[order[middle]]),
-                                           idValue, traits) <= 0;
+                compareCachedIdChunks(idChunks[middleLocalIdx], idValue) <= 0;
             searchBegin = insertAfterMiddle ? middle + 1 : searchBegin;
             searchEnd = insertAfterMiddle ? searchEnd : middle;
         }
 
+        const std::size_t insertLocalIdx = searchBegin - rangeBegin;
         for (std::size_t moveIdx = rangeIdx; moveIdx > searchBegin; --moveIdx) {
+            const std::size_t moveLocalIdx = moveIdx - rangeBegin;
             order[moveIdx] = order[moveIdx - 1];
+            idChunks[moveLocalIdx] = idChunks[moveLocalIdx - 1];
         }
         order[searchBegin] = nodeIndex;
+        idChunks[insertLocalIdx] = idValue;
     }
 }
 
+template <std::size_t MaxRangeSize, typename Nodes, typename IdTraits>
+void stableSortRangeSmallBinary(std::vector<std::size_t> &order,
+                                const Nodes &nodes, const IdTraits &traits,
+                                std::size_t rangeBegin, std::size_t rangeEnd) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+    if (rangeSize > MaxRangeSize) {
+        throw std::runtime_error(
+            "small sorter range exceeds fixed scratch capacity");
+    }
+
+    std::array<CachedSmallIdChunks<IdTraits>, MaxRangeSize> idChunks;
+    cacheSmallRangeIdChunks(order, nodes, traits, rangeBegin, rangeEnd,
+                            idChunks);
+
+    stableSortRangeSmallBinaryWithCache(order, rangeBegin, rangeEnd, idChunks);
+}
+
 template <typename Nodes, typename IdTraits>
-void stableSortRangeSmallExponential(std::vector<std::size_t> &order,
-                                     const Nodes &nodes, const IdTraits &traits,
-                                     std::size_t rangeBegin,
-                                     std::size_t rangeEnd) {
+void stableSortRangeSmallBinaryDynamic(std::vector<std::size_t> &order,
+                                       const Nodes &nodes,
+                                       const IdTraits &traits,
+                                       std::size_t rangeBegin,
+                                       std::size_t rangeEnd) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+
+    std::vector<CachedSmallIdChunks<IdTraits>> idChunks(rangeSize);
+    cacheSmallRangeIdChunks(order, nodes, traits, rangeBegin, rangeEnd,
+                            idChunks);
+
+    stableSortRangeSmallBinaryWithCache(order, rangeBegin, rangeEnd, idChunks);
+}
+
+template <typename ChunkCache>
+void stableSortRangeSmallExponentialWithCache(std::vector<std::size_t> &order,
+                                              std::size_t rangeBegin,
+                                              std::size_t rangeEnd,
+                                              ChunkCache &idChunks) {
     for (std::size_t rangeIdx = rangeBegin + 1; rangeIdx < rangeEnd;
          ++rangeIdx) {
+        const std::size_t localIdx = rangeIdx - rangeBegin;
         const std::size_t nodeIndex = order[rangeIdx];
-        const auto &idValue = traits.id(nodes[nodeIndex]);
+        const auto idValue = idChunks[localIdx];
 
-        const std::size_t previousIndex = order[rangeIdx - 1];
-        if (detail::compareIdsMsbFirst(traits.id(nodes[previousIndex]), idValue,
-                                       traits) <= 0) {
+        const std::size_t previousLocalIdx = localIdx - 1;
+        if (compareCachedIdChunks(idChunks[previousLocalIdx], idValue) <= 0) {
             continue;
         }
 
@@ -75,8 +228,8 @@ void stableSortRangeSmallExponential(std::vector<std::size_t> &order,
         std::size_t searchEnd = rangeIdx - 1;
         for (std::size_t bound = 2; bound <= sortedPrefixSize; bound <<= 1) {
             const std::size_t probe = rangeIdx - bound;
-            if (detail::compareIdsMsbFirst(traits.id(nodes[order[probe]]),
-                                           idValue, traits) <= 0) {
+            const std::size_t probeLocalIdx = probe - rangeBegin;
+            if (compareCachedIdChunks(idChunks[probeLocalIdx], idValue) <= 0) {
                 searchBegin = probe + 1;
                 break;
             }
@@ -86,18 +239,63 @@ void stableSortRangeSmallExponential(std::vector<std::size_t> &order,
         while (searchBegin < searchEnd) {
             const std::size_t middle =
                 searchBegin + ((searchEnd - searchBegin) / 2);
+            const std::size_t middleLocalIdx = middle - rangeBegin;
             const bool insertAfterMiddle =
-                detail::compareIdsMsbFirst(traits.id(nodes[order[middle]]),
-                                           idValue, traits) <= 0;
+                compareCachedIdChunks(idChunks[middleLocalIdx], idValue) <= 0;
             searchBegin = insertAfterMiddle ? middle + 1 : searchBegin;
             searchEnd = insertAfterMiddle ? searchEnd : middle;
         }
 
+        const std::size_t insertLocalIdx = searchBegin - rangeBegin;
         for (std::size_t moveIdx = rangeIdx; moveIdx > searchBegin; --moveIdx) {
+            const std::size_t moveLocalIdx = moveIdx - rangeBegin;
             order[moveIdx] = order[moveIdx - 1];
+            idChunks[moveLocalIdx] = idChunks[moveLocalIdx - 1];
         }
         order[searchBegin] = nodeIndex;
+        idChunks[insertLocalIdx] = idValue;
     }
+}
+
+template <std::size_t MaxRangeSize, typename Nodes, typename IdTraits>
+void stableSortRangeSmallExponential(std::vector<std::size_t> &order,
+                                     const Nodes &nodes, const IdTraits &traits,
+                                     std::size_t rangeBegin,
+                                     std::size_t rangeEnd) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+    if (rangeSize > MaxRangeSize) {
+        throw std::runtime_error(
+            "small sorter range exceeds fixed scratch capacity");
+    }
+
+    std::array<CachedSmallIdChunks<IdTraits>, MaxRangeSize> idChunks;
+    cacheSmallRangeIdChunks(order, nodes, traits, rangeBegin, rangeEnd,
+                            idChunks);
+
+    stableSortRangeSmallExponentialWithCache(order, rangeBegin, rangeEnd,
+                                             idChunks);
+}
+
+template <typename Nodes, typename IdTraits>
+void stableSortRangeSmallExponentialDynamic(std::vector<std::size_t> &order,
+                                            const Nodes &nodes,
+                                            const IdTraits &traits,
+                                            std::size_t rangeBegin,
+                                            std::size_t rangeEnd) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+
+    std::vector<CachedSmallIdChunks<IdTraits>> idChunks(rangeSize);
+    cacheSmallRangeIdChunks(order, nodes, traits, rangeBegin, rangeEnd,
+                            idChunks);
+
+    stableSortRangeSmallExponentialWithCache(order, rangeBegin, rangeEnd,
+                                             idChunks);
 }
 
 template <std::size_t DepthPrefixBytes,
@@ -139,32 +337,10 @@ inline std::vector<Node> sortForestByAdaptiveRangeSorterWithParent(
     return materializeOrder(nodes, order);
 }
 
-using detail::EmptyScratch;
-
 template <std::size_t ChunkBytes,
           typename CountPolicy = detail::FullClearCounts>
-struct AdaptiveChunkWorkspace {
-    std::vector<detail::IdChunkRange> pending;
-    std::unique_ptr<detail::ChunkedIndex<ChunkBytes>[]> current;
-    std::unique_ptr<detail::ChunkedIndex<ChunkBytes>[]> next;
-
-    using ScratchType =
-        std::conditional_t<std::is_same_v<CountPolicy, detail::FullClearCounts>,
-                           EmptyScratch, detail::BitmaskTouchedCountScratch>;
-
-    ScratchType touchedScratch;
-
-    void allocate(std::size_t rangeSize) {
-        pending.reserve(detail::initial_range_stack_capacity);
-        if (rangeSize == 0) {
-            return;
-        }
-        current = std::unique_ptr<detail::ChunkedIndex<ChunkBytes>[]>(
-            new detail::ChunkedIndex<ChunkBytes>[rangeSize]);
-        next = std::unique_ptr<detail::ChunkedIndex<ChunkBytes>[]>(
-            new detail::ChunkedIndex<ChunkBytes>[rangeSize]);
-    }
-};
+using AdaptiveChunkWorkspace =
+    detail::IdChunkSortWorkspace<ChunkBytes, CountPolicy>;
 
 template <std::size_t ChunkBytes = detail::chunk_byte_count,
           typename CountPolicy = detail::FullClearCounts,
@@ -217,50 +393,78 @@ struct LinearSmallSorter {
     }
 };
 
+template <std::size_t MaxRangeSize> struct LinearCachedChunksSmallSorter {
+    void operator()(std::vector<std::size_t> &order,
+                    const std::vector<Node> &nodes,
+                    const UInt128NodeTraits &traits, std::size_t begin,
+                    std::size_t end) const {
+        stableSortRangeSmallLinearCachedChunks<MaxRangeSize>(
+            order, nodes, traits, begin, end);
+    }
+};
+
+template <std::size_t MaxRangeSize = detail::small_id_range_sort_threshold>
 struct BinarySmallSorter {
     void operator()(std::vector<std::size_t> &order,
                     const std::vector<Node> &nodes,
                     const UInt128NodeTraits &traits, std::size_t begin,
                     std::size_t end) const {
-        stableSortRangeSmallBinary(order, nodes, traits, begin, end);
+        stableSortRangeSmallBinary<MaxRangeSize>(order, nodes, traits, begin,
+                                                 end);
     }
 };
 
-struct ExponentialSmallSorter {
+template <std::size_t MaxRangeSize> struct ExponentialSmallSorter {
     void operator()(std::vector<std::size_t> &order,
                     const std::vector<Node> &nodes,
                     const UInt128NodeTraits &traits, std::size_t begin,
                     std::size_t end) const {
-        stableSortRangeSmallExponential(order, nodes, traits, begin, end);
+        stableSortRangeSmallExponential<MaxRangeSize>(order, nodes, traits,
+                                                      begin, end);
     }
 };
 
-template <std::size_t MaxRangeSize, typename Nodes, typename IdTraits>
-void stableSortRangeSmallBranchlessBitwise(std::vector<std::size_t> &order,
-                                           const Nodes &nodes,
-                                           const IdTraits &traits,
-                                           std::size_t rangeBegin,
-                                           std::size_t rangeEnd) {
+struct LinearCachedChunksSmallSorterDynamic {
+    void operator()(std::vector<std::size_t> &order,
+                    const std::vector<Node> &nodes,
+                    const UInt128NodeTraits &traits, std::size_t begin,
+                    std::size_t end) const {
+        stableSortRangeSmallLinearCachedChunksDynamic(order, nodes, traits,
+                                                      begin, end);
+    }
+};
+
+struct BinarySmallSorterDynamic {
+    void operator()(std::vector<std::size_t> &order,
+                    const std::vector<Node> &nodes,
+                    const UInt128NodeTraits &traits, std::size_t begin,
+                    std::size_t end) const {
+        stableSortRangeSmallBinaryDynamic(order, nodes, traits, begin, end);
+    }
+};
+
+struct ExponentialSmallSorterDynamic {
+    void operator()(std::vector<std::size_t> &order,
+                    const std::vector<Node> &nodes,
+                    const UInt128NodeTraits &traits, std::size_t begin,
+                    std::size_t end) const {
+        stableSortRangeSmallExponentialDynamic(order, nodes, traits, begin,
+                                               end);
+    }
+};
+
+template <typename IdTraits, typename Nodes, typename PendingArr,
+          typename LocalOrderArr, typename ScratchOrderArr,
+          typename NodeIndicesArr, typename BitsArr, typename IdBytesArr>
+void stableSortRangeSmallBranchlessBitwiseWithScratch(
+    std::vector<std::size_t> &order, const Nodes &nodes, const IdTraits &traits,
+    std::size_t rangeBegin, std::size_t rangeEnd, PendingArr &pending,
+    LocalOrderArr &localOrder, ScratchOrderArr &scratchOrder,
+    NodeIndicesArr &nodeIndices, BitsArr &bits, IdBytesArr &idBytes) {
     const std::size_t rangeSize = rangeEnd - rangeBegin;
     if (rangeSize <= 1) {
         return;
     }
-
-    struct PendingBitRange {
-        std::size_t begin;
-        std::size_t end;
-        std::size_t bitIndex;
-    };
-
-    using CachedIdBytes = std::array<uint8_t, IdTraits::id_byte_count>;
-
-    std::array<PendingBitRange, MaxRangeSize> pending;
-    std::array<std::size_t, MaxRangeSize> localOrder;
-    std::array<std::size_t, MaxRangeSize> scratchOrder;
-    std::array<std::size_t, MaxRangeSize> nodeIndices;
-    std::array<uint8_t, MaxRangeSize> bits;
-    std::array<CachedIdBytes, MaxRangeSize> idBytes;
-    std::size_t pendingCount = 0;
 
     const std::size_t totalBits = IdTraits::id_byte_count * 8;
     for (std::size_t i = 0; i < rangeSize; ++i) {
@@ -273,6 +477,8 @@ void stableSortRangeSmallBranchlessBitwise(std::vector<std::size_t> &order,
             idBytes[i][byteIdx] = traits.byte_msb_first(idVal, byteIdx);
         }
     }
+
+    std::size_t pendingCount = 0;
     pending[pendingCount++] = PendingBitRange{0, rangeSize, 0};
 
     auto pushPendingRange = [&](std::size_t begin, std::size_t end,
@@ -375,6 +581,58 @@ void stableSortRangeSmallBranchlessBitwise(std::vector<std::size_t> &order,
     }
 }
 
+template <std::size_t MaxRangeSize, typename Nodes, typename IdTraits>
+void stableSortRangeSmallBranchlessBitwise(std::vector<std::size_t> &order,
+                                           const Nodes &nodes,
+                                           const IdTraits &traits,
+                                           std::size_t rangeBegin,
+                                           std::size_t rangeEnd) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+    if (rangeSize > MaxRangeSize) {
+        throw std::runtime_error(
+            "small sorter range exceeds fixed scratch capacity");
+    }
+
+    using CachedIdBytes = std::array<uint8_t, IdTraits::id_byte_count>;
+
+    std::array<PendingBitRange, MaxRangeSize> pending;
+    std::array<std::size_t, MaxRangeSize> localOrder;
+    std::array<std::size_t, MaxRangeSize> scratchOrder;
+    std::array<std::size_t, MaxRangeSize> nodeIndices;
+    std::array<uint8_t, MaxRangeSize> bits;
+    std::array<CachedIdBytes, MaxRangeSize> idBytes;
+
+    stableSortRangeSmallBranchlessBitwiseWithScratch<IdTraits>(
+        order, nodes, traits, rangeBegin, rangeEnd, pending, localOrder,
+        scratchOrder, nodeIndices, bits, idBytes);
+}
+
+template <typename Nodes, typename IdTraits>
+void stableSortRangeSmallBranchlessBitwiseDynamic(
+    std::vector<std::size_t> &order, const Nodes &nodes, const IdTraits &traits,
+    std::size_t rangeBegin, std::size_t rangeEnd) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+
+    using CachedIdBytes = std::array<uint8_t, IdTraits::id_byte_count>;
+
+    std::vector<PendingBitRange> pending(rangeSize);
+    std::vector<std::size_t> localOrder(rangeSize);
+    std::vector<std::size_t> scratchOrder(rangeSize);
+    std::vector<std::size_t> nodeIndices(rangeSize);
+    std::vector<uint8_t> bits(rangeSize);
+    std::vector<CachedIdBytes> idBytes(rangeSize);
+
+    stableSortRangeSmallBranchlessBitwiseWithScratch<IdTraits>(
+        order, nodes, traits, rangeBegin, rangeEnd, pending, localOrder,
+        scratchOrder, nodeIndices, bits, idBytes);
+}
+
 template <std::size_t MaxRangeSize> struct BranchlessBitwiseSmallSorter {
     void operator()(std::vector<std::size_t> &order,
                     const std::vector<Node> &nodes,
@@ -382,6 +640,16 @@ template <std::size_t MaxRangeSize> struct BranchlessBitwiseSmallSorter {
                     std::size_t end) const {
         stableSortRangeSmallBranchlessBitwise<MaxRangeSize>(order, nodes,
                                                             traits, begin, end);
+    }
+};
+
+struct BranchlessBitwiseSmallSorterDynamic {
+    void operator()(std::vector<std::size_t> &order,
+                    const std::vector<Node> &nodes,
+                    const UInt128NodeTraits &traits, std::size_t begin,
+                    std::size_t end) const {
+        stableSortRangeSmallBranchlessBitwiseDynamic(order, nodes, traits,
+                                                     begin, end);
     }
 };
 
@@ -595,7 +863,8 @@ sortForestByAdaptiveDepth2U64ChunkBinarySmallWithParent(
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<
         2, 8, detail::FullClearCounts, detail::small_id_range_sort_threshold,
-        BinarySmallSorter>(nodes, parentIndex, true);
+        BinarySmallSorter<detail::small_id_range_sort_threshold>>(
+        nodes, parentIndex, true);
 }
 
 inline std::vector<Node> sortForestByAdaptiveDepth4U32ChunkWithParent(

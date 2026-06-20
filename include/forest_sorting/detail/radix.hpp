@@ -236,19 +236,6 @@ template <> struct ChunkValue<8> {
 template <std::size_t ChunkBytes>
 using ChunkValueType = ChunkValue<ChunkBytes>::Type;
 
-template <typename Id, typename Traits>
-bool idLess(const Id &lhs, const Id &rhs, const Traits &traits) noexcept {
-    for (std::size_t byteIndex = 0; byteIndex < Traits::id_byte_count;
-         ++byteIndex) {
-        const uint8_t lhsByte = traits.byte_msb_first(lhs, byteIndex);
-        const uint8_t rhsByte = traits.byte_msb_first(rhs, byteIndex);
-        if (lhsByte != rhsByte) {
-            return lhsByte < rhsByte;
-        }
-    }
-    return false;
-}
-
 template <std::size_t ChunkBytes, typename Id, typename Traits>
 ChunkValueType<ChunkBytes> buildChunkFromBytes(const Id &nodeId,
                                                std::size_t chunkIndex,
@@ -290,30 +277,27 @@ ChunkValueType<ChunkBytes> chunkMsbFirst(const Id &nodeId,
     }
 }
 
-template <typename Entry, typename IdForEntry, typename IdTraits>
-void radixMsdSortEntriesById(std::vector<Entry> &entries, IdForEntry idForEntry,
-                             const IdTraits &idTraits) {
-    if (entries.size() <= 1) {
-        return;
-    }
-
-    std::vector<Entry> scratch(entries.size());
-    auto digitForOffset = [&](std::size_t offset, std::size_t digitIndex) {
-        return idTraits.byte_msb_first(idForEntry(entries[offset]), digitIndex);
-    };
-    auto moveToScratch = [&](std::size_t offset, std::size_t scratchOffset) {
-        scratch[scratchOffset] = entries[offset];
-    };
-    auto copyFromScratch = [&](std::size_t rangeBegin, std::size_t rangeEnd) {
-        for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
-            entries[offset] = scratch[offset];
+template <typename Id, typename Traits>
+inline int compareIdsMsbFirst(const Id &lhs, const Id &rhs,
+                              const Traits &traits) noexcept {
+    constexpr std::size_t chunkCount =
+        (Traits::id_byte_count + chunk_byte_count - 1) / chunk_byte_count;
+    for (std::size_t chunkIdx = 0; chunkIdx < chunkCount; ++chunkIdx) {
+        const uint64_t lhsChunk = chunkMsbFirst(lhs, chunkIdx, traits);
+        const uint64_t rhsChunk = chunkMsbFirst(rhs, chunkIdx, traits);
+        if (lhsChunk < rhsChunk) {
+            return -1;
         }
-    };
-    auto rangeDone = [](std::size_t, std::size_t) {};
+        if (lhsChunk > rhsChunk) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
-    radixMsdPartitionCore(0, entries.size(), 0, IdTraits::id_byte_count,
-                          digitForOffset, moveToScratch, copyFromScratch,
-                          rangeDone);
+template <typename Id, typename Traits>
+bool idLess(const Id &lhs, const Id &rhs, const Traits &traits) noexcept {
+    return compareIdsMsbFirst(lhs, rhs, traits) < 0;
 }
 
 } // namespace forest_sorting::detail

@@ -116,6 +116,9 @@ comparison plus fixed-prefix LSD, full-key byte-MSD, and adaptive chunk-MSD sort
 variants with selectable datasets and output formats.
 
 Parent builders are selected with `unordered`, `flat`, `control`, and `radix`.
+The production `radix` fallback sorts stationary ID/query records through
+u32-chunk index permutations. The opt-in `radix-byte-msd` comparator sorts the
+same permutations with byte-MSD and is excluded from `--parent default`.
 Datasets include `random`, `outliers`, `same-high64`, `same-high32`,
 `sequential`, `external-parents`, and `siblings`. By default, the benchmark
 runs the standard sort set; `--sort all` selects that same set explicitly and
@@ -140,8 +143,9 @@ excludes opt-in tuning experiments. Sort algorithms are selected with:
 - `adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32`: 8-byte chunk-MSD adaptive path with stable binary-insertion sort for small equal-depth ID ranges
 - `adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32`: production-style adaptive path, configured for a 4-byte depth prefix
 - `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear48`: opt-in tail-threshold variants that keep the production radix count policy and only change the linear small-range cutoff; `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32` is the production row
-- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32`: opt-in tail variant that keeps the production radix count policy and small-range threshold, but swaps only the insertion-search strategy
-- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential48`: opt-in exponential insertion-search variants under the production `bitmask-le512` radix count policy
+- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-chunk-cache`: opt-in linear-small32 contender that caches MSB-first 64-bit ID chunks before insertion sorting
+- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32`: opt-in binary-insertion tail using cached MSB-first 64-bit ID chunks
+- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential48`: opt-in exponential insertion-search variants using threshold-sized cached MSB-first 64-bit ID chunks under the production `bitmask-le512` radix count policy
 - `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise32`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise48`: opt-in fixed-pass base-2 stable-radix small-tail variants under the production `bitmask-le512` radix count policy
 - `adaptive-depth2-u32-chunk-msd-bitmask-le128-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le256-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le1024-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le4096-tail-linear32`: opt-in Track B2 variants using branch-free bitmask touched bucket counters for ranges up to the named threshold
 - `adaptive-depth2-range-ladder-u8-le1024-u16-le16384-*-tail-linear32`, `adaptive-depth2-range-ladder-u8-le2048-u16-le32768-*-tail-linear32`, `adaptive-depth2-range-ladder-u8-le4096-u16-le65536-*-tail-linear32`: opt-in range-local chunk ladders; `full-clear` rows isolate chunk width and `bitmask-le512` rows use the production counter policy
@@ -189,17 +193,94 @@ Repeat `--data-seed` to compare across multiple generated forests, and use
 
 ```bash
 cmake --build --preset release --target forest-sorting-bench
+
+# Run default suite (uses default options)
 ./out/build/release/benchmarks/forest-sorting-bench
-./out/build/release/benchmarks/forest-sorting-bench --format csv --size 10000 --dataset random --parent all --sort adaptive-depth2-u32-chunk-msd
-./out/build/release/benchmarks/forest-sorting-bench --size 10000 --dataset random --sort depth-bucket-depth2-lsd --sort depth-bucket-depth2-chunk-msd --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32
-./out/build/release/benchmarks/forest-sorting-bench --size 100000 --dataset random --parent control --sort composite-depth2-byte-msd-copyback --sort composite-depth2-byte-msd-lowcopy-branchy --sort composite-depth2-byte-msd-lowcopy-flattened --sort composite-depth2-byte-msd-lowcopy-batched --baseline-sort composite-depth2-byte-msd-copyback --iterations 30 --warmup 3 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --format json --sample-output summary
-./out/build/release/benchmarks/forest-sorting-bench --size 100000 --dataset random --parent control --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --iterations 11 --warmup 2 --shuffle --order-seed 0x5eed --data-seed 0x5eed1234
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 100000 --dataset random --parent control --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --iterations 30 --warmup 3 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le128-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le256-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le1024-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le4096-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32 --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u16-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le1024-u16-le16384-full-clear-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le2048-u16-le32768-full-clear-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le4096-u16-le65536-full-clear-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32 --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le1024-u16-le16384-bitmask-le512-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le2048-u16-le32768-bitmask-le512-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le4096-u16-le65536-bitmask-le512-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output raw --size 100000 --dataset random --parent flat --parent control --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --baseline-parent control --iterations 11 --warmup 2 --data-seed 0x5eed1234
+
+# Run single dataset and specific algorithm
+./out/build/release/benchmarks/forest-sorting-bench \
+  --format csv \
+  --size 10000 \
+  --dataset random \
+  --parent default \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+
+# Run multiple sizes, datasets, and custom seeds with bootstrapped delta comparison
+./out/build/release/benchmarks/forest-sorting-bench \
+  --format json --sample-output summary \
+  --size 10000 --size 100000 --size 1000000 \
+  --dataset random --dataset same-high32 --dataset same-high64 \
+  --parent radix --parent radix-byte-msd \
+  --baseline-parent radix-byte-msd \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 \
+  --iterations 30 --warmup 3 --shuffle \
+  --order-seed 0x5eed \
+  --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
+
+# Compare various chunk sizes and baseline sorting algorithms
+./out/build/release/benchmarks/forest-sorting-bench \
+  --size 10000 \
+  --dataset random \
+  --sort depth-bucket-depth2-lsd \
+  --sort depth-bucket-depth2-chunk-msd \
+  --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32 \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 \
+  --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32 \
+  --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32
+
+# Compare composite depth-MSD partition and low-copy variants
+./out/build/release/benchmarks/forest-sorting-bench \
+  --size 100000 \
+  --dataset random \
+  --parent control \
+  --sort composite-depth2-byte-msd-copyback \
+  --sort composite-depth2-byte-msd-lowcopy-branchy \
+  --sort composite-depth2-byte-msd-lowcopy-flattened \
+  --sort composite-depth2-byte-msd-lowcopy-batched \
+  --baseline-sort composite-depth2-byte-msd-copyback \
+  --iterations 30 --warmup 3 --shuffle \
+  --order-seed 0x5eed \
+  --data-seed 1 --data-seed 2 --data-seed 3 \
+  --format json --sample-output summary
+
+# Compare different tail options (linear, binary, exponential, branchless-bitwise)
+./out/build/release/benchmarks/forest-sorting-bench \
+  --format json --sample-output summary --parent control \
+  --size 10000 --size 100000 --size 1000000 \
+  --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-chunk-cache \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32 \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32 \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise32 \
+  --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 \
+  --iterations 50 --warmup 10 --shuffle \
+  --order-seed 0x5eed \
+  --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5 \
+  | jq > test_tail_matrix.json
+```
+
+### Tail Microbenchmarks
+
+To isolate and test the performance of the small-range tail sorting algorithms (avoiding parent setup, depth grouping, and radix partition noise), use `forest-sorting-tail-bench`. This benchmark runs arbitrary range sizes (defaulting to sizes `4`, `8`, `16`, `24`, `32`) and measures the sorting throughput (in nanoseconds per range) of:
+
+- `linear`
+- `linear-chunk-cache`
+- `binary`
+- `exponential`
+- `branchless-bitwise`
+
+Example:
+
+```bash
+cmake --build --preset release --target forest-sorting-tail-bench
+./out/build/release/benchmarks/forest-sorting-tail-bench \
+  --iterations 100 \
+  --warmup 10 \
+  --ranges 1000 \
+  --size 16 \
+  --pattern random \
+  --format table
 ```
 
 CI runs on GitHub Actions for macOS and Ubuntu using these presets. It builds

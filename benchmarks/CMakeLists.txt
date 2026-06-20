@@ -5,6 +5,13 @@ target_include_directories(forest-sorting-bench
                            PRIVATE "${CMAKE_SOURCE_DIR}/tests/support")
 forest_sorting_apply_common_options(forest-sorting-bench)
 
+add_executable(forest-sorting-tail-bench tail_microbench.cpp)
+target_link_libraries(forest-sorting-tail-bench PRIVATE forest-sorting-lib)
+target_include_directories(forest-sorting-tail-bench
+                           PRIVATE "${CMAKE_SOURCE_DIR}/tests/support")
+forest_sorting_apply_common_options(forest-sorting-tail-bench)
+
+
 option(FOREST_SORTING_NATIVE_BENCH
        "Use -march=native/-flto for benchmarks" OFF)
 
@@ -25,7 +32,7 @@ add_test(NAME forest-sorting-bench-csv
                  --format csv
                  --size 10000
                  --dataset random
-                 --parent all
+                 --parent default
                  --sort adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32
                  --iterations 2
                  --warmup 1
@@ -38,7 +45,7 @@ add_test(NAME forest-sorting-bench-tsv
                  --size 10000
                  --dataset siblings
                  --parent control
-                 --sort all
+                 --sort default
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
@@ -49,7 +56,7 @@ add_test(NAME forest-sorting-bench-json
                  --sample-output summary
                  --size 10000
                  --dataset same-high64
-                 --parent all
+                 --parent default
                  --sort adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32
                  --iterations 2
                  --warmup 1
@@ -152,3 +159,71 @@ add_test(NAME forest-sorting-bench-range-ladder-bitmask-le512
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
+add_test(NAME forest-sorting-bench-tail-chunk-cache
+         COMMAND forest-sorting-bench
+                 --size 10000
+                 --dataset same-high32
+                 --parent control
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-chunk-cache
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32
+                 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --iterations 1
+                 --warmup 0
+                 --order-seed 0x5eed
+                 --data-seed 0x5eed1234)
+
+add_test(NAME forest-sorting-bench-parent-radix-chunk-vs-byte
+         COMMAND forest-sorting-bench
+                 --size 10000
+                 --dataset same-high64
+                 --parent radix
+                 --parent radix-byte-msd
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --baseline-parent radix-byte-msd
+                 --iterations 1
+                 --warmup 0
+                 --order-seed 0x5eed
+                 --data-seed 0x5eed1234)
+
+add_test(NAME forest-sorting-tail-bench-help COMMAND forest-sorting-tail-bench --help)
+add_test(NAME forest-sorting-tail-bench-smoke
+         COMMAND forest-sorting-tail-bench
+                 --iterations 2
+                 --warmup 1
+                 --ranges 10
+                 --size 4
+                 --size 8
+                 --pattern random)
+
+# Invalid CLI validation tests
+add_test(NAME forest-sorting-bench-invalid-size
+         COMMAND forest-sorting-bench --size 0)
+set_tests_properties(forest-sorting-bench-invalid-size
+                     PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME forest-sorting-bench-invalid-iterations
+         COMMAND forest-sorting-bench --iterations 0)
+set_tests_properties(forest-sorting-bench-invalid-iterations
+                     PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME forest-sorting-bench-invalid-baseline
+         COMMAND forest-sorting-bench --baseline-sort non-existent)
+set_tests_properties(forest-sorting-bench-invalid-baseline
+                     PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME forest-sorting-tail-bench-invalid-size
+         COMMAND forest-sorting-tail-bench --size 0)
+set_tests_properties(forest-sorting-tail-bench-invalid-size
+                     PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME forest-sorting-tail-bench-invalid-ranges
+         COMMAND forest-sorting-tail-bench --ranges 0)
+set_tests_properties(forest-sorting-tail-bench-invalid-ranges
+                     PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME forest-sorting-tail-bench-invalid-baseline
+         COMMAND forest-sorting-tail-bench --baseline-sort non-existent)
+set_tests_properties(forest-sorting-tail-bench-invalid-baseline
+                     PROPERTIES WILL_FAIL TRUE)

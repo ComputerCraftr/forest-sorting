@@ -1,7 +1,7 @@
 #include "adaptive_sort_variants.hpp"
 #include "forest_sorting/algorithms.hpp"
-#include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/hash.hpp"
+#include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
@@ -58,7 +58,7 @@ void requireUniqueDatasetParentAndSortRegistries() {
         }
     }
 
-    const auto parentKinds = allParentKinds();
+    const auto parentKinds = registeredParentKinds();
     require(!parentKinds.empty(), "parent registry is empty");
     for (std::size_t kindIdx = 0; kindIdx < parentKinds.size(); ++kindIdx) {
         require(!parentName(parentKinds[kindIdx]).empty(),
@@ -72,19 +72,23 @@ void requireUniqueDatasetParentAndSortRegistries() {
                     "parent registry contains duplicate name");
         }
     }
+    const auto defParentKinds = defaultParentKinds();
+    require(std::ranges::find(defParentKinds, ParentKind::RadixByteMsd) ==
+                defParentKinds.end(),
+            "byte-MSD parent baseline must remain opt-in");
 
     validateSortRegistry();
 }
 
 void requireSortIsExplicitOptIn(SortKind sortKind, std::string_view message) {
-    const auto defaultSorts = allSortKinds();
+    const auto defaultSorts = defaultSortKinds();
     require(std::ranges::find(defaultSorts, sortKind) == defaultSorts.end(),
             message);
 }
 
 void assertParentBuildersMatch(const std::vector<Node> &nodes) {
     const auto expected = buildParentIndexForKind(ParentKind::Unordered, nodes);
-    for (ParentKind parentKind : allParentKinds()) {
+    for (ParentKind parentKind : registeredParentKinds()) {
         const auto actual = buildParentIndexForKind(parentKind, nodes);
         if (actual != expected) {
             throw std::runtime_error(std::string(parentName(parentKind)) +
@@ -145,6 +149,10 @@ void test_support_registries_are_unique() {
         {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32",
          SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
          "binary small32 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-"
+         "chunk-cache",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32ChunkCache,
+         "linear chunk-cache tuning label is not registered"},
         {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential16",
          SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
          "exponential small16 tuning label is not registered"},
@@ -210,6 +218,8 @@ void test_support_registries_are_unique() {
          "linear small48 tuning sort should be explicit opt-in"},
         {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
          "binary small32 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32ChunkCache,
+         "linear chunk-cache tuning sort should be explicit opt-in"},
         {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
          "exponential small16 tuning sort should be explicit opt-in"},
         {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential32,
@@ -292,9 +302,13 @@ void test_bitmask_touched_chunk_sort_reuses_scratch() {
     std::vector<forest_sorting::detail::ChunkedIndex<1>> current(order.size());
     std::vector<forest_sorting::detail::ChunkedIndex<1>> next(order.size());
     forest_sorting::detail::BitmaskTouchedCountScratch scratch;
+    const UInt128NodeTraits traits;
+    auto idForIndex = [&](std::size_t nodeIndex) {
+        return UInt128NodeTraits::id(nodes[nodeIndex]);
+    };
 
-    forest_sorting::detail::stableLsdSortRangeByIdChunkBitmaskTouched(
-        order, nodes, UInt128NodeTraits{}, 0, order.size(), 0, current.data(),
+    forest_sorting::detail::stableLsdSortIndexRangeByIdChunkWithCounter(
+        order, idForIndex, traits, 0, order.size(), 0, current.data(),
         next.data(), scratch);
     require((order == std::vector<std::size_t>{1, 3, 2, 0}),
             "first bitmask touched chunk sort produced wrong order");
@@ -306,8 +320,8 @@ void test_bitmask_touched_chunk_sort_reuses_scratch() {
         {makeId(0x0400000000000000ULL, 4), 0},
     };
     order = {0, 1, 2, 3};
-    forest_sorting::detail::stableLsdSortRangeByIdChunkBitmaskTouched(
-        order, nodes, UInt128NodeTraits{}, 0, order.size(), 0, current.data(),
+    forest_sorting::detail::stableLsdSortIndexRangeByIdChunkWithCounter(
+        order, idForIndex, traits, 0, order.size(), 0, current.data(),
         next.data(), scratch);
     require((order == std::vector<std::size_t>{1, 2, 0, 3}),
             "second bitmask touched chunk sort reused stale counts");
@@ -327,7 +341,7 @@ void test_parent_builders_reject_duplicate_full_uint128_id() {
         {duplicateId, 0},
     };
 
-    for (ParentKind parentKind : allParentKinds()) {
+    for (ParentKind parentKind : registeredParentKinds()) {
         bool rejected = false;
         try {
             (void)buildParentIndexForKind(parentKind, nodes);

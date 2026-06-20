@@ -31,9 +31,7 @@ inline constexpr uint64_t kSequentialDatasetSeedSalt = 0x200005ULL;
 inline constexpr uint64_t kExternalParentsDatasetSeedSalt = 0x200006ULL;
 inline constexpr uint64_t kSiblingsDatasetSeedSalt = 0x200007ULL;
 
-inline UInt128 makeId(uint64_t high, uint64_t low) {
-    return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
-}
+using forest_sorting::makeId;
 
 inline uint64_t mixFixtureSeed(uint32_t seed, uint64_t salt) {
     uint64_t value = (static_cast<uint64_t>(seed) << 32U) ^ salt;
