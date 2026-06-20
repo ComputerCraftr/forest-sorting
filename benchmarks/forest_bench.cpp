@@ -1,10 +1,12 @@
 #include "benchmark_stats.hpp"
+#include "forest_sorting/detail/depth.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "parent_index_baselines.hpp"
 #include "sort_registry.hpp"
 #include "uint128_fixtures.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -338,19 +340,26 @@ void printHelp() {
                  "external-parents|siblings|all\n"
               << "  --parent unordered|flat|control|radix|all\n"
               << "  --sort ";
-    for (std::size_t entryIdx = 0; entryIdx < kSortRegistry.size();
+    bool first = true;
+    for (std::size_t entryIdx = 0; entryIdx < getSortRegistry().size();
          ++entryIdx) {
-        if (entryIdx > 0) {
+        if (getSortRegistry()[entryIdx].category == SortCategory::Alias) {
+            continue;
+        }
+        if (!first) {
             std::cout << "|";
         }
-        std::cout << kSortRegistry[entryIdx].name;
+        std::cout << getSortRegistry()[entryIdx].name;
+        first = false;
     }
     std::cout
         << "|all\n"
-        << "                                   depth2 labels are fixed-prefix "
-           "benchmarks; adaptive byte/u32/chunk labels use the unified "
-           "1/4/8-byte chunk-MSD engine; all selects the default set and "
-           "excludes opt-in tuning experiments\n"
+        << "                                   depth2 labels use typed "
+           "uint16_t "
+           "depth payloads; u8/u16/u32 chunk labels fix ID chunk width; "
+           "range-ladder labels choose u8/u16/u32 once per equal-depth range; "
+           "full-clear and bitmask-le512 suffixes identify counter policy; "
+           "all excludes opt-in tuning experiments\n"
         << "  --iterations N\n"
         << "  --warmup N\n"
         << "  --baseline-sort NAME             compare selected sorts against "
@@ -497,6 +506,89 @@ void applyParentBaseline(BenchmarkResult &result,
         result.parentDeltaMedianPct, result.parentDeltaPctCi95));
 }
 
+std::string seedHex(uint32_t seed) {
+    std::ostringstream output;
+    output << "0x" << std::hex << seed;
+    return output.str();
+}
+
+void printDepthRangeStats(const DatasetContext &context) {
+    if (context.nodes.empty()) {
+        return;
+    }
+    auto computed = forest_sorting::detail::computeDepths<2>(
+        context.nodes, context.expectedParent,
+        forest_sorting::UInt128NodeTraits{});
+    const auto &depths = computed.values;
+    if (depths.empty()) {
+        return;
+    }
+
+    std::vector<std::size_t> counts(
+        static_cast<std::size_t>(computed.observedMax) + 1, 0);
+    for (auto depthVal : depths) {
+        counts[depthVal]++;
+    }
+
+    std::size_t depth_range_count = 0;
+    std::size_t depth_range_max = 0;
+    std::size_t nodes_le_256 = 0;
+    std::size_t nodes_le_512 = 0;
+    std::size_t nodes_le_1024 = 0;
+    std::size_t nodes_le_2048 = 0;
+    std::size_t nodes_le_4096 = 0;
+    std::size_t nodes_le_16384 = 0;
+    std::size_t nodes_le_32768 = 0;
+    std::size_t nodes_le_65536 = 0;
+
+    for (std::size_t size : counts) {
+        if (size == 0) {
+            continue;
+        }
+        depth_range_count++;
+        depth_range_max = std::max(depth_range_max, size);
+        if (size <= 256) {
+            nodes_le_256 += size;
+        }
+        if (size <= 512) {
+            nodes_le_512 += size;
+        }
+        if (size <= 1024) {
+            nodes_le_1024 += size;
+        }
+        if (size <= 2048) {
+            nodes_le_2048 += size;
+        }
+        if (size <= 4096) {
+            nodes_le_4096 += size;
+        }
+        if (size <= 16384) {
+            nodes_le_16384 += size;
+        }
+        if (size <= 32768) {
+            nodes_le_32768 += size;
+        }
+        if (size <= 65536) {
+            nodes_le_65536 += size;
+        }
+    }
+
+    std::cout << "Depth-range stats for dataset "
+              << datasetName(context.datasetKind) << " (size "
+              << context.nodeCount << ", seed " << seedHex(context.dataSeed)
+              << "):\n"
+              << "  depth_range_count:        " << depth_range_count << "\n"
+              << "  depth_range_max:          " << depth_range_max << "\n"
+              << "  nodes_in_ranges_le_256:   " << nodes_le_256 << "\n"
+              << "  nodes_in_ranges_le_512:   " << nodes_le_512 << "\n"
+              << "  nodes_in_ranges_le_1024:  " << nodes_le_1024 << "\n"
+              << "  nodes_in_ranges_le_2048:  " << nodes_le_2048 << "\n"
+              << "  nodes_in_ranges_le_4096:  " << nodes_le_4096 << "\n"
+              << "  nodes_in_ranges_le_16384: " << nodes_le_16384 << "\n"
+              << "  nodes_in_ranges_le_32768: " << nodes_le_32768 << "\n"
+              << "  nodes_in_ranges_le_65536: " << nodes_le_65536 << "\n\n";
+}
+
 std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
     std::vector<DatasetContext> contexts;
     for (std::size_t nodeCount : options.sizes) {
@@ -517,6 +609,9 @@ std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
                 context.expectedIds.reserve(canonicalSorted.size());
                 for (const auto &node : canonicalSorted) {
                     context.expectedIds.push_back(node.id);
+                }
+                if (options.format == OutputFormat::Table) {
+                    printDepthRangeStats(context);
                 }
                 contexts.push_back(std::move(context));
             }
@@ -658,12 +753,6 @@ std::string jsonEscape(std::string_view value) {
         }
     }
     return escaped;
-}
-
-std::string seedHex(uint32_t seed) {
-    std::ostringstream output;
-    output << "0x" << std::hex << seed;
-    return output.str();
 }
 
 void printBenchmarkHeader() {

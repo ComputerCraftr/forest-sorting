@@ -13,6 +13,8 @@ inline constexpr std::size_t radix_bucket_count = std::size_t{1} << radix_bits;
 
 struct FullClearCounts {};
 
+struct EmptyScratch {};
+
 template <std::size_t MaxRangeSize> struct BitmaskTouchedCountsUpTo {
     static constexpr std::size_t max_size = MaxRangeSize;
 };

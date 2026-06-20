@@ -115,7 +115,8 @@ inline void groupOrderByDepthDense(std::vector<std::size_t> &order,
     }
 }
 
-template <std::size_t DepthPrefixBytes, typename Depth>
+template <std::size_t DepthPrefixBytes, typename CountPolicy = FullClearCounts,
+          typename Depth>
 inline void groupOrderByDepthMsd(std::vector<std::size_t> &order,
                                  std::vector<std::size_t> &scratch,
                                  const std::vector<Depth> &depths,
@@ -133,8 +134,9 @@ inline void groupOrderByDepthMsd(std::vector<std::size_t> &order,
         }
     };
 
-    radixMsdPartitionRanges(order, scratch, 0, order.size(), 0,
-                            DepthPrefixBytes, digitForIndex, rangeDone);
+    radixMsdPartitionRanges<CountPolicy>(order, scratch, 0, order.size(), 0,
+                                         DepthPrefixBytes, digitForIndex,
+                                         rangeDone);
 }
 
 // -----------------------------------------------------------------------------
@@ -253,12 +255,13 @@ ChunkedIndex<ChunkBytes> *stableLsdSortRangeByIdChunkBitmaskTouched(
 }
 
 template <std::size_t ChunkBytes, typename CountPolicy, typename Nodes,
-          typename IdTraits>
-inline ChunkedIndex<ChunkBytes> *dispatchLsdChunkSort(
-    std::vector<std::size_t> &order, const Nodes &nodes, const IdTraits &traits,
-    std::size_t rangeBegin, std::size_t rangeEnd, std::size_t chunkIndex,
-    ChunkedIndex<ChunkBytes> *current, ChunkedIndex<ChunkBytes> *next,
-    BitmaskTouchedCountScratch &touchedScratch) {
+          typename IdTraits, typename Scratch>
+inline ChunkedIndex<ChunkBytes> *
+dispatchLsdChunkSort(std::vector<std::size_t> &order, const Nodes &nodes,
+                     const IdTraits &traits, std::size_t rangeBegin,
+                     std::size_t rangeEnd, std::size_t chunkIndex,
+                     ChunkedIndex<ChunkBytes> *current,
+                     ChunkedIndex<ChunkBytes> *next, Scratch &touchedScratch) {
     const std::size_t rangeSize = rangeEnd - rangeBegin;
     if constexpr (std::is_same_v<CountPolicy, FullClearCounts>) {
         return stableLsdSortRangeByIdChunk(order, nodes, traits, rangeBegin,
@@ -277,14 +280,14 @@ inline ChunkedIndex<ChunkBytes> *dispatchLsdChunkSort(
 template <std::size_t ChunkBytes = chunk_byte_count,
           typename CountPolicy = FullClearCounts,
           std::size_t SmallThreshold = small_id_range_sort_threshold,
-          typename Nodes, typename IdTraits, typename SmallRangeSorter>
+          typename Nodes, typename IdTraits, typename SmallRangeSorter,
+          typename Scratch = BitmaskTouchedCountScratch>
 void sortRangeByIdChunksWithSmallSorter(
     std::vector<std::size_t> &order, const Nodes &nodes, const IdTraits &traits,
     std::size_t rangeBegin, std::size_t rangeEnd, std::size_t chunkIndex,
     std::vector<IdChunkRange> &pending,
     ChunkedIndex<ChunkBytes> *chunkBufferCurrent,
-    ChunkedIndex<ChunkBytes> *chunkBufferNext,
-    BitmaskTouchedCountScratch &touchedScratch,
+    ChunkedIndex<ChunkBytes> *chunkBufferNext, Scratch &touchedScratch,
     SmallRangeSorter smallRangeSorter) {
     const std::size_t initialRangeSize = rangeEnd - rangeBegin;
     if (initialRangeSize <= 1) {
@@ -418,8 +421,10 @@ void sortOrderByDepthAndId(std::vector<std::size_t> &order,
                                static_cast<Depth>(observedMaxDepth),
                                depthRanges, depthStarts, depthOffsets);
     } else {
-        groupOrderByDepthMsd<DepthPrefixBytes>(order, scratch, depths,
-                                               depthRanges);
+        groupOrderByDepthMsd<
+            DepthPrefixBytes,
+            BitmaskTouchedCountsUpTo<production_touched_count_max_range_size>>(
+            order, scratch, depths, depthRanges);
     }
 
     std::vector<IdChunkRange> pending;

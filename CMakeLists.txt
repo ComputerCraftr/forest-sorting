@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_program(FOREST_CLANG_TIDY
     NAMES clang-tidy
+    HINTS "/opt/homebrew/opt/llvm/bin" "/usr/local/opt/llvm/bin"
     DOC "Path to clang-tidy"
 )
 

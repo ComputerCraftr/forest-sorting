@@ -1,3 +1,4 @@
+#include "adaptive_sort_variants.hpp"
 #include "benchmark_stats.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
@@ -131,6 +132,32 @@ void test_same_high32_dataset_shape() {
             "same-high32 dataset did not vary lower ID bits");
 }
 
+template <typename LadderPolicy>
+void requireRangeLadderBoundaries(std::size_t u8Max, std::size_t u16Max) {
+    require(LadderPolicy::chunkWidthForRange(u8Max - 1) ==
+                AdaptiveChunkWidth::U8,
+            "range ladder left u8 below its threshold");
+    require(LadderPolicy::chunkWidthForRange(u8Max) == AdaptiveChunkWidth::U8,
+            "range ladder excluded its u8 threshold");
+    require(LadderPolicy::chunkWidthForRange(u8Max + 1) ==
+                AdaptiveChunkWidth::U16,
+            "range ladder did not enter u16 above u8 threshold");
+    require(LadderPolicy::chunkWidthForRange(u16Max - 1) ==
+                AdaptiveChunkWidth::U16,
+            "range ladder left u16 below its threshold");
+    require(LadderPolicy::chunkWidthForRange(u16Max) == AdaptiveChunkWidth::U16,
+            "range ladder excluded its u16 threshold");
+    require(LadderPolicy::chunkWidthForRange(u16Max + 1) ==
+                AdaptiveChunkWidth::U32,
+            "range ladder did not enter u32 above u16 threshold");
+}
+
+void test_range_ladder_boundaries() {
+    requireRangeLadderBoundaries<RangeLadder<1024, 16384>>(1024, 16384);
+    requireRangeLadderBoundaries<RangeLadder<2048, 32768>>(2048, 32768);
+    requireRangeLadderBoundaries<RangeLadder<4096, 65536>>(4096, 65536);
+}
+
 void runBenchmarkSupportTests() {
     runTest("benchmark stats median and stddev",
             test_benchmark_stats_median_and_stddev);
@@ -145,4 +172,5 @@ void runBenchmarkSupportTests() {
     runTest("benchmark data seed controls generated data",
             test_benchmark_data_seed_controls_generated_data);
     runTest("same-high32 dataset shape", test_same_high32_dataset_shape);
+    runTest("range ladder boundaries", test_range_ladder_boundaries);
 }

@@ -26,7 +26,7 @@ add_test(NAME forest-sorting-bench-csv
                  --size 10000
                  --dataset random
                  --parent all
-                 --sort adaptive-depth4-u32-chunk-msd
+                 --sort adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32
                  --iterations 2
                  --warmup 1
                  --baseline-parent control
@@ -50,7 +50,7 @@ add_test(NAME forest-sorting-bench-json
                  --size 10000
                  --dataset same-high64
                  --parent all
-                 --sort adaptive-depth4-u32-chunk-msd
+                 --sort adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32
                  --iterations 2
                  --warmup 1
                  --baseline-parent control
@@ -66,7 +66,7 @@ add_test(NAME forest-sorting-bench-json-raw
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
@@ -80,7 +80,7 @@ add_test(NAME forest-sorting-bench-json-none
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
@@ -102,67 +102,52 @@ add_test(NAME forest-sorting-bench-fixed-prefix-sorts
                  --dataset random
                  --sort depth-bucket-depth2-lsd
                  --sort depth-bucket-depth2-chunk-msd
-                 --sort adaptive-depth2-u64-chunk-msd
-                 --sort adaptive-depth2-u8-chunk-msd
-                 --sort adaptive-depth2-u32-chunk-msd
-                 --sort adaptive-depth2-u64-chunk-msd-binary-small
+                 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32
+                 --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32
                  --iterations 2
                  --warmup 1
-                 --baseline-sort adaptive-depth2-u32-chunk-msd
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-composite-byte-msd-ab
-         COMMAND forest-sorting-bench
-                 --size 10000
-                 --dataset random
-                 --parent control
-                 --sort composite-depth2-byte-msd-copyback
-                 --sort composite-depth2-byte-msd-lowcopy-branchy
-                 --sort composite-depth2-byte-msd-lowcopy-flattened
-                 --sort composite-depth2-byte-msd-lowcopy-batched
-                 --baseline-sort composite-depth2-byte-msd-copyback
-                 --iterations 1
-                 --warmup 0
-                 --order-seed 0x5eed
-                 --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-touched-bitmask-ab
+add_test(NAME forest-sorting-bench-bitmask-le512-vs-full-clear
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset same-high64
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd-full-clear
-                 --sort adaptive-depth2-u32-chunk-msd
-                 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-128
-                 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-1024
-                 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear
+                 --sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-u32-tail-tuning
+add_test(NAME forest-sorting-bench-range-ladder-full-clear
          COMMAND forest-sorting-bench
                  --size 10000
-                 --dataset same-high32
+                 --dataset random
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd
-                 --sort adaptive-depth2-u32-chunk-msd-binary-small32
-                 --sort adaptive-depth2-u32-chunk-msd-exponential-small32
-                 --baseline-sort adaptive-depth2-u32-chunk-msd
+                 --sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32
+                 --sort adaptive-depth2-u16-chunk-msd-full-clear-tail-linear32
+                 --sort adaptive-depth2-range-ladder-u8-le1024-u16-le16384-full-clear-tail-linear32
+                 --sort adaptive-depth2-range-ladder-u8-le2048-u16-le32768-full-clear-tail-linear32
+                 --sort adaptive-depth2-range-ladder-u8-le4096-u16-le65536-full-clear-tail-linear32
+                 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-u32-touched-threshold-tuning
+add_test(NAME forest-sorting-bench-range-ladder-bitmask-le512
          COMMAND forest-sorting-bench
                  --size 10000
-                 --dataset same-high32
+                 --dataset random
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd
-                 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-128
-                 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-256
-                 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-1024
-                 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-4096
-                 --baseline-sort adaptive-depth2-u32-chunk-msd
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --sort adaptive-depth2-u16-chunk-msd-bitmask-le512-tail-linear32
+                 --sort adaptive-depth2-range-ladder-u8-le1024-u16-le16384-bitmask-le512-tail-linear32
+                 --sort adaptive-depth2-range-ladder-u8-le2048-u16-le32768-bitmask-le512-tail-linear32
+                 --sort adaptive-depth2-range-ladder-u8-le4096-u16-le65536-bitmask-le512-tail-linear32
+                 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed

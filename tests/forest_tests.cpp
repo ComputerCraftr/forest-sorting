@@ -98,7 +98,10 @@ void requireAllRegisteredSortsMatch(const std::vector<Node> &nodes,
                                     const std::vector<Node> &expected) {
     const auto parentIndex =
         buildParentIndexForKind(ParentKind::Control, nodes);
-    for (const SortRegistryEntry &entry : kSortRegistry) {
+    for (const SortRegistryEntry &entry : getSortRegistry()) {
+        if (entry.category == SortCategory::Alias) {
+            continue;
+        }
         const auto sorted = entry.sortFunction(nodes, parentIndex);
         if (!sameNodes(sorted, expected)) {
             throw std::runtime_error(std::string(entry.name) +
@@ -113,86 +116,168 @@ void requireAllRegisteredSortsMatch(const std::vector<Node> &nodes,
 
 void test_support_registries_are_unique() {
     requireUniqueDatasetParentAndSortRegistries();
-    require(parseSortKind("composite-depth2-byte-msd-copyback") ==
-                SortKind::CompositeByteMsdCopyback,
-            "copyback composite byte-MSD label is not registered");
-    require(parseSortKind("composite-depth2-byte-msd-lowcopy-branchy") ==
-                SortKind::CompositeByteMsdLowcopyBranchy,
-            "branchy low-copy composite byte-MSD label is not registered");
-    require(parseSortKind("composite-depth2-byte-msd-lowcopy-flattened") ==
-                SortKind::CompositeByteMsdLowcopyFlattened,
-            "flattened low-copy composite byte-MSD label is not registered");
-    require(parseSortKind("composite-depth2-byte-msd-lowcopy-batched") ==
-                SortKind::CompositeByteMsdLowcopyBatched,
-            "batched low-copy composite byte-MSD label is not registered");
-    require(parseSortKind("adaptive-depth2-u32-chunk-msd-binary-small32") ==
-                SortKind::AdaptiveDepth2U32ChunkMsdBinarySmall32,
-            "binary small32 tuning label is not registered");
-    require(
-        parseSortKind("adaptive-depth2-u32-chunk-msd-exponential-small32") ==
-            SortKind::AdaptiveDepth2U32ChunkMsdExponentialSmall32,
-        "exponential small32 tuning label is not registered");
-    require(parseSortKind("adaptive-depth2-u32-chunk-msd-full-clear") ==
-                SortKind::AdaptiveDepth2U32ChunkMsdFullClear,
-            "full-clear u32 chunk MSD comparator label is not registered");
-    require(
-        parseSortKind("adaptive-depth2-u32-chunk-msd-touched-bitmask-128") ==
-            SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask128,
-        "touched-bitmask 128 tuning label is not registered");
-    require(
-        parseSortKind("adaptive-depth2-u32-chunk-msd-touched-bitmask-256") ==
-            SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask256,
-        "touched-bitmask 256 tuning label is not registered");
-    require(
-        parseSortKind("adaptive-depth2-u32-chunk-msd-touched-bitmask-1024") ==
-            SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask1024,
-        "touched-bitmask 1024 tuning label is not registered");
-    require(
-        parseSortKind("adaptive-depth2-u32-chunk-msd-touched-bitmask-4096") ==
-            SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask4096,
-        "touched-bitmask 4096 tuning label is not registered");
+
+    struct ParseTestCase {
+        std::string_view label;
+        SortKind expectedKind;
+        std::string_view errorMessage;
+    };
+
+    constexpr ParseTestCase kParseTestCases[] = {
+        {"composite-depth2-byte-msd-copyback",
+         SortKind::CompositeByteMsdCopyback,
+         "copyback composite byte-MSD label is not registered"},
+        {"composite-depth2-byte-msd-lowcopy-branchy",
+         SortKind::CompositeByteMsdLowcopyBranchy,
+         "branchy low-copy composite byte-MSD label is not registered"},
+        {"composite-depth2-byte-msd-lowcopy-flattened",
+         SortKind::CompositeByteMsdLowcopyFlattened,
+         "flattened low-copy composite byte-MSD label is not registered"},
+        {"composite-depth2-byte-msd-lowcopy-batched",
+         SortKind::CompositeByteMsdLowcopyBatched,
+         "batched low-copy composite byte-MSD label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear16",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear16,
+         "linear small16 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear48",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear48,
+         "linear small48 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
+         "binary small32 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential16",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
+         "exponential small16 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential32,
+         "exponential small32 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential48",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential48,
+         "exponential small48 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-"
+         "bitwise16",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise16,
+         "branchless-bitwise small16 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-"
+         "bitwise32",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise32,
+         "branchless-bitwise small32 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-"
+         "bitwise48",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise48,
+         "branchless-bitwise small48 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32",
+         SortKind::AdaptiveDepth2U32ChunkMsdFullClearTailLinear32,
+         "full-clear u32 chunk MSD comparator label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le128-tail-linear32",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe128TailLinear32,
+         "bitmask-le128 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le256-tail-linear32",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe256TailLinear32,
+         "bitmask-le256 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le1024-tail-linear32",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe1024TailLinear32,
+         "bitmask-le1024 tuning label is not registered"},
+        {"adaptive-depth2-u32-chunk-msd-bitmask-le4096-tail-linear32",
+         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe4096TailLinear32,
+         "bitmask-le4096 tuning label is not registered"},
+        {"adaptive-depth2-u16-chunk-msd-full-clear-tail-linear32",
+         SortKind::AdaptiveDepth2U16ChunkMsdFullClearTailLinear32,
+         "u16 chunk MSD full-clear comparator label is not registered"},
+        {"adaptive-depth2-range-ladder-u8-le2048-u16-le32768-bitmask-le512-"
+         "tail-linear32",
+         SortKind::
+             AdaptiveDepth2RangeLadderU8Le2048U16Le32768BitmaskLe512TailLinear32,
+         "range ladder label is not registered"}};
+
+    for (const auto &testCase : kParseTestCases) {
+        require(parseSortKind(testCase.label) == testCase.expectedKind,
+                testCase.errorMessage);
+    }
+
     require(datasetName(DatasetKind::SameHigh32) == "same-high32",
             "same-high32 dataset label is not registered");
 
-    requireSortIsExplicitOptIn(
-        SortKind::AdaptiveDepth2U32ChunkMsdBinarySmall32,
-        "binary small32 tuning sort should be explicit opt-in");
-    requireSortIsExplicitOptIn(
-        SortKind::AdaptiveDepth2U32ChunkMsdExponentialSmall32,
-        "exponential small32 tuning sort should be explicit opt-in");
-    requireSortIsExplicitOptIn(
-        SortKind::AdaptiveDepth2U32ChunkMsdFullClear,
-        "full-clear u32 chunk MSD comparator should be explicit opt-in");
-    requireSortIsExplicitOptIn(
-        SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask128,
-        "touched-bitmask 128 tuning sort should be explicit opt-in");
-    requireSortIsExplicitOptIn(
-        SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask256,
-        "touched-bitmask 256 tuning sort should be explicit opt-in");
-    requireSortIsExplicitOptIn(
-        SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask1024,
-        "touched-bitmask 1024 tuning sort should be explicit opt-in");
-    requireSortIsExplicitOptIn(
-        SortKind::AdaptiveDepth2U32ChunkMsdTouchedBitmask4096,
-        "touched-bitmask 4096 tuning sort should be explicit opt-in");
+    struct OptInTestCase {
+        SortKind kind;
+        std::string_view errorMessage;
+    };
+
+    constexpr OptInTestCase kOptInTestCases[] = {
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear16,
+         "linear small16 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear48,
+         "linear small48 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
+         "binary small32 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
+         "exponential small16 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential32,
+         "exponential small32 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential48,
+         "exponential small48 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise16,
+         "branchless-bitwise small16 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise32,
+         "branchless-bitwise small32 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise48,
+         "branchless-bitwise small48 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdFullClearTailLinear32,
+         "full-clear u32 chunk MSD comparator should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe128TailLinear32,
+         "bitmask-le128 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe256TailLinear32,
+         "bitmask-le256 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe1024TailLinear32,
+         "bitmask-le1024 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe4096TailLinear32,
+         "bitmask-le4096 tuning sort should be explicit opt-in"},
+        {SortKind::AdaptiveDepth2U16ChunkMsdFullClearTailLinear32,
+         "range ladder/chunk comparator sort should be opt-in now"},
+        {SortKind::AdaptiveDepth2U16ChunkMsdBitmaskLe512TailLinear32,
+         "range ladder/chunk comparator sort should be opt-in now"},
+        {SortKind::
+             AdaptiveDepth2RangeLadderU8Le1024U16Le16384FullClearTailLinear32,
+         "range ladder/chunk comparator sort should be opt-in now"},
+        {SortKind::
+             AdaptiveDepth2RangeLadderU8Le2048U16Le32768FullClearTailLinear32,
+         "range ladder/chunk comparator sort should be opt-in now"},
+        {SortKind::
+             AdaptiveDepth2RangeLadderU8Le4096U16Le65536FullClearTailLinear32,
+         "range ladder/chunk comparator sort should be opt-in now"},
+        {SortKind::
+             AdaptiveDepth2RangeLadderU8Le1024U16Le16384BitmaskLe512TailLinear32,
+         "range ladder/chunk comparator sort should be opt-in now"},
+        {SortKind::
+             AdaptiveDepth2RangeLadderU8Le2048U16Le32768BitmaskLe512TailLinear32,
+         "range ladder/chunk comparator sort should be opt-in now"},
+        {SortKind::
+             AdaptiveDepth2RangeLadderU8Le4096U16Le65536BitmaskLe512TailLinear32,
+         "range ladder/chunk comparator sort should be opt-in now"}};
+
+    for (const auto &testCase : kOptInTestCases) {
+        requireSortIsExplicitOptIn(testCase.kind, testCase.errorMessage);
+    }
 }
 
 void test_removed_generation_touched_count_labels_do_not_parse() {
-    for (std::string_view removedLabel :
-         {"adaptive-depth2-u8-chunk-msd-touched-counts",
-          "adaptive-depth2-u32-chunk-msd-touched-counts",
-          "adaptive-depth2-u64-chunk-msd-touched-counts",
-          "adaptive-depth2-u32-chunk-msd-touched-counts-128",
-          "adaptive-depth2-u32-chunk-msd-binary-small48",
-          "adaptive-depth2-u32-chunk-msd-exponential-small48"}) {
+    constexpr std::string_view kRemovedLabels[] = {
+        "adaptive-depth2-u8-chunk-msd-touched-counts",
+        "adaptive-depth2-u32-chunk-msd-touched-counts",
+        "adaptive-depth2-u64-chunk-msd-touched-counts",
+        "adaptive-depth2-u32-chunk-msd-touched-counts-128",
+        "adaptive-depth2-u32-chunk-msd-binary-small48",
+        "adaptive-depth2-u32-chunk-msd-exponential-small48"};
+
+    for (std::string_view removedLabel : kRemovedLabels) {
         bool rejected = false;
         try {
             (void)parseSortKind(removedLabel);
         } catch (const std::runtime_error &) {
             rejected = true;
         }
-        require(rejected, std::string("removed label still parsed: ") +
-                              std::string(removedLabel));
+        require(rejected,
+                "removed label still parsed: " + std::string(removedLabel));
     }
 }
 
@@ -793,83 +878,15 @@ void requireChunkMsdSortsMatchComparison(const std::vector<Node> &inputNodes,
         buildParentIndexForKind(ParentKind::Control, inputNodes);
     const auto expected =
         sortForestByComparisonWithParent(inputNodes, parentIndex);
-    const auto adaptiveByteChunk =
-        sortForestByAdaptiveDepth2U8ChunkWithParent(inputNodes, parentIndex);
-    const auto adaptiveU32Chunk =
-        sortForestByAdaptiveDepth2U32ChunkWithParent(inputNodes, parentIndex);
-    const auto adaptiveU32FullClear =
-        sortForestByAdaptiveDepth2U32ChunkFullClearWithParent(inputNodes,
-                                                              parentIndex);
-    const auto adaptiveU64Chunk =
-        sortForestByAdaptiveDepth2U64ChunkWithParent(inputNodes, parentIndex);
-    const auto adaptiveU32BinarySmall32 =
-        sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent<BinarySmallSorter,
-                                                              32>(inputNodes,
-                                                                  parentIndex);
-    const auto adaptiveU32ExponentialSmall32 =
-        sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent<
-            ExponentialSmallSorter, 32>(inputNodes, parentIndex);
-    const auto adaptiveU32TouchedBitmask128 =
-        sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent<128>(
-            inputNodes, parentIndex);
-    const auto adaptiveU32TouchedBitmask4096 =
-        sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent<4096>(
-            inputNodes, parentIndex);
-    const auto compositeCopyback =
-        sortForestByCompositeDepth2MsdCopybackWithParent(inputNodes,
-                                                         parentIndex);
-    const auto compositeBranchyLowcopy =
-        sortForestByCompositeDepth2MsdLowcopyBranchyWithParent(inputNodes,
-                                                               parentIndex);
-    const auto compositeFlattenedLowcopy =
-        sortForestByCompositeDepth2MsdLowcopyFlattenedWithParent(inputNodes,
-                                                                 parentIndex);
-    const auto compositeBatchedLowcopy =
-        sortForestByCompositeDepth2MsdLowcopyBatchedWithParent(inputNodes,
-                                                               parentIndex);
 
-    require(sameNodes(adaptiveByteChunk, expected),
-            std::string("adaptive 1-byte chunk MSD failed ") +
-                std::string(caseName));
-    require(sameNodes(adaptiveU32Chunk, expected),
-            std::string("adaptive 4-byte chunk MSD failed ") +
-                std::string(caseName));
-    require(sameNodes(adaptiveU32FullClear, expected),
-            std::string("adaptive 4-byte full-clear chunk MSD failed ") +
-                std::string(caseName));
-    require(sameNodes(adaptiveU64Chunk, expected),
-            std::string("adaptive 8-byte chunk MSD failed ") +
-                std::string(caseName));
-    require(sameNodes(adaptiveU32BinarySmall32, expected),
-            std::string("adaptive 4-byte binary-small32 chunk MSD failed ") +
-                std::string(caseName));
-    require(
-        sameNodes(adaptiveU32ExponentialSmall32, expected),
-        std::string("adaptive 4-byte exponential-small32 chunk MSD failed ") +
-            std::string(caseName));
-    require(
-        sameNodes(adaptiveU32TouchedBitmask128, expected),
-        std::string("adaptive 4-byte touched-bitmask128 chunk MSD failed ") +
-            std::string(caseName));
-    require(
-        sameNodes(adaptiveU32TouchedBitmask4096, expected),
-        std::string("adaptive 4-byte touched-bitmask4096 chunk MSD failed ") +
-            std::string(caseName));
-    require(sameNodes(compositeCopyback, expected),
-            std::string("composite full-key byte MSD copyback failed ") +
-                std::string(caseName));
-    require(
-        sameNodes(compositeBranchyLowcopy, expected),
-        std::string("composite full-key byte MSD branchy low-copy failed ") +
-            std::string(caseName));
-    require(
-        sameNodes(compositeFlattenedLowcopy, expected),
-        std::string("composite full-key byte MSD flattened low-copy failed ") +
-            std::string(caseName));
-    require(
-        sameNodes(compositeBatchedLowcopy, expected),
-        std::string("composite full-key byte MSD batched low-copy failed ") +
-            std::string(caseName));
+    for (const SortRegistryEntry &entry : getSortRegistry()) {
+        if (entry.category == SortCategory::Alias) {
+            continue;
+        }
+        const auto sorted = entry.sortFunction(inputNodes, parentIndex);
+        require(sameNodes(sorted, expected),
+                std::string(entry.name) + " failed " + std::string(caseName));
+    }
 }
 
 void test_radix_msd_partition_materializes_scratch_at_max_digit() {
@@ -896,29 +913,7 @@ void test_radix_msd_partition_materializes_scratch_at_max_digit() {
 void test_chunk_msd_materializes_scratch_owned_small_ranges() {
     auto check = [](const std::vector<Node> &inputNodes,
                     std::string_view caseName) {
-        const auto parentIndex =
-            buildParentIndexForKind(ParentKind::Control, inputNodes);
-        const auto expected =
-            sortForestByComparisonWithParent(inputNodes, parentIndex);
-
-        const auto adaptiveU8Chunk =
-            sortForestByAdaptiveDepth2U8ChunkWithParent(inputNodes,
-                                                        parentIndex);
-        const auto adaptiveU32Chunk =
-            sortForestByAdaptiveDepth2U32ChunkWithParent(inputNodes,
-                                                         parentIndex);
-        const auto adaptiveU64Chunk =
-            sortForestByAdaptiveDepth2U64ChunkWithParent(inputNodes,
-                                                         parentIndex);
-
-        require(sameNodes(adaptiveU8Chunk, expected),
-                std::string(caseName) + " failed for 1-byte chunks (odd swap)");
-        require(sameNodes(adaptiveU32Chunk, expected),
-                std::string(caseName) +
-                    " failed for 4-byte chunks (even swap)");
-        require(sameNodes(adaptiveU64Chunk, expected),
-                std::string(caseName) +
-                    " failed for 8-byte chunks (even swap)");
+        requireChunkMsdSortsMatchComparison(inputNodes, caseName);
     };
 
     // Construct a dataset designed to create a small range that is owned by

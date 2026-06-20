@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 namespace forest_sorting::detail {
@@ -116,9 +117,8 @@ void partitionSingleRange(const RadixRange &currentRange,
     clearRadixCounts(countScratch);
 }
 
-template <typename CountScratch = FullClearCountScratch,
-          typename DigitForOffset, typename MoveToScratch,
-          typename CopyFromScratch, typename RangeDone,
+template <typename CountPolicy = FullClearCounts, typename DigitForOffset,
+          typename MoveToScratch, typename CopyFromScratch, typename RangeDone,
           typename SmallRangeHandler>
 void radixMsdPartitionCoreWithStack(
     std::size_t begin, std::size_t end, std::size_t firstDigit,
@@ -129,7 +129,11 @@ void radixMsdPartitionCoreWithStack(
     stack.clear();
     stack.push_back({begin, end, firstDigit});
 
-    CountScratch countScratch;
+    FullClearCountScratch fullClearScratch;
+    using BitmaskScratchType =
+        std::conditional_t<std::is_same_v<CountPolicy, FullClearCounts>,
+                           EmptyScratch, BitmaskTouchedCountScratch>;
+    BitmaskScratchType bitmaskScratch;
 
     while (!stack.empty()) {
         const auto currentRange = stack.back();
@@ -146,13 +150,27 @@ void radixMsdPartitionCoreWithStack(
             continue;
         }
 
-        partitionSingleRange(currentRange, stack, countScratch, digitForOffset,
-                             moveToScratch, copyFromScratch);
+        const std::size_t rangeSize = currentRange.end - currentRange.begin;
+        if constexpr (std::is_same_v<CountPolicy, FullClearCounts>) {
+            partitionSingleRange(currentRange, stack, fullClearScratch,
+                                 digitForOffset, moveToScratch,
+                                 copyFromScratch);
+        } else {
+            if (rangeSize <= CountPolicy::max_size) {
+                partitionSingleRange(currentRange, stack, bitmaskScratch,
+                                     digitForOffset, moveToScratch,
+                                     copyFromScratch);
+            } else {
+                partitionSingleRange(currentRange, stack, fullClearScratch,
+                                     digitForOffset, moveToScratch,
+                                     copyFromScratch);
+            }
+        }
     }
 }
 
-template <typename DigitForOffset, typename MoveToScratch,
-          typename CopyFromScratch, typename RangeDone>
+template <typename CountPolicy = FullClearCounts, typename DigitForOffset,
+          typename MoveToScratch, typename CopyFromScratch, typename RangeDone>
 void radixMsdPartitionCore(std::size_t begin, std::size_t end,
                            std::size_t firstDigit, std::size_t digitCount,
                            DigitForOffset digitForOffset,
@@ -164,12 +182,13 @@ void radixMsdPartitionCore(std::size_t begin, std::size_t end,
     auto noSmallRange = [](std::size_t, std::size_t, std::size_t) {
         return false;
     };
-    radixMsdPartitionCoreWithStack<FullClearCountScratch>(
+    radixMsdPartitionCoreWithStack<CountPolicy>(
         begin, end, firstDigit, digitCount, stack, digitForOffset,
         moveToScratch, copyFromScratch, rangeDone, noSmallRange);
 }
 
-template <typename DigitForIndex, typename RangeDone>
+template <typename CountPolicy = FullClearCounts, typename DigitForIndex,
+          typename RangeDone>
 void radixMsdPartitionRanges(std::vector<std::size_t> &order,
                              std::vector<std::size_t> &scratch,
                              std::size_t begin, std::size_t end,
@@ -187,8 +206,9 @@ void radixMsdPartitionRanges(std::vector<std::size_t> &order,
         }
     };
 
-    radixMsdPartitionCore(begin, end, firstDigit, digitCount, digitForOffset,
-                          moveToScratch, copyFromScratch, rangeDone);
+    radixMsdPartitionCore<CountPolicy>(begin, end, firstDigit, digitCount,
+                                       digitForOffset, moveToScratch,
+                                       copyFromScratch, rangeDone);
 }
 
 template <typename Traits, typename Id>

@@ -120,6 +120,7 @@ Datasets include `random`, `outliers`, `same-high64`, `same-high32`,
 `sequential`, `external-parents`, and `siblings`. By default, the benchmark
 runs the standard sort set; `--sort all` selects that same set explicitly and
 excludes opt-in tuning experiments. Sort algorithms are selected with:
+
 - `comparison`: `std::sort` over `depth || id`
 - `depth-bucket-depth2-lsd`: dense vector-of-buckets by depth, then LSD per bucket
 - `composite-depth2-lsd`: full composite key `depth[2] || id[16]`, sorted by LSD passes
@@ -129,31 +130,39 @@ excludes opt-in tuning experiments. Sort algorithms are selected with:
 - `composite-depth2-byte-msd-lowcopy-flattened`: full composite key `depth[2] || id[16]`, byte-MSD using the flattened low-copy core
 - `composite-depth2-byte-msd-lowcopy-batched`: full composite key `depth[2] || id[16]`, byte-MSD using depth-limited batched low-copy
 - `adaptive-depth2-u32-chunk-msd-no-dense`: depth-MSD grouping + adaptive 4-byte ID chunk-MSD, dense shortcut disabled
-- `adaptive-depth2-u32-chunk-msd`: production-style adaptive path, dense grouping if safe, locked to 2-byte depth, using bitmask touched counters for ID chunk ranges up to 512 nodes
-- `adaptive-depth2-u32-chunk-msd-full-clear`: old full-clear counter comparator for the production-style 4-byte chunk path
-- `adaptive-depth2-u8-chunk-msd`: adaptive path using the unified chunk engine with 1-byte ID chunks
-- `adaptive-depth2-u64-chunk-msd`: adaptive path using the unified chunk engine with 8-byte ID chunks
-- `adaptive-depth2-u64-chunk-msd-binary-small`: 8-byte chunk-MSD adaptive path with stable binary-insertion sort for small equal-depth ID ranges
-- `adaptive-depth4-u32-chunk-msd`: production-style adaptive path, configured for a 4-byte depth prefix
-- `adaptive-depth2-u32-chunk-msd-binary-small32`: opt-in Track A2 variant that keeps the production small-range threshold and swaps only the insertion-search strategy
-- `adaptive-depth2-u32-chunk-msd-exponential-small32`: opt-in Track A2 variant that keeps the production small-range threshold and uses exponential insertion search
-- `adaptive-depth2-u32-chunk-msd-touched-bitmask-128`, `adaptive-depth2-u32-chunk-msd-touched-bitmask-256`, `adaptive-depth2-u32-chunk-msd-touched-bitmask-1024`, `adaptive-depth2-u32-chunk-msd-touched-bitmask-4096`: opt-in Track B2 variants using branch-free bitmask touched bucket counters for ranges up to the named threshold
+- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32`: default production label, maps to u32 chunk-MSD + bitmask-le512 + linear-small32 (also accepts compatibility alias `adaptive-depth2-u32-chunk-msd`)
+- `adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32`: old full-clear counter comparator for the production-style 4-byte chunk path
+- `adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32`: adaptive path using the unified chunk engine with 1-byte ID chunks and full-clear counters
+- `adaptive-depth2-u8-chunk-msd-bitmask-le512-tail-linear32`: adaptive path using 1-byte ID chunks and bitmask-le512 counters
+- `adaptive-depth2-u16-chunk-msd-full-clear-tail-linear32`: opt-in adaptive comparator using 2-byte ID chunks and full-clear counters
+- `adaptive-depth2-u16-chunk-msd-bitmask-le512-tail-linear32`: opt-in adaptive comparator using 2-byte ID chunks and bitmask-le512 counters
+- `adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32`: adaptive path using the unified chunk engine with 8-byte ID chunks and full-clear counters
+- `adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32`: 8-byte chunk-MSD adaptive path with stable binary-insertion sort for small equal-depth ID ranges
+- `adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32`: production-style adaptive path, configured for a 4-byte depth prefix
+- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear48`: opt-in tail-threshold variants that keep the production radix count policy and only change the linear small-range cutoff; `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32` is the production row
+- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32`: opt-in tail variant that keeps the production radix count policy and small-range threshold, but swaps only the insertion-search strategy
+- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential48`: opt-in exponential insertion-search variants under the production `bitmask-le512` radix count policy
+- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise32`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise48`: opt-in fixed-pass base-2 stable-radix small-tail variants under the production `bitmask-le512` radix count policy
+- `adaptive-depth2-u32-chunk-msd-bitmask-le128-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le256-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le1024-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le4096-tail-linear32`: opt-in Track B2 variants using branch-free bitmask touched bucket counters for ranges up to the named threshold
+- `adaptive-depth2-range-ladder-u8-le1024-u16-le16384-*-tail-linear32`, `adaptive-depth2-range-ladder-u8-le2048-u16-le32768-*-tail-linear32`, `adaptive-depth2-range-ladder-u8-le4096-u16-le65536-*-tail-linear32`: opt-in range-local chunk ladders; `full-clear` rows isolate chunk width and `bitmask-le512` rows use the production counter policy
 
-The `adaptive-depth2-u32-chunk-msd` benchmark represents the current production-style adaptive
+The `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32` benchmark represents the current production-style adaptive
 path: adaptive depth grouping followed by the unified chunk scheduler with
 MSB-first 4-byte ID chunks, stable LSD byte passes inside each chunk, and
-bitmask touched counters for medium ID ranges up to 512 nodes. The
-`adaptive-depth2-u32-chunk-msd-full-clear` row preserves the previous full-clear
-counter path as an explicit comparator. The `adaptive-depth2-u8-chunk-msd` and
-`adaptive-depth2-u64-chunk-msd` rows use the same scheduler with 1-byte and
+one shared `bitmask-le512` radix count policy for depth grouping and ID chunk partitioning: touched-bucket counters are used for radix ranges up to 512 nodes, and larger ranges fall back to full-clear counters.
+The `adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32` row preserves the previous full-clear
+counter path as an explicit comparator. The `adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32` and
+`adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32` rows use the same scheduler with 1-byte and
 8-byte chunks. The `adaptive-depth2-u32-chunk-msd-no-dense` variant explicitly
 disables the dense grouping shortcut to measure its benefit.
-The remaining `*-touched-bitmask-*` rows are explicit opt-in A/B variants of the
-same chunk scheduler. They replace the rejected generation-table touched-count
+The remaining `*-bitmask-le*` rows are explicit opt-in A/B variants of the
+same chunk scheduler. Tail experiment rows keep the same production
+`bitmask-le512` radix count policy and vary only the small-tail algorithm or
+threshold named after `tail-`. The bitmask-threshold rows replace the rejected
+generation-table touched-count
 loop with bitmask bucket tracking and only change radix counter initialization
 policy for ranges up to the named threshold; larger ranges still use full-clear
-counters. The 512-node cap is represented by the production label, so it is not
-listed as a separate tuning row. These variants are not included in default or
+counters. The 512-node cap is represented by the production label. These variants are not included in default or
 `--sort all` output.
 The `same-high32` dataset keeps the top 32 ID bits fixed while varying lower
 bits, which is useful for checking whether wider small-tail thresholds regress
@@ -182,13 +191,15 @@ Repeat `--data-seed` to compare across multiple generated forests, and use
 cmake --build --preset release --target forest-sorting-bench
 ./out/build/release/benchmarks/forest-sorting-bench
 ./out/build/release/benchmarks/forest-sorting-bench --format csv --size 10000 --dataset random --parent all --sort adaptive-depth2-u32-chunk-msd
-./out/build/release/benchmarks/forest-sorting-bench --size 10000 --dataset random --sort depth-bucket-depth2-lsd --sort depth-bucket-depth2-chunk-msd --sort adaptive-depth2-u8-chunk-msd --sort adaptive-depth2-u32-chunk-msd --sort adaptive-depth2-u64-chunk-msd --sort adaptive-depth2-u64-chunk-msd-binary-small
+./out/build/release/benchmarks/forest-sorting-bench --size 10000 --dataset random --sort depth-bucket-depth2-lsd --sort depth-bucket-depth2-chunk-msd --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32
 ./out/build/release/benchmarks/forest-sorting-bench --size 100000 --dataset random --parent control --sort composite-depth2-byte-msd-copyback --sort composite-depth2-byte-msd-lowcopy-branchy --sort composite-depth2-byte-msd-lowcopy-flattened --sort composite-depth2-byte-msd-lowcopy-batched --baseline-sort composite-depth2-byte-msd-copyback --iterations 30 --warmup 3 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --format json --sample-output summary
-./out/build/release/benchmarks/forest-sorting-bench --size 100000 --dataset random --parent control --sort adaptive-depth2-u8-chunk-msd --sort adaptive-depth2-u32-chunk-msd --sort adaptive-depth2-u64-chunk-msd --baseline-sort adaptive-depth2-u32-chunk-msd --iterations 11 --warmup 2 --shuffle --order-seed 0x5eed --data-seed 0x5eed1234
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 100000 --dataset random --parent control --sort adaptive-depth2-u8-chunk-msd --sort adaptive-depth2-u32-chunk-msd --sort adaptive-depth2-u64-chunk-msd --baseline-sort adaptive-depth2-u32-chunk-msd --iterations 30 --warmup 3 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd --sort adaptive-depth2-u32-chunk-msd-binary-small32 --sort adaptive-depth2-u32-chunk-msd-exponential-small32 --baseline-sort adaptive-depth2-u32-chunk-msd --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-full-clear --sort adaptive-depth2-u32-chunk-msd --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-128 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-256 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-1024 --sort adaptive-depth2-u32-chunk-msd-touched-bitmask-4096 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
-./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output raw --size 100000 --dataset random --parent flat --parent control --sort adaptive-depth2-u32-chunk-msd --baseline-parent control --iterations 11 --warmup 2 --data-seed 0x5eed1234
+./out/build/release/benchmarks/forest-sorting-bench --size 100000 --dataset random --parent control --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --iterations 11 --warmup 2 --shuffle --order-seed 0x5eed --data-seed 0x5eed1234
+./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 100000 --dataset random --parent control --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --iterations 30 --warmup 3 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3
+./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
+./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le128-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le256-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le1024-tail-linear32 --sort adaptive-depth2-u32-chunk-msd-bitmask-le4096-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32 --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
+./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-u16-chunk-msd-full-clear-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le1024-u16-le16384-full-clear-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le2048-u16-le32768-full-clear-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le4096-u16-le65536-full-clear-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32 --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
+./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output summary --size 10000 --size 100000 --size 1000000 --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --parent control --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le1024-u16-le16384-bitmask-le512-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le2048-u16-le32768-bitmask-le512-tail-linear32 --sort adaptive-depth2-range-ladder-u8-le4096-u16-le65536-bitmask-le512-tail-linear32 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --iterations 50 --warmup 10 --shuffle --order-seed 0x5eed --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
+./out/build/release/benchmarks/forest-sorting-bench --format json --sample-output raw --size 100000 --dataset random --parent flat --parent control --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 --baseline-parent control --iterations 11 --warmup 2 --data-seed 0x5eed1234
 ```
 
 CI runs on GitHub Actions for macOS and Ubuntu using these presets. It builds
