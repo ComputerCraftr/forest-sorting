@@ -3,11 +3,11 @@
 
 #include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/depth.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "sort_baselines.hpp"
-#include "uint128_fixtures.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -182,21 +182,24 @@ inline std::vector<Node> sortForestByAdaptiveRangeSorterWithParent(
         return {};
     }
 
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
-    const uint32_t observedMaxDepth =
-        validateDepthLimit<DepthPrefixBytes>(depths);
+    auto computed = detail::computeDepths<DepthPrefixBytes>(
+        nodes, parentIndex, UInt128NodeTraits{});
+    const auto &depths = computed.values;
+    const uint32_t observedMaxDepth = computed.observedMax;
 
     std::vector<std::size_t> order(nodeCount);
     std::iota(order.begin(), order.end(), 0);
     std::vector<std::size_t> scratch(nodeCount);
 
-    std::vector<detail::DepthRange> depthRanges;
+    using Depth = detail::DepthValue<DepthPrefixBytes>;
+    std::vector<detail::DepthRange<Depth>> depthRanges;
     depthRanges.reserve(detail::initial_range_stack_capacity);
     std::vector<std::size_t> depthStarts;
     std::vector<std::size_t> depthOffsets;
     if (allowDenseDepthGrouping &&
         detail::shouldUseDenseDepthGrouping(order.size(), observedMaxDepth)) {
-        detail::groupOrderByDepthDense(order, scratch, depths, observedMaxDepth,
+        detail::groupOrderByDepthDense(order, scratch, depths,
+                                       static_cast<Depth>(observedMaxDepth),
                                        depthRanges, depthStarts, depthOffsets);
     } else {
         detail::groupOrderByDepthMsd<DepthPrefixBytes>(order, scratch, depths,
@@ -211,18 +214,17 @@ inline std::vector<Node> sortForestByAdaptiveRangeSorterWithParent(
 template <std::size_t ChunkBytes = detail::chunk_byte_count,
           typename CountPolicy = detail::FullClearCounts,
           std::size_t SmallThreshold = detail::small_id_range_sort_threshold,
-          typename SmallRangeSorter>
-inline void
-sortDepthRangesByChunkMsd(std::vector<std::size_t> &order,
-                          const std::vector<Node> &nodes,
-                          const std::vector<detail::DepthRange> &depthRanges,
-                          SmallRangeSorter smallRangeSorter) {
+          typename SmallRangeSorter, typename Depth>
+inline void sortDepthRangesByChunkMsd(
+    std::vector<std::size_t> &order, const std::vector<Node> &nodes,
+    const std::vector<detail::DepthRange<Depth>> &depthRanges,
+    SmallRangeSorter smallRangeSorter) {
     std::vector<detail::IdChunkRange> pending;
     pending.reserve(detail::initial_range_stack_capacity);
     detail::BitmaskTouchedCountScratch touchedScratch;
 
     std::size_t maxRadixRangeSize = 0;
-    for (const detail::DepthRange &range : depthRanges) {
+    for (const detail::DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeBegin = range.begin;
         const std::size_t rangeEnd = range.end;
         const std::size_t rangeSize = rangeEnd - rangeBegin;
@@ -241,7 +243,7 @@ sortDepthRangesByChunkMsd(std::vector<std::size_t> &order,
             new detail::ChunkedIndex<ChunkBytes>[maxRadixRangeSize]);
     }
 
-    for (const detail::DepthRange &range : depthRanges) {
+    for (const detail::DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeBegin = range.begin;
         const std::size_t rangeEnd = range.end;
         sortRangeByIdChunksWithSmallSorterSupport<ChunkBytes, CountPolicy,
@@ -253,11 +255,11 @@ sortDepthRangesByChunkMsd(std::vector<std::size_t> &order,
 }
 
 template <std::size_t ChunkBytes, typename CountPolicy,
-          std::size_t SmallThreshold, typename SmallRangeSorter>
+          std::size_t SmallThreshold, typename SmallRangeSorter, typename Depth>
 inline void sortDepthRangesWithTunedParams(
     std::vector<std::size_t> &order, std::vector<std::size_t> &unusedScratch,
     const std::vector<Node> &nodes,
-    const std::vector<detail::DepthRange> &depthRanges) {
+    const std::vector<detail::DepthRange<Depth>> &depthRanges) {
     (void)unusedScratch;
     SmallRangeSorter smallRangeSorter;
     sortDepthRangesByChunkMsd<ChunkBytes, CountPolicy, SmallThreshold>(
@@ -299,14 +301,13 @@ inline std::vector<Node>
 sortForestByAdaptiveChunkWithParent(const std::vector<Node> &nodes,
                                     const std::vector<std::size_t> &parentIndex,
                                     bool allowDenseDepthGrouping) {
-    auto rangeSorter = [](std::vector<std::size_t> &order,
-                          std::vector<std::size_t> &scratch,
-                          const std::vector<Node> &sortNodes,
-                          const std::vector<detail::DepthRange> &depthRanges) {
-        sortDepthRangesWithTunedParams<ChunkBytes, CountPolicy, SmallThreshold,
-                                       SmallRangeSorter>(
-            order, scratch, sortNodes, depthRanges);
-    };
+    auto rangeSorter =
+        [](std::vector<std::size_t> &order, std::vector<std::size_t> &scratch,
+           const std::vector<Node> &sortNodes, const auto &depthRanges) {
+            sortDepthRangesWithTunedParams<ChunkBytes, CountPolicy,
+                                           SmallThreshold, SmallRangeSorter>(
+                order, scratch, sortNodes, depthRanges);
+        };
 
     return sortForestByAdaptiveRangeSorterWithParent<DepthPrefixBytes>(
         nodes, parentIndex, allowDenseDepthGrouping, rangeSorter);
@@ -370,14 +371,13 @@ template <typename SmallRangeSorter, std::size_t SmallThreshold>
 inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    auto rangeSorter = [](std::vector<std::size_t> &order,
-                          std::vector<std::size_t> &scratch,
-                          const std::vector<Node> &sortNodes,
-                          const std::vector<detail::DepthRange> &depthRanges) {
-        sortDepthRangesWithTunedParams<4, detail::FullClearCounts,
-                                       SmallThreshold, SmallRangeSorter>(
-            order, scratch, sortNodes, depthRanges);
-    };
+    auto rangeSorter =
+        [](std::vector<std::size_t> &order, std::vector<std::size_t> &scratch,
+           const std::vector<Node> &sortNodes, const auto &depthRanges) {
+            sortDepthRangesWithTunedParams<4, detail::FullClearCounts,
+                                           SmallThreshold, SmallRangeSorter>(
+                order, scratch, sortNodes, depthRanges);
+        };
 
     return sortForestByAdaptiveRangeSorterWithParent<2>(nodes, parentIndex,
                                                         true, rangeSorter);
@@ -388,15 +388,14 @@ inline std::vector<Node>
 sortForestByAdaptiveDepth2U32ChunkTouchedBitmaskWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    auto rangeSorter = [](std::vector<std::size_t> &order,
-                          std::vector<std::size_t> &scratch,
-                          const std::vector<Node> &sortNodes,
-                          const std::vector<detail::DepthRange> &depthRanges) {
-        sortDepthRangesWithTunedParams<
-            4, detail::BitmaskTouchedCountsUpTo<TouchedCountMaxRangeSize>,
-            detail::small_id_range_sort_threshold, LinearSmallSorter>(
-            order, scratch, sortNodes, depthRanges);
-    };
+    auto rangeSorter =
+        [](std::vector<std::size_t> &order, std::vector<std::size_t> &scratch,
+           const std::vector<Node> &sortNodes, const auto &depthRanges) {
+            sortDepthRangesWithTunedParams<
+                4, detail::BitmaskTouchedCountsUpTo<TouchedCountMaxRangeSize>,
+                detail::small_id_range_sort_threshold, LinearSmallSorter>(
+                order, scratch, sortNodes, depthRanges);
+        };
 
     return sortForestByAdaptiveRangeSorterWithParent<2>(nodes, parentIndex,
                                                         true, rangeSorter);

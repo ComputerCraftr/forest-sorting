@@ -86,10 +86,13 @@ inline std::string_view datasetName(DatasetKind datasetKind) {
     return "unknown";
 }
 
-inline std::vector<uint32_t>
+template <std::size_t DepthPrefixBytes = 4>
+inline std::vector<detail::DepthValue<DepthPrefixBytes>>
 computeDepthsForUInt128(const std::vector<Node> &nodes,
                         const std::vector<std::size_t> &parentIndex) {
-    return detail::computeDepths(nodes, parentIndex, UInt128NodeTraits{});
+    return detail::computeDepths<DepthPrefixBytes>(nodes, parentIndex,
+                                                   UInt128NodeTraits{})
+        .values;
 }
 
 inline bool sameNodes(const std::vector<Node> &lhs,

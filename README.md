@@ -7,9 +7,9 @@ The production sorter is tuned for common depths `0-30`, handles sparse
 outliers without dense depth-bucket allocations, and rejects depths that do not
 fit the selected explicit depth prefix. IDs are exposed through fixed-width
 most-significant-first bytes. The current production adaptive ID sorter walks
-most-significant 64-bit chunks first, and sorts each chunk with stable LSD byte
+most-significant 32-bit chunks first and sorts each chunk with stable LSD byte
 passes; benchmark support also compares the same chunk engine with 1-byte and
-4-byte chunks.
+8-byte chunks.
 Duplicate full IDs are rejected.
 
 Parent ID lookup uses a control-byte open-addressed ID-to-index hash table,
@@ -37,12 +37,16 @@ auto order = forest_sorting::sortedOrderByDepthAndId<2>(
 ```
 
 The template argument is the explicit depth-prefix byte count. For example,
-`<2>` supports depths up to `65535` and rejects deeper forests. The untemplated
-overload computes depths and dispatches to the smallest sufficient prefix from
-`<1>` through `<4>`.
+`<2>` computes depths into a `uint16_t` payload, supports depths up to `65535`,
+and rejects deeper forests during depth generation. `<1>` uses `uint8_t`, while
+`<3>` and `<4>` use `uint32_t`. The untemplated overload computes full-width
+depths and dispatches to the smallest sufficient prefix from `<1>` through
+`<4>`.
 
 For callers that already have depths, the advanced API accepts precomputed
-depths and derives the observed maximum internally:
+unsigned integral depths and derives the observed maximum internally. The
+storage type must be at least as wide as the selected prefix, so `<2>` accepts
+both `std::vector<uint16_t>` and the existing `std::vector<uint32_t>` form:
 
 ```cpp
 auto order = forest_sorting::sortedOrderByDepthAndIdWithDepths<2>(

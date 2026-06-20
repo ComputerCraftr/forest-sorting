@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 using forest_sorting::Node;
@@ -35,6 +36,8 @@ using namespace forest_sorting::test_support;
 
 using forest_sorting::detail::buildParentIndex;
 using forest_sorting::detail::buildParentIndexRadixJoin;
+
+static_assert(std::is_same_v<CompositeDepth2UInt128Key::Depth, uint16_t>);
 
 void runGenericApiAndDepthTests();
 void runBenchmarkSupportTests();
@@ -324,6 +327,85 @@ void test_compute_depths_simple_chain() {
     require(depths[0] == 0);
     require(depths[1] == 1);
     require(depths[2] == 2);
+}
+
+void requireSortRejectsParentCycle(const std::vector<Node> &nodes,
+                                   std::string_view caseName) {
+    bool rejected = false;
+    try {
+        (void)sortForestByDepthAndId(nodes);
+    } catch (const std::runtime_error &error) {
+        rejected = std::string_view(error.what()) == "parent cycle";
+    }
+    require(rejected, std::string(caseName) + " was not rejected");
+}
+
+void test_sort_rejects_self_parent_cycle() {
+    const UInt128 nodeId = makeId(0, 1);
+    requireSortRejectsParentCycle({Node{nodeId, nodeId}}, "self-parent cycle");
+}
+
+void test_sort_rejects_two_node_parent_cycle() {
+    const UInt128 firstId = makeId(0, 1);
+    const UInt128 secondId = makeId(0, 2);
+    requireSortRejectsParentCycle(
+        {Node{firstId, secondId}, Node{secondId, firstId}},
+        "two-node parent cycle");
+}
+
+void test_sort_rejects_long_parent_cycle_and_tail() {
+    const UInt128 firstId = makeId(0, 1);
+    const UInt128 secondId = makeId(0, 2);
+    const UInt128 thirdId = makeId(0, 3);
+    const UInt128 tailId = makeId(0, 4);
+    requireSortRejectsParentCycle(
+        {Node{tailId, firstId}, Node{firstId, secondId},
+         Node{secondId, thirdId}, Node{thirdId, firstId}},
+        "tail entering parent cycle");
+}
+
+void test_copy_and_in_place_sort_propagate_parent_cycle() {
+    const UInt128 firstId = makeId(0, 1);
+    const UInt128 secondId = makeId(0, 2);
+    const std::vector<Node> cycle = {
+        {firstId, secondId},
+        {secondId, firstId},
+    };
+
+    bool copyRejected = false;
+    try {
+        (void)forest_sorting::sortedCopyByDepthAndId(cycle,
+                                                     UInt128NodeTraits{});
+    } catch (const std::runtime_error &error) {
+        copyRejected = std::string_view(error.what()) == "parent cycle";
+    }
+    require(copyRejected, "sorted copy did not propagate parent cycle");
+
+    auto inPlaceCycle = cycle;
+    bool inPlaceRejected = false;
+    try {
+        forest_sorting::sortInPlaceByDepthAndId(inPlaceCycle,
+                                                UInt128NodeTraits{});
+    } catch (const std::runtime_error &error) {
+        inPlaceRejected = std::string_view(error.what()) == "parent cycle";
+    }
+    require(inPlaceRejected, "in-place sort did not propagate parent cycle");
+}
+
+void test_verify_rejects_parent_cycles() {
+    const UInt128 firstId = makeId(0, 1);
+    const UInt128 secondId = makeId(0, 2);
+    const UInt128 thirdId = makeId(0, 3);
+
+    require(!verifySortedByDepthAndId({Node{firstId, firstId}}),
+            "verifier accepted self-parent cycle");
+    require(!verifySortedByDepthAndId(
+                {Node{firstId, secondId}, Node{secondId, firstId}}),
+            "verifier accepted two-node parent cycle");
+    require(!verifySortedByDepthAndId({Node{firstId, secondId},
+                                       Node{secondId, thirdId},
+                                       Node{thirdId, firstId}}),
+            "verifier accepted longer parent cycle");
 }
 
 void test_sort_and_verify_multi_root() {
@@ -969,6 +1051,16 @@ int main() {
         runBenchmarkSupportTests();
         runTest("compute depths for simple parent chain",
                 test_compute_depths_simple_chain);
+        runTest("sort rejects self-parent cycle",
+                test_sort_rejects_self_parent_cycle);
+        runTest("sort rejects two-node parent cycle",
+                test_sort_rejects_two_node_parent_cycle);
+        runTest("sort rejects long parent cycle and tail",
+                test_sort_rejects_long_parent_cycle_and_tail);
+        runTest("copy and in-place sort propagate parent cycle",
+                test_copy_and_in_place_sort_propagate_parent_cycle);
+        runTest("verify rejects parent cycles",
+                test_verify_rejects_parent_cycles);
         runTest("parent builders match for registered datasets",
                 test_parent_builders_match_for_registered_datasets);
         runTest("parent builders reject duplicate full UInt128 ID",

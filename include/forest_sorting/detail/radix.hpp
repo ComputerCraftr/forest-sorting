@@ -19,9 +19,10 @@ inline uint8_t wordByte(Word value, std::size_t byteIndex) noexcept {
     return static_cast<uint8_t>(value >> (byteIndex * radix_bits));
 }
 
-inline uint8_t depthByteMsbFirst(uint32_t depth,
-                                 std::size_t byteIndex) noexcept {
-    return static_cast<uint8_t>(depth >> ((3U - byteIndex) * 8U));
+template <std::size_t DepthPrefixBytes, typename Depth>
+inline uint8_t depthByteMsbFirst(Depth depth, std::size_t byteIndex) noexcept {
+    return static_cast<uint8_t>(
+        depth >> ((DepthPrefixBytes - 1U - byteIndex) * radix_bits));
 }
 
 struct RadixRange {

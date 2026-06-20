@@ -5,7 +5,6 @@
 
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -34,12 +33,13 @@ inline void runTest(const char *testName, void (*testFunction)()) {
     std::cout << "PASS " << testName << "\n";
 }
 
+template <typename Depth>
 inline void requireSortedByDepthThenId(const std::vector<std::size_t> &order,
                                        const std::vector<Node> &nodes,
-                                       const std::vector<uint32_t> &depths) {
+                                       const std::vector<Depth> &depths) {
     for (std::size_t nodeIdx = 1; nodeIdx < order.size(); ++nodeIdx) {
-        const uint32_t depth0 = depths[order[nodeIdx - 1]];
-        const uint32_t depth1 = depths[order[nodeIdx]];
+        const Depth depth0 = depths[order[nodeIdx - 1]];
+        const Depth depth1 = depths[order[nodeIdx]];
         if (depth0 != depth1) {
             require(depth0 < depth1, "depths not in ascending order");
         } else {

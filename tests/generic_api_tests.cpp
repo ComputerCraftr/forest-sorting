@@ -1,10 +1,12 @@
 #include "forest_sorting/algorithms.hpp"
 #include "forest_sorting/detail/adaptive_sort.hpp"
+#include "forest_sorting/detail/depth.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"
 #include "uint128_fixtures.hpp"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -15,6 +17,33 @@ using forest_sorting::sortForestByDepthAndId;
 using forest_sorting::UInt128NodeTraits;
 using forest_sorting::verifySortedByDepthAndId;
 using namespace forest_sorting::test_support;
+
+template <typename Nodes, typename Traits>
+concept PublicPrecomputedDepthApiAcceptsObservedMaximum =
+    requires(const Nodes &nodes, const Traits &traits,
+             const std::vector<uint32_t> &depths, uint32_t observedMaxDepth) {
+        forest_sorting::sortedOrderByDepthAndIdWithDepths<2>(
+            nodes, traits, depths, observedMaxDepth);
+    };
+
+static_assert(!PublicPrecomputedDepthApiAcceptsObservedMaximum<
+              std::vector<Node>, UInt128NodeTraits>);
+
+template <std::size_t DepthPrefixBytes, typename Depth>
+concept PublicPrecomputedDepthApiAccepts =
+    requires(const std::vector<Node> &nodes, const UInt128NodeTraits &traits,
+             const std::vector<Depth> &depths) {
+        forest_sorting::sortedOrderByDepthAndIdWithDepths<DepthPrefixBytes>(
+            nodes, traits, depths);
+    };
+
+static_assert(std::same_as<forest_sorting::detail::DepthValue<1>, uint8_t>);
+static_assert(std::same_as<forest_sorting::detail::DepthValue<2>, uint16_t>);
+static_assert(std::same_as<forest_sorting::detail::DepthValue<3>, uint32_t>);
+static_assert(std::same_as<forest_sorting::detail::DepthValue<4>, uint32_t>);
+static_assert(PublicPrecomputedDepthApiAccepts<2, uint16_t>);
+static_assert(PublicPrecomputedDepthApiAccepts<2, uint32_t>);
+static_assert(!PublicPrecomputedDepthApiAccepts<2, uint8_t>);
 
 template <std::size_t ByteCount>
 void assert_generic_fixed_hash_api_orders_by_depth_then_id() {
@@ -147,6 +176,58 @@ void test_precomputed_depth_api_validates_inputs() {
             "precomputed depth API accepted singleton prefix overflow");
 }
 
+void test_dynamic_and_explicit_prefix_orders_match() {
+    const std::vector<Node> nodes = {
+        {makeId(0, 4), makeId(0, 2)},
+        {makeId(0, 3), 0},
+        {makeId(0, 2), 0},
+        {makeId(0, 1), makeId(0, 2)},
+    };
+
+    const auto dynamicOrder =
+        forest_sorting::sortedOrderByDepthAndId(nodes, UInt128NodeTraits{});
+    const auto explicitOrder =
+        forest_sorting::sortedOrderByDepthAndId<1>(nodes, UInt128NodeTraits{});
+    require(dynamicOrder == explicitOrder,
+            "dynamic and explicit prefix orders differ");
+}
+
+void test_precomputed_depth_payload_widths_match() {
+    const std::vector<Node> nodes = {
+        {makeId(0, 3), 0},
+        {makeId(0, 1), 0},
+        {makeId(0, 2), 0},
+    };
+    const std::vector<uint16_t> narrowDepths = {1, 0, 1};
+    const std::vector<uint32_t> wideDepths = {1, 0, 1};
+
+    const auto narrowOrder =
+        forest_sorting::sortedOrderByDepthAndIdWithDepths<2>(
+            nodes, UInt128NodeTraits{}, narrowDepths);
+    const auto wideOrder = forest_sorting::sortedOrderByDepthAndIdWithDepths<2>(
+        nodes, UInt128NodeTraits{}, wideDepths);
+    require(narrowOrder == wideOrder,
+            "narrow and wide precomputed depths produced different orders");
+}
+
+void test_observed_depth_prefix_boundaries() {
+    using forest_sorting::detail::findObservedMaxDepth;
+    using forest_sorting::detail::maxDepthForPrefix;
+
+    require(findObservedMaxDepth(std::vector<uint32_t>{}) == 0,
+            "empty depths produced a nonzero maximum");
+    require(findObservedMaxDepth(std::vector<uint32_t>{0xFFU}) <=
+            maxDepthForPrefix<1>());
+    require(findObservedMaxDepth(std::vector<uint32_t>{0x100U}) >
+            maxDepthForPrefix<1>());
+    require(findObservedMaxDepth(std::vector<uint32_t>{0x10000U}) >
+            maxDepthForPrefix<2>());
+    require(findObservedMaxDepth(std::vector<uint32_t>{0x1000000U}) >
+            maxDepthForPrefix<3>());
+    require(findObservedMaxDepth(std::vector<uint32_t>{UINT32_MAX}) <=
+            maxDepthForPrefix<4>());
+}
+
 void test_sort_accepts_singleton_with_four_byte_prefix() {
     std::vector<Node> nodes;
     nodes.push_back(Node{makeId(0, 1), 0});
@@ -223,9 +304,11 @@ void test_dense_threshold_boundaries() {
     require(!shouldUseDenseDepthGrouping(0, 0xFFFFFFFFU),
             "zero nodes accepted huge dense depth grouping");
 
-    // One node: threshold should not be a semantic requirement.
-    require(!shouldUseDenseDepthGrouping(1, kCommonFixtureMaxDepth),
-            "one node should reject disproportionate dense grouping");
+    // A valid singleton has structural depth zero.
+    require(shouldUseDenseDepthGrouping(1, 0),
+            "singleton structural depth rejected dense grouping");
+    require(!shouldUseDenseDepthGrouping(1, 1),
+            "singleton accepted structurally impossible depth");
     require(!shouldUseDenseDepthGrouping(1, 0xFFFFFFFFU),
             "one node accepted huge dense depth grouping");
 
@@ -235,7 +318,7 @@ void test_dense_threshold_boundaries() {
     require(!shouldUseDenseDepthGrouping(100, 0xFFFFFFFFU),
             "failed on 100 nodes, huge depth");
 
-    // Exact hard cap boundary
+    // Exact hard resource-cap boundary.
     require(shouldUseDenseDepthGrouping(maxDense,
                                         static_cast<uint32_t>(maxDense - 2)),
             "failed at hard cap boundary");
@@ -243,16 +326,16 @@ void test_dense_threshold_boundaries() {
                                          static_cast<uint32_t>(maxDense - 1)),
             "failed just over hard cap boundary");
 
-    // Proportionality boundary (multiplier 4)
-    require(shouldUseDenseDepthGrouping(100, 398),
-            "failed on proportional dense boundary");
-    require(!shouldUseDenseDepthGrouping(100, 399),
-            "failed on non-proportional sparse boundary");
+    // Structural forest-depth boundary.
+    require(shouldUseDenseDepthGrouping(100, 99),
+            "maximum structural depth rejected dense grouping");
+    require(!shouldUseDenseDepthGrouping(100, 100),
+            "structurally impossible depth accepted dense grouping");
 
-    // Proportionality bypass when node count is high enough
-    require(shouldUseDenseDepthGrouping(maxDense,
-                                        static_cast<uint32_t>(maxDense - 2)),
-            "failed on large node count proportionality bypass");
+    // A structurally valid depth can still exceed the histogram resource cap.
+    require(!shouldUseDenseDepthGrouping(maxDense + 1,
+                                         static_cast<uint32_t>(maxDense - 1)),
+            "depth above histogram cap accepted dense grouping");
 }
 
 void test_precomputed_depth_api_accepts_empty_input() {
@@ -350,6 +433,12 @@ void runGenericApiAndDepthTests() {
             test_sort_accepts_depth_over_two_byte_prefix_limit_with_three_byte);
     runTest("precomputed depth API validates inputs",
             test_precomputed_depth_api_validates_inputs);
+    runTest("dynamic and explicit prefix orders match",
+            test_dynamic_and_explicit_prefix_orders_match);
+    runTest("precomputed depth payload widths match",
+            test_precomputed_depth_payload_widths_match);
+    runTest("observed depth prefix boundaries",
+            test_observed_depth_prefix_boundaries);
     runTest("sort accepts singleton with four-byte prefix",
             test_sort_accepts_singleton_with_four_byte_prefix);
     runTest("sort accepts sparse huge depth outlier",

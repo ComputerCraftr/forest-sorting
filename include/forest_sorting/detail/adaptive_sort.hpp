@@ -19,14 +19,10 @@ namespace forest_sorting::detail {
 // Adaptive sort tuning
 // -----------------------------------------------------------------------------
 
-// Hard cap for dense depth histograms. Prevents sparse high-depth outliers from
-// allocating depthStarts[observedMaxDepth + 2] when observed depth is large.
+// Hard resource cap for dense depth histograms. Structurally valid depths are
+// bounded by node count, but very large valid forests still use depth MSD to
+// avoid oversized histogram allocation and scanning.
 inline constexpr std::size_t max_dense_depth_buckets = std::size_t{1} << 20;
-
-// Dense depth grouping is used only when the histogram bucket count is small
-// relative to node count, so a sparse depth outlier does not force a wide
-// array.
-inline constexpr std::size_t dense_depth_bucket_multiplier = 4;
 
 // Equal-depth ID ranges at or below this size use stable insertion sort instead
 // of allocating/counting radix buckets.
@@ -47,8 +43,8 @@ inline constexpr std::size_t production_touched_count_max_range_size = 512;
 // Internal range/buffer records
 // -----------------------------------------------------------------------------
 
-struct DepthRange {
-    uint32_t depth;
+template <typename Depth> struct DepthRange {
+    Depth depth;
     std::size_t begin;
     std::size_t end;
 };
@@ -68,24 +64,23 @@ template <std::size_t ChunkBytes> struct ChunkedIndex {
 // Depth grouping policy
 // -----------------------------------------------------------------------------
 
+template <typename Depth>
 inline bool shouldUseDenseDepthGrouping(std::size_t nodeCount,
-                                        uint32_t observedMaxDepth) noexcept {
-    const std::size_t bucketCount =
-        static_cast<std::size_t>(observedMaxDepth) + std::size_t{2};
-    if (bucketCount > max_dense_depth_buckets) {
+                                        Depth observedMaxDepth) noexcept {
+    if (nodeCount == 0 ||
+        static_cast<std::size_t>(observedMaxDepth) >= nodeCount) {
         return false;
     }
-    if (nodeCount >= max_dense_depth_buckets) {
-        return true;
-    }
-    return bucketCount <= nodeCount * dense_depth_bucket_multiplier;
+    return static_cast<std::size_t>(observedMaxDepth) <=
+           max_dense_depth_buckets - 2;
 }
 
+template <typename Depth>
 inline void groupOrderByDepthDense(std::vector<std::size_t> &order,
                                    std::vector<std::size_t> &scratch,
-                                   const std::vector<uint32_t> &depths,
-                                   uint32_t observedMaxDepth,
-                                   std::vector<DepthRange> &ranges,
+                                   const std::vector<Depth> &depths,
+                                   Depth observedMaxDepth,
+                                   std::vector<DepthRange<Depth>> &ranges,
                                    std::vector<std::size_t> &depthStarts,
                                    std::vector<std::size_t> &depthOffsets) {
     depthStarts.assign(static_cast<std::size_t>(observedMaxDepth) + 2, 0);
@@ -109,28 +104,27 @@ inline void groupOrderByDepthDense(std::vector<std::size_t> &order,
 
     ranges.clear();
     ranges.reserve(initial_range_stack_capacity);
-    for (std::size_t depthIdx = 0; depthIdx <= observedMaxDepth; ++depthIdx) {
+    for (std::size_t depthIdx = 0;
+         depthIdx <= static_cast<std::size_t>(observedMaxDepth); ++depthIdx) {
         const std::size_t rangeBegin = depthStarts[depthIdx];
         const std::size_t rangeEnd = depthStarts[depthIdx + 1];
         if (rangeBegin != rangeEnd) {
             ranges.push_back(
-                {static_cast<uint32_t>(depthIdx), rangeBegin, rangeEnd});
+                {static_cast<Depth>(depthIdx), rangeBegin, rangeEnd});
         }
     }
 }
 
-template <std::size_t DepthPrefixBytes>
+template <std::size_t DepthPrefixBytes, typename Depth>
 inline void groupOrderByDepthMsd(std::vector<std::size_t> &order,
                                  std::vector<std::size_t> &scratch,
-                                 const std::vector<uint32_t> &depths,
-                                 std::vector<DepthRange> &ranges) {
+                                 const std::vector<Depth> &depths,
+                                 std::vector<DepthRange<Depth>> &ranges) {
     ranges.clear();
     ranges.reserve(initial_range_stack_capacity);
 
-    constexpr std::size_t firstDepthByte = 4 - DepthPrefixBytes;
-
     auto digitForIndex = [&](std::size_t nodeIdx, std::size_t digitIndex) {
-        return depthByteMsbFirst(depths[nodeIdx], digitIndex);
+        return depthByteMsbFirst<DepthPrefixBytes>(depths[nodeIdx], digitIndex);
     };
 
     auto rangeDone = [&](std::size_t rangeBegin, std::size_t rangeEnd) {
@@ -139,8 +133,8 @@ inline void groupOrderByDepthMsd(std::vector<std::size_t> &order,
         }
     };
 
-    radixMsdPartitionRanges(order, scratch, 0, order.size(), firstDepthByte, 4,
-                            digitForIndex, rangeDone);
+    radixMsdPartitionRanges(order, scratch, 0, order.size(), 0,
+                            DepthPrefixBytes, digitForIndex, rangeDone);
 }
 
 // -----------------------------------------------------------------------------
@@ -400,26 +394,28 @@ void sortRangeByIdChunks(std::vector<std::size_t> &order, const Nodes &nodes,
 // Public detail entry point
 // -----------------------------------------------------------------------------
 
-template <std::size_t DepthPrefixBytes, typename Nodes, typename IdTraits>
+template <std::size_t DepthPrefixBytes, typename Nodes, typename IdTraits,
+          typename Depth>
 void sortOrderByDepthAndId(std::vector<std::size_t> &order,
                            std::vector<std::size_t> &scratch,
                            const Nodes &nodes, const IdTraits &traits,
-                           const std::vector<uint32_t> &depths,
+                           const std::vector<Depth> &depths,
                            uint32_t observedMaxDepth) {
     if (order.size() <= 1) {
         return;
     }
 
-    // observedMaxDepth is derived from depths. Small dense ranges use a compact
-    // histogram; sparse high-depth ranges avoid huge allocations and use MSD
-    // depth grouping instead.
-    std::vector<DepthRange> depthRanges;
+    // Dense grouping is limited to structurally possible depth values and a
+    // fixed histogram resource cap. Arbitrary precomputed or very large valid
+    // depths use MSD depth grouping instead.
+    std::vector<DepthRange<Depth>> depthRanges;
     depthRanges.reserve(initial_range_stack_capacity);
     std::vector<std::size_t> depthStarts;
     std::vector<std::size_t> depthOffsets;
 
     if (shouldUseDenseDepthGrouping(order.size(), observedMaxDepth)) {
-        groupOrderByDepthDense(order, scratch, depths, observedMaxDepth,
+        groupOrderByDepthDense(order, scratch, depths,
+                               static_cast<Depth>(observedMaxDepth),
                                depthRanges, depthStarts, depthOffsets);
     } else {
         groupOrderByDepthMsd<DepthPrefixBytes>(order, scratch, depths,
@@ -430,7 +426,7 @@ void sortOrderByDepthAndId(std::vector<std::size_t> &order,
     pending.reserve(initial_range_stack_capacity);
 
     std::size_t maxRadixRangeSize = 0;
-    for (const DepthRange &range : depthRanges) {
+    for (const DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeBegin = range.begin;
         const std::size_t rangeEnd = range.end;
         const std::size_t rangeSize = rangeEnd - rangeBegin;
@@ -460,11 +456,11 @@ void sortOrderByDepthAndId(std::vector<std::size_t> &order,
                                        sortBegin, sortEnd);
         };
 
-    for (const DepthRange &range : depthRanges) {
+    for (const DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeBegin = range.begin;
         const std::size_t rangeEnd = range.end;
 #ifndef NDEBUG
-        const uint32_t rangeDepth = range.depth;
+        const Depth rangeDepth = range.depth;
         for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
             assert(depths[order[offset]] == rangeDepth);
         }

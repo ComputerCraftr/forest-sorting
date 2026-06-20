@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <memory>
 #include <numeric>
-#include <stdexcept>
 #include <vector>
 
 namespace forest_sorting::test_support {
@@ -34,23 +33,10 @@ materializeOrder(const std::vector<Node> &nodes,
     return sorted;
 }
 
-template <std::size_t DepthPrefixBytes>
-inline uint32_t validateDepthLimit(const std::vector<uint32_t> &depths) {
-    uint32_t observedMaxDepth = 0;
-    for (uint32_t depth : depths) {
-        if (depth > detail::maxDepthForPrefix<DepthPrefixBytes>()) {
-            throw std::runtime_error(
-                "forest depth exceeds sortable depth limit");
-        }
-        observedMaxDepth = std::max(observedMaxDepth, depth);
-    }
-    return observedMaxDepth;
-}
-
 inline std::vector<Node>
 sortForestByComparisonWithParent(const std::vector<Node> &nodes,
                                  const std::vector<std::size_t> &parentIndex) {
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
+    const auto depths = computeDepthsForUInt128<4>(nodes, parentIndex);
 
     std::vector<std::size_t> order(nodes.size());
     std::iota(order.begin(), order.end(), 0);
@@ -78,12 +64,14 @@ struct UInt128IdKey {
 };
 
 struct CompositeDepth2UInt128Key {
+    using Depth = uint16_t;
+
     static constexpr std::size_t depth_byte_count = 2;
     static constexpr std::size_t byte_count =
         depth_byte_count + UInt128Traits::id_byte_count;
 
     const std::vector<Node> &nodes;
-    const std::vector<uint32_t> &depths;
+    const std::vector<Depth> &depths;
 
     uint8_t byte_msb_first(std::size_t nodeIndex,
                            std::size_t byteIndex) const noexcept {
@@ -160,8 +148,10 @@ template <typename BucketSorter>
 inline std::vector<Node> sortForestByDenseDepth2BucketsWithParent(
     const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
     BucketSorter bucketSorter) {
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
-    const uint32_t observedMaxDepth = validateDepthLimit<2>(depths);
+    auto computed =
+        detail::computeDepths<2>(nodes, parentIndex, UInt128NodeTraits{});
+    const auto &depths = computed.values;
+    const uint16_t observedMaxDepth = computed.observedMax;
     std::vector<std::vector<std::size_t>> buckets(
         static_cast<std::size_t>(observedMaxDepth) + 1);
     for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
@@ -213,8 +203,7 @@ inline std::vector<Node> sortForestByDenseDepth2BucketedLsdWithParent(
 inline std::vector<Node> sortForestByCompositeDepth2LsdWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
-    validateDepthLimit<2>(depths);
+    const auto depths = computeDepthsForUInt128<2>(nodes, parentIndex);
 
     std::vector<std::size_t> order(nodes.size());
     std::iota(order.begin(), order.end(), 0);
@@ -653,8 +642,7 @@ inline std::vector<Node> sortForestByCompositeDepth2MsdWithParent(
         return {};
     }
 
-    const auto depths = computeDepthsForUInt128(nodes, parentIndex);
-    validateDepthLimit<2>(depths);
+    const auto depths = computeDepthsForUInt128<2>(nodes, parentIndex);
 
     std::vector<std::size_t> order(nodeCount);
     std::iota(order.begin(), order.end(), 0);
