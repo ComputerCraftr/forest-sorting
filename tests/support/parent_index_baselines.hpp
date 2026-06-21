@@ -2,6 +2,7 @@
 #define FOREST_SORTING_SUPPORT_PARENT_INDEX_BASELINES_HPP
 
 #include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
@@ -12,9 +13,16 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace forest_sorting::test_support {
+
+struct ParentBuildArtifacts {
+    std::vector<std::size_t> parentIndex;
+    std::vector<std::size_t> idPermutation;
+    bool hasIdPermutation = false;
+};
 
 enum class ParentKind : uint8_t {
     Unordered,
@@ -82,7 +90,7 @@ template <typename Id, typename IdTraits> class FlatIdIndex {
                 slot = FlatIdIndexSlot<Id>{nodeId, nodeIndex, true};
                 return true;
             }
-            if (idTraits_.equal(slot.id, nodeId)) {
+            if (detail::idEqual(slot.id, nodeId, idTraits_)) {
                 return false;
             }
             slotIndex = (slotIndex + 1) & mask;
@@ -97,7 +105,7 @@ template <typename Id, typename IdTraits> class FlatIdIndex {
             if (!slot.occupied) {
                 break;
             }
-            if (idTraits_.equal(slot.id, nodeId)) {
+            if (detail::idEqual(slot.id, nodeId, idTraits_)) {
                 return slot.nodeIndex;
             }
             slotIndex = (slotIndex + 1) & mask;
@@ -125,7 +133,7 @@ buildParentIndexFlatHashBaseline(const Nodes &nodes, const Traits &traits) {
     std::vector<std::size_t> parent(nodes.size(), detail::no_parent);
     for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
         const Id parentId = traits.parent_id(nodes[nodeIdx]);
-        if (traits.is_root_parent(parentId)) {
+        if (detail::isParentSentinel(traits, parentId)) {
             continue;
         }
         parent[nodeIdx] = idToIndex.find(parentId);
@@ -166,21 +174,21 @@ buildParentIndexStdUnorderedMap(const std::vector<Node> &nodes) {
     return parent;
 }
 
-inline std::vector<std::size_t>
-buildParentIndexRadixJoinByteMsdBaseline(const std::vector<Node> &nodes) {
+inline detail::RadixParentIndexResult
+buildParentIndexRadixJoinByteMsdBaselineResult(const std::vector<Node> &nodes) {
     std::vector<std::size_t> scratch;
     auto sortPermutation = [&](std::vector<std::size_t> &permutation,
-                               auto idForIndex, const UInt128NodeTraits &) {
+                               auto idForIndex, const auto &sortTraits) {
         scratch.resize(permutation.size());
         auto digitForIndex = [&](std::size_t entryIndex,
                                  std::size_t digitIndex) {
-            return UInt128NodeTraits::byte_msb_first(idForIndex(entryIndex),
-                                                     digitIndex);
+            return sortTraits.byte_msb_first(idForIndex(entryIndex),
+                                             digitIndex);
         };
         auto rangeDone = [](std::size_t, std::size_t) {};
         detail::radixMsdPartitionRanges(
             permutation, scratch, 0, permutation.size(), 0,
-            UInt128NodeTraits::id_byte_count, digitForIndex, rangeDone);
+            sortTraits.id_byte_count, digitForIndex, rangeDone);
     };
     return detail::buildParentIndexRadixJoinWithPermutationSorter(
         nodes, UInt128NodeTraits{}, sortPermutation);
@@ -195,23 +203,42 @@ struct UInt128NodeXorHashTraits : UInt128NodeTraits {
     }
 };
 
-inline std::vector<std::size_t>
-buildParentIndexForKind(ParentKind parentKind, const std::vector<Node> &nodes) {
+inline ParentBuildArtifacts
+buildParentArtifactsForKind(ParentKind parentKind,
+                            const std::vector<Node> &nodes) {
     switch (parentKind) {
     case ParentKind::Unordered:
-        return buildParentIndexStdUnorderedMap(nodes);
+        return {buildParentIndexStdUnorderedMap(nodes), {}, false};
     case ParentKind::Flat:
-        return buildParentIndexFlatHashBaseline(nodes, UInt128NodeTraits{});
+        return {buildParentIndexFlatHashBaseline(nodes, UInt128NodeTraits{}),
+                {},
+                false};
     case ParentKind::Control:
-        return detail::buildParentIndex(nodes, UInt128NodeTraits{});
+        return {
+            detail::buildParentIndex(nodes, UInt128NodeTraits{}), {}, false};
     case ParentKind::ControlXorHash:
-        return detail::buildParentIndex(nodes, UInt128NodeXorHashTraits{});
-    case ParentKind::Radix:
-        return detail::buildParentIndexRadixJoin(nodes, UInt128NodeTraits{});
-    case ParentKind::RadixByteMsd:
-        return buildParentIndexRadixJoinByteMsdBaseline(nodes);
+        return {detail::buildParentIndex(nodes, UInt128NodeXorHashTraits{}),
+                {},
+                false};
+    case ParentKind::Radix: {
+        auto result =
+            detail::buildParentIndexRadixJoinResult(nodes, UInt128NodeTraits{});
+        return {std::move(result.parentIndex), std::move(result.idPermutation),
+                true};
+    }
+    case ParentKind::RadixByteMsd: {
+        auto result = buildParentIndexRadixJoinByteMsdBaselineResult(nodes);
+        return {std::move(result.parentIndex), std::move(result.idPermutation),
+                true};
+    }
     }
     throw std::runtime_error("unknown parent builder");
+}
+
+inline std::vector<std::size_t>
+buildParentIndexForKind(ParentKind parentKind, const std::vector<Node> &nodes) {
+    auto artifacts = buildParentArtifactsForKind(parentKind, nodes);
+    return std::move(artifacts.parentIndex);
 }
 
 } // namespace forest_sorting::test_support

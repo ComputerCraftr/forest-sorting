@@ -2,8 +2,10 @@
 #define FOREST_SORTING_DETAIL_PARENT_INDEX_HPP
 
 #include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/id_chunks.hpp"
+#include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
-#include "forest_sorting/detail/radix.hpp"
+#include "forest_sorting/detail/parent_sentinel.hpp"
 
 #include <bit>
 #include <cstddef>
@@ -11,6 +13,7 @@
 #include <cstring>
 #include <numeric>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace forest_sorting::detail {
@@ -30,83 +33,155 @@ struct FindResult {
     bool probeLimitExceeded = false;
 };
 
-template <typename Id> struct RadixJoinIdEntry {
-    Id id{};
-    std::size_t nodeIndex = no_parent;
-};
-
 template <typename Id> struct RadixJoinQueryEntry {
     Id parentId{};
     std::size_t childIndex = no_parent;
 };
 
+struct RadixParentIndexResult {
+    std::vector<std::size_t> parentIndex;
+    std::vector<std::size_t> idPermutation;
+};
+
 template <typename Nodes, typename Traits, typename SortPermutation>
-std::vector<std::size_t> buildParentIndexRadixJoinWithPermutationSorter(
+RadixParentIndexResult buildParentIndexRadixJoinWithPermutationSorter(
     const Nodes &nodes, const Traits &traits, SortPermutation sortPermutation) {
     using Id = Traits::Id;
-    std::vector<RadixJoinIdEntry<Id>> idEntries;
-    idEntries.reserve(nodes.size());
+    std::vector<Id> ids;
+    ids.reserve(nodes.size());
     std::vector<RadixJoinQueryEntry<Id>> parentQueries;
     parentQueries.reserve(nodes.size());
 
     for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        idEntries.push_back(
-            RadixJoinIdEntry<Id>{traits.id(nodes[nodeIdx]), nodeIdx});
+        ids.push_back(traits.id(nodes[nodeIdx]));
         const Id parentId = traits.parent_id(nodes[nodeIdx]);
-        if (!traits.is_root_parent(parentId)) {
+        if (!isParentSentinel(traits, parentId)) {
             parentQueries.push_back(RadixJoinQueryEntry<Id>{parentId, nodeIdx});
         }
     }
 
-    std::vector<std::size_t> idPermutation(idEntries.size());
+    std::vector<std::size_t> idPermutation(ids.size());
     std::iota(idPermutation.begin(), idPermutation.end(), 0);
-    auto idForEntryIndex = [&](std::size_t entryIndex) {
-        return idEntries[entryIndex].id;
-    };
-    sortPermutation(idPermutation, idForEntryIndex, traits);
-
     std::vector<std::size_t> queryPermutation(parentQueries.size());
     std::iota(queryPermutation.begin(), queryPermutation.end(), 0);
-    auto idForQueryIndex = [&](std::size_t queryIndex) {
-        return parentQueries[queryIndex].parentId;
-    };
-    sortPermutation(queryPermutation, idForQueryIndex, traits);
 
-    for (std::size_t offset = 1; offset < idPermutation.size(); ++offset) {
-        const Id &previousId = idEntries[idPermutation[offset - 1]].id;
-        const Id &currentId = idEntries[idPermutation[offset]].id;
-        if (traits.equal(previousId, currentId)) {
-            throw std::runtime_error("duplicate node id");
+    constexpr std::size_t ChunkBytes = chunk_byte_count;
+    constexpr std::size_t chunkCount =
+        (Traits::id_byte_count + ChunkBytes - 1) / ChunkBytes;
+
+    if constexpr (shouldCacheChunkIds<Traits>) {
+        using CachedId = CachedChunkId<chunkCount>;
+
+        std::vector<CachedId> cachedIds(ids.size());
+        for (std::size_t nodeIdx = 0; nodeIdx < ids.size(); ++nodeIdx) {
+            fillCachedChunkId(cachedIds[nodeIdx], ids[nodeIdx], traits);
         }
+
+        std::vector<CachedId> cachedQueries(parentQueries.size());
+        for (std::size_t queryIdx = 0; queryIdx < parentQueries.size();
+             ++queryIdx) {
+            fillCachedChunkId(cachedQueries[queryIdx],
+                              parentQueries[queryIdx].parentId, traits);
+        }
+
+        CachedChunkIdTraits<Traits, chunkCount> cachedTraits;
+
+        auto idForEntryIndex = [&](std::size_t entryIndex) {
+            return cachedIds[entryIndex];
+        };
+        sortPermutation(idPermutation, idForEntryIndex, cachedTraits);
+
+        auto idForQueryIndex = [&](std::size_t queryIndex) {
+            return cachedQueries[queryIndex];
+        };
+        sortPermutation(queryPermutation, idForQueryIndex, cachedTraits);
+
+        for (std::size_t offset = 1; offset < idPermutation.size(); ++offset) {
+            const int cachedCmp =
+                compareCachedIdChunks(cachedIds[idPermutation[offset - 1]],
+                                      cachedIds[idPermutation[offset]]);
+            if (cachedCmp == 0) {
+                const Id &previousId = ids[idPermutation[offset - 1]];
+                const Id &currentId = ids[idPermutation[offset]];
+                if (idEqual(previousId, currentId, traits)) {
+                    throw std::runtime_error("duplicate node id");
+                }
+            }
+        }
+
+        std::vector<std::size_t> parentIndex(nodes.size(), no_parent);
+        std::size_t idOffset = 0;
+        for (std::size_t queryIndex : queryPermutation) {
+            const RadixJoinQueryEntry<Id> &query = parentQueries[queryIndex];
+            const CachedId &queryCached = cachedQueries[queryIndex];
+            while (idOffset < idPermutation.size()) {
+                const CachedId &idCached = cachedIds[idPermutation[idOffset]];
+                const int cachedCmp =
+                    compareCachedIdChunks(idCached, queryCached);
+                if (cachedCmp < 0) {
+                    ++idOffset;
+                } else if (cachedCmp > 0) {
+                    break;
+                } else {
+                    if (idEqual(ids[idPermutation[idOffset]], query.parentId,
+                                traits)) {
+                        parentIndex[query.childIndex] = idPermutation[idOffset];
+                    }
+                    break;
+                }
+            }
+        }
+
+        return {std::move(parentIndex), std::move(idPermutation)};
+    } else {
+        auto idForEntryIndex = [&](std::size_t entryIndex) {
+            return ids[entryIndex];
+        };
+        sortPermutation(idPermutation, idForEntryIndex, traits);
+
+        auto idForQueryIndex = [&](std::size_t queryIndex) {
+            return parentQueries[queryIndex].parentId;
+        };
+        sortPermutation(queryPermutation, idForQueryIndex, traits);
+
+        for (std::size_t offset = 1; offset < idPermutation.size(); ++offset) {
+            const Id &previousId = ids[idPermutation[offset - 1]];
+            const Id &currentId = ids[idPermutation[offset]];
+            if (idEqual(previousId, currentId, traits)) {
+                throw std::runtime_error("duplicate node id");
+            }
+        }
+
+        std::vector<std::size_t> parentIndex(nodes.size(), no_parent);
+        std::size_t idOffset = 0;
+        for (std::size_t queryIndex : queryPermutation) {
+            const RadixJoinQueryEntry<Id> &query = parentQueries[queryIndex];
+            while (idOffset < idPermutation.size()) {
+                const Id &idVal = ids[idPermutation[idOffset]];
+                if (idLess(idVal, query.parentId, traits)) {
+                    ++idOffset;
+                } else if (idLess(query.parentId, idVal, traits)) {
+                    break;
+                } else {
+                    if (idEqual(idVal, query.parentId, traits)) {
+                        parentIndex[query.childIndex] = idPermutation[idOffset];
+                    }
+                    break;
+                }
+            }
+        }
+
+        return {std::move(parentIndex), std::move(idPermutation)};
     }
-
-    std::vector<std::size_t> parent(nodes.size(), no_parent);
-    std::size_t idOffset = 0;
-    for (std::size_t queryIndex : queryPermutation) {
-        const RadixJoinQueryEntry<Id> &query = parentQueries[queryIndex];
-        while (idOffset < idPermutation.size() &&
-               idLess(idEntries[idPermutation[idOffset]].id, query.parentId,
-                      traits)) {
-            ++idOffset;
-        }
-        if (idOffset < idPermutation.size() &&
-            traits.equal(idEntries[idPermutation[idOffset]].id,
-                         query.parentId)) {
-            parent[query.childIndex] =
-                idEntries[idPermutation[idOffset]].nodeIndex;
-        }
-    }
-
-    return parent;
 }
 
 template <typename Nodes, typename Traits>
-std::vector<std::size_t> buildParentIndexRadixJoin(const Nodes &nodes,
-                                                   const Traits &traits) {
+RadixParentIndexResult buildParentIndexRadixJoinResult(const Nodes &nodes,
+                                                       const Traits &traits) {
     IdChunkSortWorkspace<production_id_chunk_bytes, ProductionIdCountPolicy>
         workspace;
     auto sortPermutation = [&](std::vector<std::size_t> &permutation,
-                               auto idForIndex, const Traits &sortTraits) {
+                               auto idForIndex, const auto &sortTraits) {
         sortIndexRangeByIdChunks<production_id_chunk_bytes,
                                  ProductionIdCountPolicy>(
             permutation, idForIndex, sortTraits, 0, permutation.size(), 0,
@@ -114,6 +189,13 @@ std::vector<std::size_t> buildParentIndexRadixJoin(const Nodes &nodes,
     };
     return buildParentIndexRadixJoinWithPermutationSorter(nodes, traits,
                                                           sortPermutation);
+}
+
+template <typename Nodes, typename Traits>
+std::vector<std::size_t> buildParentIndexRadixJoin(const Nodes &nodes,
+                                                   const Traits &traits) {
+    auto result = buildParentIndexRadixJoinResult(nodes, traits);
+    return std::move(result.parentIndex);
 }
 
 template <typename Id, typename IdTraits> class IdIndexTable {
@@ -151,7 +233,7 @@ template <typename Id, typename IdTraits> class IdIndexTable {
                 const int matchIdx = std::countr_zero(currentMatches) >> 3;
                 const std::size_t fullIdx =
                     (slotIndex + static_cast<std::size_t>(matchIdx)) & mask_;
-                if (idTraits_.equal(ids_[fullIdx], nodeId)) {
+                if (idEqual(ids_[fullIdx], nodeId, idTraits_)) {
                     return InsertResult::Duplicate;
                 }
             }
@@ -203,7 +285,7 @@ template <typename Id, typename IdTraits> class IdIndexTable {
                 const int matchIdx = std::countr_zero(currentMatches) >> 3;
                 const std::size_t fullIdx =
                     (slotIndex + static_cast<std::size_t>(matchIdx)) & mask_;
-                if (idTraits_.equal(ids_[fullIdx], nodeId)) {
+                if (idEqual(ids_[fullIdx], nodeId, idTraits_)) {
                     return FindResult{nodeIndexes_[fullIdx], true, false};
                 }
             }
@@ -249,7 +331,7 @@ std::vector<std::size_t> buildParentIndex(const Nodes &nodes,
     std::vector<std::size_t> parent(nodes.size(), no_parent);
     for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
         const Id parentId = traits.parent_id(nodes[nodeIdx]);
-        if (traits.is_root_parent(parentId)) {
+        if (isParentSentinel(traits, parentId)) {
             continue;
         }
         const FindResult findResult =

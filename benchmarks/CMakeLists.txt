@@ -159,13 +159,12 @@ add_test(NAME forest-sorting-bench-range-ladder-bitmask-le512
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-tail-chunk-cache
+add_test(NAME forest-sorting-bench-tail-default
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset same-high32
                  --parent control
                  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-chunk-cache
                  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32
                  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32
                  --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
@@ -187,6 +186,27 @@ add_test(NAME forest-sorting-bench-parent-radix-chunk-vs-byte
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
 
+add_test(NAME forest-sorting-bench-global-id-first
+         COMMAND forest-sorting-bench
+                 --format json
+                 --sample-output raw
+                 --size 10000
+                 --dataset random
+                 --parent control
+                 --parent radix
+                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --sort adaptive-depth2-global-id-radix-stable-depth
+                 --baseline-parent control
+                 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --iterations 1
+                 --warmup 0
+                 --order-seed 0x5eed
+                 --data-seed 0x5eed1234)
+set_tests_properties(
+    forest-sorting-bench-global-id-first
+    PROPERTIES PASS_REGULAR_EXPRESSION
+               "pipeline_comparison_status.*pipeline_samples_ms")
+
 add_test(NAME forest-sorting-tail-bench-help COMMAND forest-sorting-tail-bench --help)
 add_test(NAME forest-sorting-tail-bench-smoke
          COMMAND forest-sorting-tail-bench
@@ -196,6 +216,40 @@ add_test(NAME forest-sorting-tail-bench-smoke
                  --size 4
                  --size 8
                  --pattern random)
+
+add_test(NAME forest-sorting-tail-bench-csv
+         COMMAND forest-sorting-tail-bench
+                 --format csv
+                 --iterations 1
+                 --warmup 0
+                 --ranges 2
+                 --size 4
+                 --pattern random)
+set_tests_properties(forest-sorting-tail-bench-csv
+                     PROPERTIES PASS_REGULAR_EXPRESSION
+                                "pattern,size,algorithm,median_ns")
+
+add_test(NAME forest-sorting-tail-bench-tsv
+         COMMAND forest-sorting-tail-bench
+                 --format tsv
+                 --iterations 1
+                 --warmup 0
+                 --ranges 2
+                 --size 4
+                 --pattern random)
+set_tests_properties(forest-sorting-tail-bench-tsv
+                     PROPERTIES PASS_REGULAR_EXPRESSION "median_ns")
+
+add_test(NAME forest-sorting-tail-bench-json
+         COMMAND forest-sorting-tail-bench
+                 --format json
+                 --iterations 1
+                 --warmup 0
+                 --ranges 2
+                 --size 4
+                 --pattern random)
+set_tests_properties(forest-sorting-tail-bench-json
+                     PROPERTIES PASS_REGULAR_EXPRESSION "\"results\"")
 
 # Invalid CLI validation tests
 add_test(NAME forest-sorting-bench-invalid-size

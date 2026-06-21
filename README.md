@@ -12,8 +12,11 @@ passes; benchmark support also compares the same chunk engine with 1-byte and
 8-byte chunks.
 Duplicate full IDs are rejected.
 
-Parent ID lookup uses a control-byte open-addressed ID-to-index hash table,
-then the rest of the sort and verifier operate on integer-indexed vectors.
+Parent ID lookup supports both the control-byte open-addressed ID-to-index hash
+table and the radix join. The radix join can retain its global ID permutation,
+allowing the opt-in global-ID-first stable-depth sort to reuse the same ID order
+instead of sorting IDs a second time. The rest of the sort and verifier operate
+on integer-indexed vectors.
 
 ## API
 
@@ -24,10 +27,23 @@ The portable generic algorithm header does not depend on `unsigned __int128`:
 ```
 
 Portable users provide their own node and ID representation, plus a trait that
-exposes ID bytes, hashing, equality, parent lookup, and root-parent semantics.
-The hashing policy is caller-controlled; for high-risk applications receiving
-adversarial IDs, it is recommended to provide a keyed or otherwise hardened
-hash in the traits.
+exposes fixed-width MSB-first ID bytes, a hash for the supported production
+control-table parent builder, and parent lookup. Equality and ordering
+acceleration hooks are optional; the library falls back to native operators or
+MSB-first byte/chunk comparison when those hooks are absent. Parent sentinel
+handling is also optional: a missing parent ID is treated as `no_parent`, while
+an optional `is_parent_sentinel` hook can mark a parent value as an explicit
+root sentinel.
+
+The hashing policy is caller-controlled. The guarded UInt128 convenience traits
+use the library's deterministic FNV-1a-style folded hash helper for ordinary
+benchmarking and examples; it is not an adversarially hardened hash. The
+control-table parent builder uses the trait hash for its fast path, but bounded
+probing falls back to radix join if probe chains exceed the configured limit, so
+correctness does not depend on hash hardening. For high-risk applications
+receiving adversarial IDs, provide a keyed or otherwise hardened hash in the
+traits to keep the control-table path performance-robust and avoid repeatedly
+triggering the radix fallback.
 
 The primary primitive returns a non-owning sorted index order:
 
@@ -97,28 +113,42 @@ duplicate full-ID rejection.
 
 ## Linting
 
-If `clang-tidy` is available on `PATH`, CMake adds a `tidy` target:
+CMake always defines a `tidy` target. It auto-detects `clang-tidy` from `PATH`
+and common Homebrew LLVM locations; if none is found, the target fails with a
+message explaining how to set `FOREST_CLANG_TIDY`.
 
 ```bash
 cmake --preset debug
 cmake --build --preset debug --target tidy
 ```
 
-To use a specific `clang-tidy`, configure with
-`-DFOREST_CLANG_TIDY=/path/to/clang-tidy`.
+The tidy target runs against the shipped headers, test support headers, tests,
+benchmarks, and executable sources using the generated `compile_commands.json`.
+On macOS it also passes the active SDK sysroot to `clang-tidy`. To use a
+specific binary, configure with:
+
+```bash
+cmake --preset debug -DFOREST_CLANG_TIDY=/path/to/clang-tidy
+```
 
 ## Benchmarks
 
 The release build includes a deterministic benchmark matrix comparing parent
-index construction with `std::unordered_map`, the original flat hash,
-production control-byte flat hash, and radix join baselines. It can also time
-comparison plus fixed-prefix LSD, full-key byte-MSD, and adaptive chunk-MSD sort
-variants with selectable datasets and output formats.
+index construction with `std::unordered_map`, the original flat hash, the
+control-byte parent builder with bounded probing and radix fallback, and direct
+radix join baselines. It can also time comparison plus fixed-prefix LSD,
+full-key byte-MSD, and adaptive chunk-MSD sort variants with selectable datasets
+and output formats.
 
-Parent builders are selected with `unordered`, `flat`, `control`, and `radix`.
-The production `radix` fallback sorts stationary ID/query records through
-u32-chunk index permutations. The opt-in `radix-byte-msd` comparator sorts the
-same permutations with byte-MSD and is excluded from `--parent default`.
+Parent builders are selected with `unordered`, `flat`, `control`,
+`control-xor-hash`, `radix`, and `radix-byte-msd`. `control` is the production
+control-byte hash-table parent builder; it uses bounded probing and falls back
+to radix join if probe chains become pathological. `control-xor-hash` is a
+diagnostic control-table hash-policy comparator. `radix` is the direct radix
+join parent path: it sorts ID and parent-query index permutations with the same
+u32 chunk radix engine used by the sorter and can retain the global ID
+permutation for the global-ID-first sort. The opt-in `radix-byte-msd` comparator
+sorts the same permutations with byte-MSD and is excluded from `--parent default`.
 Datasets include `random`, `outliers`, `same-high64`, `same-high32`,
 `sequential`, `external-parents`, and `siblings`. By default, the benchmark
 runs the standard sort set; `--sort all` selects that same set explicitly and
@@ -134,6 +164,7 @@ excludes opt-in tuning experiments. Sort algorithms are selected with:
 - `composite-depth2-byte-msd-lowcopy-batched`: full composite key `depth[2] || id[16]`, byte-MSD using depth-limited batched low-copy
 - `adaptive-depth2-u32-chunk-msd-no-dense`: depth-MSD grouping + adaptive 4-byte ID chunk-MSD, dense shortcut disabled
 - `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32`: default production label, maps to u32 chunk-MSD + bitmask-le512 + linear-small32 (also accepts compatibility alias `adaptive-depth2-u32-chunk-msd`)
+- `adaptive-depth2-global-id-radix-stable-depth`: opt-in global-ID-first path that uses a production u32 ID radix order followed by stable depth2 grouping; when no parent artifact is supplied, the sort computes that global ID order itself, while radix parent builders can reuse their retained ID permutation so the combined radix parent + global-ID-first pipeline shares one global ID order
 - `adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32`: old full-clear counter comparator for the production-style 4-byte chunk path
 - `adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32`: adaptive path using the unified chunk engine with 1-byte ID chunks and full-clear counters
 - `adaptive-depth2-u8-chunk-msd-bitmask-le512-tail-linear32`: adaptive path using 1-byte ID chunks and bitmask-le512 counters
@@ -143,14 +174,13 @@ excludes opt-in tuning experiments. Sort algorithms are selected with:
 - `adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32`: 8-byte chunk-MSD adaptive path with stable binary-insertion sort for small equal-depth ID ranges
 - `adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32`: production-style adaptive path, configured for a 4-byte depth prefix
 - `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear48`: opt-in tail-threshold variants that keep the production radix count policy and only change the linear small-range cutoff; `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32` is the production row
-- `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-chunk-cache`: opt-in linear-small32 contender that caches MSB-first 64-bit ID chunks before insertion sorting
 - `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32`: opt-in binary-insertion tail using cached MSB-first 64-bit ID chunks
 - `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential48`: opt-in exponential insertion-search variants using threshold-sized cached MSB-first 64-bit ID chunks under the production `bitmask-le512` radix count policy
 - `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise16`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise32`, `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise48`: opt-in fixed-pass base-2 stable-radix small-tail variants under the production `bitmask-le512` radix count policy
 - `adaptive-depth2-u32-chunk-msd-bitmask-le128-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le256-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le1024-tail-linear32`, `adaptive-depth2-u32-chunk-msd-bitmask-le4096-tail-linear32`: opt-in Track B2 variants using branch-free bitmask touched bucket counters for ranges up to the named threshold
 - `adaptive-depth2-range-ladder-u8-le1024-u16-le16384-*-tail-linear32`, `adaptive-depth2-range-ladder-u8-le2048-u16-le32768-*-tail-linear32`, `adaptive-depth2-range-ladder-u8-le4096-u16-le65536-*-tail-linear32`: opt-in range-local chunk ladders; `full-clear` rows isolate chunk width and `bitmask-le512` rows use the production counter policy
 
-The `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32` benchmark represents the current production-style adaptive
+The `adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32` benchmark represents the default production-style adaptive
 path: adaptive depth grouping followed by the unified chunk scheduler with
 MSB-first 4-byte ID chunks, stable LSD byte passes inside each chunk, and
 one shared `bitmask-le512` radix count policy for depth grouping and ID chunk partitioning: touched-bucket counters are used for radix ranges up to 512 nodes, and larger ranges fall back to full-clear counters.
@@ -185,7 +215,9 @@ defaults to compact summary output without raw sample arrays. Use
 `--sample-output raw` only when debugging individual samples, or
 `--sample-output none` for compact status/delta-only JSON. Use
 `--baseline-sort` or `--baseline-parent` for A/B deltas against a selected
-algorithm or parent builder. Winner fields are CI-aware: a candidate only wins
+algorithm or parent builder. Supplying both also reports paired end-to-end
+`pipeline_ms = parent_ms + sort_ms` deltas against the exact baseline pair.
+Winner fields are CI-aware: a candidate only wins
 when the paired percentage-delta interval is entirely below zero, a baseline
 only wins when it is entirely above zero, and noisy overlaps report `tie`.
 Repeat `--data-seed` to compare across multiple generated forests, and use
@@ -214,6 +246,20 @@ cmake --build --preset release --target forest-sorting-bench
   --baseline-parent radix-byte-msd \
   --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 \
   --iterations 30 --warmup 3 --shuffle \
+  --order-seed 0x5eed \
+  --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
+
+# Compare current adaptive and global-ID-first pipelines with control and radix parents
+./out/build/release/benchmarks/forest-sorting-bench \
+  --format json --sample-output summary \
+  --size 10000 --size 100000 --size 1000000 \
+  --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers \
+  --parent control --parent radix \
+  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 \
+  --sort adaptive-depth2-global-id-radix-stable-depth \
+  --baseline-parent control \
+  --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 \
+  --iterations 50 --warmup 10 --shuffle \
   --order-seed 0x5eed \
   --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
 
@@ -249,7 +295,6 @@ cmake --build --preset release --target forest-sorting-bench
   --size 10000 --size 100000 --size 1000000 \
   --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers \
   --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32 \
-  --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-chunk-cache \
   --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32 \
   --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32 \
   --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-bitwise32 \
@@ -265,7 +310,6 @@ cmake --build --preset release --target forest-sorting-bench
 To isolate and test the performance of the small-range tail sorting algorithms (avoiding parent setup, depth grouping, and radix partition noise), use `forest-sorting-tail-bench`. This benchmark runs arbitrary range sizes (defaulting to sizes `4`, `8`, `16`, `24`, `32`) and measures the sorting throughput (in nanoseconds per range) of:
 
 - `linear`
-- `linear-chunk-cache`
 - `binary`
 - `exponential`
 - `branchless-bitwise`

@@ -23,6 +23,7 @@ enum class SortCategory : uint8_t {
     CounterPolicyExperiment,
     RangeLadderExperiment,
     TailExperiment,
+    ReuseExperiment,
     Alias,
 };
 
@@ -37,6 +38,7 @@ enum class SortKind : uint8_t {
     CompositeByteMsdLowcopyBatched,
     AdaptiveDepth2U32ChunkMsdNoDense,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32,
+    AdaptiveDepth2GlobalIdRadixStableDepth,
 
     // Comparators
     AdaptiveDepth2U8ChunkMsdFullClearTailLinear32,
@@ -57,7 +59,6 @@ enum class SortKind : uint8_t {
     // Tail Experiments
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear16,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear48,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32ChunkCache,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
     AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential32,
@@ -77,11 +78,15 @@ enum class SortKind : uint8_t {
 
 using SortFunction = std::vector<Node> (*)(const std::vector<Node> &,
                                            const std::vector<std::size_t> &);
+using OptionalIdPermutationSortFunction = std::vector<Node> (*)(
+    const std::vector<Node> &, const std::vector<std::size_t> &,
+    const std::vector<std::size_t> *);
 
 struct SortRegistryEntry {
     SortKind kind;
     std::string_view name;
     SortFunction sortFunction;
+    OptionalIdPermutationSortFunction optionalIdPermutationSortFunction;
     SortCategory category;
     bool includeByDefault;
 };
@@ -89,7 +94,7 @@ struct SortRegistryEntry {
 template <std::size_t DepthPrefixBytes, std::size_t ChunkBytes,
           typename CountPolicy = detail::FullClearCounts,
           std::size_t SmallThreshold = detail::small_id_range_sort_threshold,
-          typename SmallRangeSorter = LinearSmallSorter,
+          typename SmallRangeSorter = LinearSmallSorter<SmallThreshold>,
           bool AllowDenseDepthGrouping = true>
 inline std::vector<Node>
 sortForestByAdaptiveChunkWrapper(const std::vector<Node> &nodes,
@@ -118,13 +123,22 @@ inline bool defaultIncludeForCategory(SortCategory category, SortKind kind) {
 inline void addEntry(std::vector<SortRegistryEntry> &registry, SortKind kind,
                      std::string_view name, SortFunction sortFunc,
                      SortCategory category) {
-    registry.push_back({kind, name, sortFunc, category,
+    registry.push_back({kind, name, sortFunc, nullptr, category,
                         defaultIncludeForCategory(category, kind)});
+}
+
+inline void
+addOptionalIdPermutationEntry(std::vector<SortRegistryEntry> &registry,
+                              SortKind kind, std::string_view name,
+                              OptionalIdPermutationSortFunction sortFunc) {
+    registry.push_back(
+        {kind, name, nullptr, sortFunc, SortCategory::ReuseExperiment, false});
 }
 
 inline void addAlias(std::vector<SortRegistryEntry> &registry, SortKind kind,
                      std::string_view name, SortFunction sortFunc) {
-    registry.push_back({kind, name, sortFunc, SortCategory::Alias, false});
+    registry.push_back(
+        {kind, name, sortFunc, nullptr, SortCategory::Alias, false});
 }
 
 template <SortKind Kind, std::size_t Threshold>
@@ -172,7 +186,7 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
 #define FS_ADD_TAIL_LINEAR(Threshold)                                          \
     addTailExperimentEntry<                                                    \
         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear##Threshold,  \
-        LinearSmallSorter, Threshold>(                                         \
+        LinearSmallSorter<Threshold>, Threshold>(                              \
         reg,                                                                   \
         "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear" #Threshold)
 
@@ -252,6 +266,10 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
                  "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32",
                  sortForestByAdaptiveDepth2U32ChunkBitmaskLe512WithParent,
                  SortCategory::Production);
+        addOptionalIdPermutationEntry(
+            reg, SortKind::AdaptiveDepth2GlobalIdRadixStableDepth,
+            "adaptive-depth2-global-id-radix-stable-depth",
+            sortForestByAdaptiveDepth2GlobalIdRadixStableDepth);
 
         // Deprecated Production Aliases (Legacy alias compatibility)
         addAlias(reg,
@@ -316,12 +334,7 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
             SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
             BinarySmallSorter<32>, 32>(
             reg, "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32");
-        addTailExperimentEntry<
-            SortKind::
-                AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32ChunkCache,
-            LinearCachedChunksSmallSorter<32>, 32>(
-            reg, "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-"
-                 "chunk-cache");
+
         FS_ADD_TAIL_EXPONENTIAL(16);
         FS_ADD_TAIL_EXPONENTIAL(32);
         FS_ADD_TAIL_EXPONENTIAL(48);
@@ -373,13 +386,24 @@ inline std::string_view sortName(SortKind sortKind) {
 
 inline std::vector<Node>
 sortForestForKind(SortKind sortKind, const std::vector<Node> &nodes,
-                  const std::vector<std::size_t> &parentIndex) {
+                  const std::vector<std::size_t> &parentIndex,
+                  const std::vector<std::size_t> *idPermutation) {
     for (const SortRegistryEntry &entry : getSortRegistry()) {
         if (entry.kind == sortKind) {
+            if (entry.optionalIdPermutationSortFunction != nullptr) {
+                return entry.optionalIdPermutationSortFunction(
+                    nodes, parentIndex, idPermutation);
+            }
             return entry.sortFunction(nodes, parentIndex);
         }
     }
     throw std::runtime_error("unknown sort algorithm");
+}
+
+inline std::vector<Node>
+sortForestForKind(SortKind sortKind, const std::vector<Node> &nodes,
+                  const std::vector<std::size_t> &parentIndex) {
+    return sortForestForKind(sortKind, nodes, parentIndex, nullptr);
 }
 
 inline SortKind parseSortKind(std::string_view value) {
@@ -399,8 +423,10 @@ inline void validateSortRegistry() {
         if (entry.name.empty()) {
             throw std::runtime_error("sort registry contains an empty name");
         }
-        if (entry.sortFunction == nullptr) {
-            throw std::runtime_error("sort registry contains a null function");
+        if ((entry.sortFunction == nullptr) ==
+            (entry.optionalIdPermutationSortFunction == nullptr)) {
+            throw std::runtime_error(
+                "sort registry entry must contain exactly one function");
         }
         if (entry.category == SortCategory::Alias) {
             ++aliasCount;
@@ -408,6 +434,26 @@ inline void validateSortRegistry() {
                 throw std::runtime_error(
                     "unauthorized alias in sort registry: " +
                     std::string(entry.name));
+            }
+        }
+        if (parseSortKind(entry.name) != entry.kind) {
+            throw std::runtime_error(
+                "parseSortKind failed to parse registered name: " +
+                std::string(entry.name));
+        }
+        if (entry.category == SortCategory::CounterPolicyExperiment ||
+            entry.category == SortCategory::TailExperiment ||
+            entry.category == SortCategory::RangeLadderExperiment ||
+            entry.category == SortCategory::ReuseExperiment ||
+            entry.kind ==
+                SortKind::AdaptiveDepth2U16ChunkMsdFullClearTailLinear32 ||
+            entry.kind ==
+                SortKind::AdaptiveDepth2U16ChunkMsdBitmaskLe512TailLinear32 ||
+            entry.kind ==
+                SortKind::AdaptiveDepth2U32ChunkMsdFullClearTailLinear32) {
+            if (entry.includeByDefault) {
+                throw std::runtime_error(std::string(entry.name) +
+                                         " should be explicit opt-in");
             }
         }
         for (std::size_t otherIdx = entryIdx + 1;

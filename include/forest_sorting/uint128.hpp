@@ -53,9 +53,9 @@ struct UInt128Traits {
     using Id = UInt128;
     static constexpr std::size_t id_byte_count = 16;
 
-    static bool is_root_parent(UInt128 nodeId) noexcept { return nodeId == 0; }
-
-    static bool equal(UInt128 lhs, UInt128 rhs) noexcept { return lhs == rhs; }
+    static bool is_parent_sentinel(UInt128 nodeId) noexcept {
+        return nodeId == 0;
+    }
 
     static uint8_t byte_msb_first(UInt128 nodeId,
                                   std::size_t byteIndex) noexcept {
@@ -84,11 +84,6 @@ struct UInt128Traits {
             }
             return static_cast<uint64_t>(nodeId);
         }
-    }
-
-    static uint64_t chunk_msb_first(UInt128 nodeId,
-                                    std::size_t chunkIndex) noexcept {
-        return chunk_msb_first<8>(nodeId, chunkIndex);
     }
 
     // Deterministic default hash for the optional UInt128 compatibility type.

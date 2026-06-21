@@ -1,6 +1,7 @@
 #include "adaptive_sort_variants.hpp"
 #include "forest_sorting/algorithms.hpp"
 #include "forest_sorting/detail/hash.hpp"
+#include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/detail/radix.hpp"
@@ -100,13 +101,14 @@ void assertParentBuildersMatch(const std::vector<Node> &nodes) {
 
 void requireAllRegisteredSortsMatch(const std::vector<Node> &nodes,
                                     const std::vector<Node> &expected) {
-    const auto parentIndex =
-        buildParentIndexForKind(ParentKind::Control, nodes);
+    const auto artifacts =
+        buildParentArtifactsForKind(ParentKind::Radix, nodes);
     for (const SortRegistryEntry &entry : getSortRegistry()) {
         if (entry.category == SortCategory::Alias) {
             continue;
         }
-        const auto sorted = entry.sortFunction(nodes, parentIndex);
+        const auto sorted = sortForestForKind(
+            entry.kind, nodes, artifacts.parentIndex, &artifacts.idPermutation);
         if (!sameNodes(sorted, expected)) {
             throw std::runtime_error(std::string(entry.name) +
                                      " sort differed from canonical order");
@@ -121,153 +123,8 @@ void requireAllRegisteredSortsMatch(const std::vector<Node> &nodes,
 void test_support_registries_are_unique() {
     requireUniqueDatasetParentAndSortRegistries();
 
-    struct ParseTestCase {
-        std::string_view label;
-        SortKind expectedKind;
-        std::string_view errorMessage;
-    };
-
-    constexpr ParseTestCase kParseTestCases[] = {
-        {"composite-depth2-byte-msd-copyback",
-         SortKind::CompositeByteMsdCopyback,
-         "copyback composite byte-MSD label is not registered"},
-        {"composite-depth2-byte-msd-lowcopy-branchy",
-         SortKind::CompositeByteMsdLowcopyBranchy,
-         "branchy low-copy composite byte-MSD label is not registered"},
-        {"composite-depth2-byte-msd-lowcopy-flattened",
-         SortKind::CompositeByteMsdLowcopyFlattened,
-         "flattened low-copy composite byte-MSD label is not registered"},
-        {"composite-depth2-byte-msd-lowcopy-batched",
-         SortKind::CompositeByteMsdLowcopyBatched,
-         "batched low-copy composite byte-MSD label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear16",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear16,
-         "linear small16 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear48",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear48,
-         "linear small48 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
-         "binary small32 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-"
-         "chunk-cache",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32ChunkCache,
-         "linear chunk-cache tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential16",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
-         "exponential small16 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential32,
-         "exponential small32 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential48",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential48,
-         "exponential small48 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-"
-         "bitwise16",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise16,
-         "branchless-bitwise small16 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-"
-         "bitwise32",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise32,
-         "branchless-bitwise small32 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-"
-         "bitwise48",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise48,
-         "branchless-bitwise small48 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32",
-         SortKind::AdaptiveDepth2U32ChunkMsdFullClearTailLinear32,
-         "full-clear u32 chunk MSD comparator label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le128-tail-linear32",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe128TailLinear32,
-         "bitmask-le128 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le256-tail-linear32",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe256TailLinear32,
-         "bitmask-le256 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le1024-tail-linear32",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe1024TailLinear32,
-         "bitmask-le1024 tuning label is not registered"},
-        {"adaptive-depth2-u32-chunk-msd-bitmask-le4096-tail-linear32",
-         SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe4096TailLinear32,
-         "bitmask-le4096 tuning label is not registered"},
-        {"adaptive-depth2-u16-chunk-msd-full-clear-tail-linear32",
-         SortKind::AdaptiveDepth2U16ChunkMsdFullClearTailLinear32,
-         "u16 chunk MSD full-clear comparator label is not registered"},
-        {"adaptive-depth2-range-ladder-u8-le2048-u16-le32768-bitmask-le512-"
-         "tail-linear32",
-         SortKind::
-             AdaptiveDepth2RangeLadderU8Le2048U16Le32768BitmaskLe512TailLinear32,
-         "range ladder label is not registered"}};
-
-    for (const auto &testCase : kParseTestCases) {
-        require(parseSortKind(testCase.label) == testCase.expectedKind,
-                testCase.errorMessage);
-    }
-
     require(datasetName(DatasetKind::SameHigh32) == "same-high32",
             "same-high32 dataset label is not registered");
-
-    struct OptInTestCase {
-        SortKind kind;
-        std::string_view errorMessage;
-    };
-
-    constexpr OptInTestCase kOptInTestCases[] = {
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear16,
-         "linear small16 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear48,
-         "linear small48 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
-         "binary small32 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32ChunkCache,
-         "linear chunk-cache tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
-         "exponential small16 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential32,
-         "exponential small32 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential48,
-         "exponential small48 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise16,
-         "branchless-bitwise small16 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise32,
-         "branchless-bitwise small32 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise48,
-         "branchless-bitwise small48 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdFullClearTailLinear32,
-         "full-clear u32 chunk MSD comparator should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe128TailLinear32,
-         "bitmask-le128 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe256TailLinear32,
-         "bitmask-le256 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe1024TailLinear32,
-         "bitmask-le1024 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe4096TailLinear32,
-         "bitmask-le4096 tuning sort should be explicit opt-in"},
-        {SortKind::AdaptiveDepth2U16ChunkMsdFullClearTailLinear32,
-         "range ladder/chunk comparator sort should be opt-in now"},
-        {SortKind::AdaptiveDepth2U16ChunkMsdBitmaskLe512TailLinear32,
-         "range ladder/chunk comparator sort should be opt-in now"},
-        {SortKind::
-             AdaptiveDepth2RangeLadderU8Le1024U16Le16384FullClearTailLinear32,
-         "range ladder/chunk comparator sort should be opt-in now"},
-        {SortKind::
-             AdaptiveDepth2RangeLadderU8Le2048U16Le32768FullClearTailLinear32,
-         "range ladder/chunk comparator sort should be opt-in now"},
-        {SortKind::
-             AdaptiveDepth2RangeLadderU8Le4096U16Le65536FullClearTailLinear32,
-         "range ladder/chunk comparator sort should be opt-in now"},
-        {SortKind::
-             AdaptiveDepth2RangeLadderU8Le1024U16Le16384BitmaskLe512TailLinear32,
-         "range ladder/chunk comparator sort should be opt-in now"},
-        {SortKind::
-             AdaptiveDepth2RangeLadderU8Le2048U16Le32768BitmaskLe512TailLinear32,
-         "range ladder/chunk comparator sort should be opt-in now"},
-        {SortKind::
-             AdaptiveDepth2RangeLadderU8Le4096U16Le65536BitmaskLe512TailLinear32,
-         "range ladder/chunk comparator sort should be opt-in now"}};
-
-    for (const auto &testCase : kOptInTestCases) {
-        requireSortIsExplicitOptIn(testCase.kind, testCase.errorMessage);
-    }
 }
 
 void test_removed_generation_touched_count_labels_do_not_parse() {
@@ -331,6 +188,72 @@ void test_parent_builders_match_for_registered_datasets() {
     for (DatasetKind datasetKind : allDatasetKinds()) {
         assertParentBuildersMatch(
             makeGeneratedForestForKind(datasetKind, 10000));
+    }
+}
+
+void test_radix_parent_artifacts_retain_sorted_node_permutations() {
+    constexpr std::array<ParentKind, 2> kRadixKinds = {
+        ParentKind::Radix, ParentKind::RadixByteMsd};
+    const UInt128NodeTraits traits;
+
+    for (DatasetKind datasetKind : allDatasetKinds()) {
+        const auto nodes = makeGeneratedForestForKind(datasetKind, 1000);
+        const auto expectedParent =
+            buildParentIndexForKind(ParentKind::Control, nodes);
+        for (ParentKind parentKind : kRadixKinds) {
+            const auto artifacts =
+                buildParentArtifactsForKind(parentKind, nodes);
+            require(artifacts.parentIndex == expectedParent,
+                    "radix artifact parent index differs from control");
+            require(artifacts.idPermutation.size() == nodes.size(),
+                    "radix artifact ID permutation has wrong size");
+
+            std::vector<bool> seen(nodes.size(), false);
+            for (std::size_t offset = 0;
+                 offset < artifacts.idPermutation.size(); ++offset) {
+                const std::size_t nodeIndex = artifacts.idPermutation[offset];
+                require(nodeIndex < nodes.size(),
+                        "radix artifact ID permutation index is invalid");
+                require(!seen[nodeIndex],
+                        "radix artifact ID permutation contains duplicates");
+                seen[nodeIndex] = true;
+                if (offset > 0) {
+                    const std::size_t previousIndex =
+                        artifacts.idPermutation[offset - 1];
+                    require(!forest_sorting::detail::idLess(
+                                nodes[nodeIndex].id, nodes[previousIndex].id,
+                                traits),
+                            "radix artifact ID permutation is not sorted");
+                }
+            }
+        }
+    }
+}
+
+void test_global_id_first_sort_computes_or_reuses_id_permutation() {
+    for (DatasetKind datasetKind : allDatasetKinds()) {
+        const auto nodes = makeGeneratedForestForKind(datasetKind, 1000);
+        for (ParentKind parentKind : registeredParentKinds()) {
+            const auto artifacts =
+                buildParentArtifactsForKind(parentKind, nodes);
+            const auto expected =
+                sortForestByComparisonWithParent(nodes, artifacts.parentIndex);
+            const std::vector<std::size_t> *idPermutation =
+                artifacts.hasIdPermutation ? &artifacts.idPermutation : nullptr;
+            const auto actual = sortForestForKind(
+                SortKind::AdaptiveDepth2GlobalIdRadixStableDepth, nodes,
+                artifacts.parentIndex, idPermutation);
+            require(sameNodes(actual, expected),
+                    std::string(parentName(parentKind)) +
+                        " global-ID-first sort differed from comparison");
+
+            const auto computed = sortForestForKind(
+                SortKind::AdaptiveDepth2GlobalIdRadixStableDepth, nodes,
+                artifacts.parentIndex, nullptr);
+            require(sameNodes(computed, actual),
+                    "computed and reused ID permutations produced different "
+                    "orders");
+        }
     }
 }
 
@@ -528,6 +451,42 @@ void test_sort_and_verify_multi_root() {
     require(sorted[2].id == makeId(0, 11));
     require(sorted[3].id == makeId(0, 12));
     require(sorted[4].id == makeId(0, 21));
+}
+
+void test_parent_radix_cached_path_differentiates_low64() {
+    const UInt128 highSame = 0x1122334455667788ULL;
+    // Nodes: Node 0 (ID B), Node 1 (ID A), Node 2 (Child of A), Node 3 (Child
+    // of B)
+    std::vector<Node> nodes = {
+        {makeId(highSame, 2), 0},
+        {makeId(highSame, 1), 0},
+        {makeId(highSame, 3), makeId(highSame, 1)},
+        {makeId(highSame, 4), makeId(highSame, 2)},
+    };
+
+    const auto artifacts =
+        buildParentArtifactsForKind(ParentKind::Radix, nodes);
+
+    require(artifacts.parentIndex[2] == 1,
+            "child of A pointed to wrong parent index");
+    require(artifacts.parentIndex[3] == 0,
+            "child of B pointed to wrong parent index");
+
+    std::size_t posA = nodes.size();
+    std::size_t posB = nodes.size();
+    for (std::size_t nodeIdx = 0; nodeIdx < artifacts.idPermutation.size();
+         ++nodeIdx) {
+        if (artifacts.idPermutation[nodeIdx] == 1) {
+            posA = nodeIdx;
+        } else if (artifacts.idPermutation[nodeIdx] == 0) {
+            posB = nodeIdx;
+        }
+    }
+    require(posA < posB, "ID A was not ordered before ID B in idPermutation");
+
+    const auto expected =
+        sortForestByComparisonWithParent(nodes, artifacts.parentIndex);
+    requireAllRegisteredSortsMatch(nodes, expected);
 }
 
 void test_adaptive_sort_orders_by_high64_before_low64() {
@@ -888,16 +847,18 @@ std::vector<Node> rootNodesFromIds(const std::vector<UInt128> &ids) {
 
 void requireChunkMsdSortsMatchComparison(const std::vector<Node> &inputNodes,
                                          std::string_view caseName) {
-    const auto parentIndex =
-        buildParentIndexForKind(ParentKind::Control, inputNodes);
+    const auto artifacts =
+        buildParentArtifactsForKind(ParentKind::Radix, inputNodes);
     const auto expected =
-        sortForestByComparisonWithParent(inputNodes, parentIndex);
+        sortForestByComparisonWithParent(inputNodes, artifacts.parentIndex);
 
     for (const SortRegistryEntry &entry : getSortRegistry()) {
         if (entry.category == SortCategory::Alias) {
             continue;
         }
-        const auto sorted = entry.sortFunction(inputNodes, parentIndex);
+        const auto sorted =
+            sortForestForKind(entry.kind, inputNodes, artifacts.parentIndex,
+                              &artifacts.idPermutation);
         require(sameNodes(sorted, expected),
                 std::string(entry.name) + " failed " + std::string(caseName));
     }
@@ -1072,6 +1033,10 @@ int main() {
                 test_verify_rejects_parent_cycles);
         runTest("parent builders match for registered datasets",
                 test_parent_builders_match_for_registered_datasets);
+        runTest("radix parent artifacts retain sorted node permutations",
+                test_radix_parent_artifacts_retain_sorted_node_permutations);
+        runTest("global-ID-first sort computes or reuses ID permutation",
+                test_global_id_first_sort_computes_or_reuses_id_permutation);
         runTest("parent builders reject duplicate full UInt128 ID",
                 test_parent_builders_reject_duplicate_full_uint128_id);
         runTest(
@@ -1088,6 +1053,8 @@ int main() {
                 test_adaptive_sort_orders_by_high64_before_low64);
         runTest("adaptive sort uses low64 when high64 matches",
                 test_adaptive_sort_uses_low64_when_high64_matches);
+        runTest("parent radix cached path differentiates low64",
+                test_parent_radix_cached_path_differentiates_low64);
         runTest("public sort matches u32 chunk support path",
                 test_public_sort_matches_u32_chunk_support_path);
         runTest("adaptive sort matches comparison for shuffled input",

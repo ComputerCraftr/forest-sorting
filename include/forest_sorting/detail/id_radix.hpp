@@ -2,6 +2,8 @@
 #define FOREST_SORTING_DETAIL_ID_RADIX_HPP
 
 #include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/id_chunks.hpp"
+#include "forest_sorting/detail/id_small_sort.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 
@@ -32,48 +34,53 @@ template <std::size_t ChunkBytes> struct ChunkedIndex {
     std::size_t index;
 };
 
-template <typename IdForIndex, typename IdTraits>
+template <typename ScratchAccessor>
+void stableSortIndexRangeSmallLinearInternal(std::vector<std::size_t> &order,
+                                             std::size_t rangeBegin,
+                                             std::size_t rangeEnd,
+                                             ScratchAccessor &accessor) {
+    for (std::size_t rangeIdx = rangeBegin + 1; rangeIdx < rangeEnd;
+         ++rangeIdx) {
+        const std::size_t localIdx = rangeIdx - rangeBegin;
+        const std::size_t itemIndex = order[rangeIdx];
+        accessor.save(localIdx);
+        std::size_t innerIdx = rangeIdx;
+        for (; innerIdx > rangeBegin; --innerIdx) {
+            const std::size_t previousLocalIdx = innerIdx - 1 - rangeBegin;
+            if (accessor.isLessOrEqual(previousLocalIdx)) {
+                break;
+            }
+            const std::size_t innerLocalIdx = innerIdx - rangeBegin;
+            order[innerIdx] = order[innerIdx - 1];
+            accessor.move(previousLocalIdx, innerLocalIdx);
+        }
+        order[innerIdx] = itemIndex;
+        accessor.writeSaved(innerIdx - rangeBegin);
+    }
+}
+
+template <std::size_t MaxRangeSize = small_id_range_sort_threshold,
+          typename IdForIndex, typename IdTraits>
 void stableSortIndexRangeSmallLinear(std::vector<std::size_t> &order,
                                      IdForIndex idForIndex,
                                      const IdTraits &traits,
                                      std::size_t rangeBegin,
                                      std::size_t rangeEnd) {
-    for (std::size_t rangeIdx = rangeBegin + 1; rangeIdx < rangeEnd;
-         ++rangeIdx) {
-        const std::size_t itemIndex = order[rangeIdx];
-        const auto idValue = idForIndex(itemIndex);
-        std::size_t innerIdx = rangeIdx;
-        for (; innerIdx > rangeBegin; --innerIdx) {
-            const std::size_t previousOffset = innerIdx - 1;
-            const std::size_t previousIndex = order[previousOffset];
-            if (compareIdsMsbFirst(idForIndex(previousIndex), idValue,
-                                   traits) <= 0) {
-                break;
-            }
-            order[innerIdx] = previousIndex;
-        }
-        order[innerIdx] = itemIndex;
-    }
+    withFixedSmallSortAccessor<MaxRangeSize>(
+        order, idForIndex, traits, rangeBegin, rangeEnd, [&](auto &accessor) {
+            stableSortIndexRangeSmallLinearInternal(order, rangeBegin, rangeEnd,
+                                                    accessor);
+        });
 }
 
-template <std::size_t ChunkBytes, typename IdForIndex, typename IdTraits,
-          typename CountScratch>
-ChunkedIndex<ChunkBytes> *stableLsdSortIndexRangeByIdChunkWithCounter(
-    std::vector<std::size_t> &order, IdForIndex idForIndex,
-    const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
-    std::size_t chunkIndex, ChunkedIndex<ChunkBytes> *current,
+template <std::size_t ChunkBytes, typename CountScratch>
+ChunkedIndex<ChunkBytes> *stableLsdSortIndexRangeByIdChunkWithCounterPreFilled(
+    std::vector<std::size_t> &order, std::size_t rangeBegin,
+    std::size_t rangeEnd, ChunkedIndex<ChunkBytes> *current,
     ChunkedIndex<ChunkBytes> *next, CountScratch &countScratch) {
     const std::size_t rangeSize = rangeEnd - rangeBegin;
     if (rangeSize <= 1) {
         return current;
-    }
-
-    for (std::size_t offset = 0, orderOffset = rangeBegin; offset < rangeSize;
-         ++offset, ++orderOffset) {
-        const std::size_t itemIndex = order[orderOffset];
-        current[offset] = {chunkMsbFirst<ChunkBytes>(idForIndex(itemIndex),
-                                                     chunkIndex, traits),
-                           itemIndex};
     }
 
     ChunkedIndex<ChunkBytes> *source = current;
@@ -105,6 +112,30 @@ ChunkedIndex<ChunkBytes> *stableLsdSortIndexRangeByIdChunkWithCounter(
     return source;
 }
 
+template <std::size_t ChunkBytes, typename IdForIndex, typename IdTraits,
+          typename CountScratch>
+ChunkedIndex<ChunkBytes> *stableLsdSortIndexRangeByIdChunkWithCounter(
+    std::vector<std::size_t> &order, IdForIndex idForIndex,
+    const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
+    std::size_t chunkIndex, ChunkedIndex<ChunkBytes> *current,
+    ChunkedIndex<ChunkBytes> *next, CountScratch &countScratch) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return current;
+    }
+
+    for (std::size_t offset = 0, orderOffset = rangeBegin; offset < rangeSize;
+         ++offset, ++orderOffset) {
+        const std::size_t itemIndex = order[orderOffset];
+        current[offset] = {chunkMsbFirst<ChunkBytes>(idForIndex(itemIndex),
+                                                     chunkIndex, traits),
+                           itemIndex};
+    }
+
+    return stableLsdSortIndexRangeByIdChunkWithCounterPreFilled<ChunkBytes>(
+        order, rangeBegin, rangeEnd, current, next, countScratch);
+}
+
 template <std::size_t ChunkBytes, typename CountPolicy, typename IdForIndex,
           typename IdTraits, typename Scratch>
 ChunkedIndex<ChunkBytes> *dispatchLsdIndexChunkSort(
@@ -128,6 +159,28 @@ ChunkedIndex<ChunkBytes> *dispatchLsdIndexChunkSort(
         return stableLsdSortIndexRangeByIdChunkWithCounter(
             order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex,
             current, next, fullClearScratch);
+    }
+}
+
+template <std::size_t ChunkBytes, typename CountPolicy, typename Scratch>
+ChunkedIndex<ChunkBytes> *dispatchLsdIndexChunkSortPreFilled(
+    std::vector<std::size_t> &order, std::size_t rangeBegin,
+    std::size_t rangeEnd, ChunkedIndex<ChunkBytes> *current,
+    ChunkedIndex<ChunkBytes> *next, Scratch &touchedScratch) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if constexpr (std::is_same_v<CountPolicy, FullClearCounts>) {
+        FullClearCountScratch fullClearScratch;
+        return stableLsdSortIndexRangeByIdChunkWithCounterPreFilled<ChunkBytes>(
+            order, rangeBegin, rangeEnd, current, next, fullClearScratch);
+    } else {
+        if (rangeSize <= CountPolicy::max_size) {
+            return stableLsdSortIndexRangeByIdChunkWithCounterPreFilled<
+                ChunkBytes>(order, rangeBegin, rangeEnd, current, next,
+                            touchedScratch);
+        }
+        FullClearCountScratch fullClearScratch;
+        return stableLsdSortIndexRangeByIdChunkWithCounterPreFilled<ChunkBytes>(
+            order, rangeBegin, rangeEnd, current, next, fullClearScratch);
     }
 }
 
@@ -155,6 +208,42 @@ struct IdChunkSortWorkspace {
         capacity = rangeSize;
     }
 };
+
+template <std::size_t ChunkBytes = chunk_byte_count,
+          typename CountPolicy = FullClearCounts,
+          std::size_t SmallThreshold = small_id_range_sort_threshold,
+          typename IdForIndex, typename IdTraits>
+void sortIndexRangeByIdChunks(
+    std::vector<std::size_t> &order, IdForIndex idForIndex,
+    const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
+    std::size_t chunkIndex,
+    IdChunkSortWorkspace<ChunkBytes, CountPolicy> &workspace) {
+    workspace.allocate(rangeEnd - rangeBegin);
+    auto linearSmallRangeSorter =
+        [](std::vector<std::size_t> &sortOrder, auto sortIdForIndex,
+           const IdTraits &sortTraits, std::size_t sortBegin,
+           std::size_t sortEnd) {
+            stableSortIndexRangeSmallLinear<SmallThreshold>(
+                sortOrder, sortIdForIndex, sortTraits, sortBegin, sortEnd);
+        };
+    sortIndexRangeByIdChunksWithSmallSorter<ChunkBytes, CountPolicy,
+                                            SmallThreshold>(
+        order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex,
+        workspace.pending, workspace.current.get(), workspace.next.get(),
+        workspace.touchedScratch, linearSmallRangeSorter);
+}
+
+template <std::size_t MaxRangeSize = small_id_range_sort_threshold,
+          typename Nodes, typename IdTraits>
+void stableSortRangeSmallLinear(std::vector<std::size_t> &order,
+                                const Nodes &nodes, const IdTraits &traits,
+                                std::size_t rangeBegin, std::size_t rangeEnd) {
+    auto idForIndex = [&](std::size_t itemIndex) {
+        return traits.id(nodes[itemIndex]);
+    };
+    stableSortIndexRangeSmallLinear<MaxRangeSize>(order, idForIndex, traits,
+                                                  rangeBegin, rangeEnd);
+}
 
 template <std::size_t ChunkBytes = chunk_byte_count,
           typename CountPolicy = FullClearCounts,
@@ -194,16 +283,37 @@ void sortIndexRangeByIdChunksWithSmallSorter(
             continue;
         }
 
-        ChunkedIndex<ChunkBytes> *sortedChunks = nullptr;
         if (rangeSize <= SmallThreshold) {
             smallRangeSorter(order, idForIndex, traits, currentBegin,
                              currentEnd);
-        } else {
-            sortedChunks = dispatchLsdIndexChunkSort<ChunkBytes, CountPolicy>(
-                order, idForIndex, traits, currentBegin, currentEnd,
-                currentChunkIndex, chunkBufferCurrent, chunkBufferNext,
-                touchedScratch);
+            continue;
         }
+
+        const ChunkValueType<ChunkBytes> firstChunk = chunkMsbFirst<ChunkBytes>(
+            idForIndex(order[currentBegin]), currentChunkIndex, traits);
+        ChunkValueType<ChunkBytes> differingBits = 0;
+        for (std::size_t offset = 0; offset < rangeSize; ++offset) {
+            const std::size_t itemIndex = order[currentBegin + offset];
+            const ChunkValueType<ChunkBytes> currentChunk =
+                chunkMsbFirst<ChunkBytes>(idForIndex(itemIndex),
+                                          currentChunkIndex, traits);
+            chunkBufferCurrent[offset] = {currentChunk, itemIndex};
+            differingBits |= currentChunk ^ firstChunk;
+        }
+
+        if (differingBits == 0) {
+            const std::size_t nextChunkIndex = currentChunkIndex + 1;
+            if (nextChunkIndex < chunkCount) {
+                pending.push_back(
+                    IdChunkRange{currentBegin, currentEnd, nextChunkIndex});
+            }
+            continue;
+        }
+
+        ChunkedIndex<ChunkBytes> *sortedChunks =
+            dispatchLsdIndexChunkSortPreFilled<ChunkBytes, CountPolicy>(
+                order, currentBegin, currentEnd, chunkBufferCurrent,
+                chunkBufferNext, touchedScratch);
 
         const std::size_t nextChunkIndex = currentChunkIndex + 1;
         if (nextChunkIndex >= chunkCount) {
@@ -211,73 +321,22 @@ void sortIndexRangeByIdChunksWithSmallSorter(
         }
 
         std::size_t equalChunkBegin = currentBegin;
-        ChunkValueType<ChunkBytes> previousChunk;
-        if (sortedChunks != nullptr) {
-            previousChunk = sortedChunks[0].chunk;
-            for (std::size_t offset = 1; offset < rangeSize; ++offset) {
-                const ChunkValueType<ChunkBytes> currentChunk =
-                    sortedChunks[offset].chunk;
-                if (currentChunk != previousChunk) {
-                    const std::size_t splitOffset = currentBegin + offset;
-                    pending.push_back(IdChunkRange{equalChunkBegin, splitOffset,
-                                                   nextChunkIndex});
-                    equalChunkBegin = splitOffset;
-                    previousChunk = currentChunk;
-                }
-            }
-        } else {
-            previousChunk = chunkMsbFirst<ChunkBytes>(
-                idForIndex(order[currentBegin]), currentChunkIndex, traits);
-            for (std::size_t offset = currentBegin + 1; offset < currentEnd;
-                 ++offset) {
-                const ChunkValueType<ChunkBytes> currentChunk =
-                    chunkMsbFirst<ChunkBytes>(idForIndex(order[offset]),
-                                              currentChunkIndex, traits);
-                if (currentChunk != previousChunk) {
-                    pending.push_back(
-                        IdChunkRange{equalChunkBegin, offset, nextChunkIndex});
-                    equalChunkBegin = offset;
-                    previousChunk = currentChunk;
-                }
+        ChunkValueType<ChunkBytes> previousChunk = sortedChunks->chunk;
+        for (std::size_t offset = 1; offset < rangeSize; ++offset) {
+            const ChunkValueType<ChunkBytes> currentChunk =
+                sortedChunks[offset].chunk;
+            if (currentChunk != previousChunk) {
+                const std::size_t splitOffset = currentBegin + offset;
+                pending.push_back(
+                    IdChunkRange{equalChunkBegin, splitOffset, nextChunkIndex});
+                equalChunkBegin = splitOffset;
+                previousChunk = currentChunk;
             }
         }
 
         pending.push_back(
             IdChunkRange{equalChunkBegin, currentEnd, nextChunkIndex});
     }
-}
-
-template <std::size_t ChunkBytes = chunk_byte_count,
-          typename CountPolicy = FullClearCounts, typename IdForIndex,
-          typename IdTraits>
-void sortIndexRangeByIdChunks(
-    std::vector<std::size_t> &order, IdForIndex idForIndex,
-    const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
-    std::size_t chunkIndex,
-    IdChunkSortWorkspace<ChunkBytes, CountPolicy> &workspace) {
-    workspace.allocate(rangeEnd - rangeBegin);
-    auto linearSmallRangeSorter =
-        [](std::vector<std::size_t> &sortOrder, auto sortIdForIndex,
-           const IdTraits &sortTraits, std::size_t sortBegin,
-           std::size_t sortEnd) {
-            stableSortIndexRangeSmallLinear(sortOrder, sortIdForIndex,
-                                            sortTraits, sortBegin, sortEnd);
-        };
-    sortIndexRangeByIdChunksWithSmallSorter<ChunkBytes, CountPolicy>(
-        order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex,
-        workspace.pending, workspace.current.get(), workspace.next.get(),
-        workspace.touchedScratch, linearSmallRangeSorter);
-}
-
-template <typename Nodes, typename IdTraits>
-void stableSortRangeSmallLinear(std::vector<std::size_t> &order,
-                                const Nodes &nodes, const IdTraits &traits,
-                                std::size_t rangeBegin, std::size_t rangeEnd) {
-    auto idForIndex = [&](std::size_t itemIndex) {
-        return traits.id(nodes[itemIndex]);
-    };
-    stableSortIndexRangeSmallLinear(order, idForIndex, traits, rangeBegin,
-                                    rangeEnd);
 }
 
 template <std::size_t ChunkBytes = chunk_byte_count,
@@ -309,8 +368,9 @@ void sortRangeByIdChunksWithSmallSorter(
 }
 
 template <std::size_t ChunkBytes = chunk_byte_count,
-          typename CountPolicy = FullClearCounts, typename Nodes,
-          typename IdTraits>
+          typename CountPolicy = FullClearCounts,
+          std::size_t SmallThreshold = small_id_range_sort_threshold,
+          typename Nodes, typename IdTraits>
 void sortRangeByIdChunks(std::vector<std::size_t> &order, const Nodes &nodes,
                          const IdTraits &traits, std::size_t rangeBegin,
                          std::size_t rangeEnd, std::size_t chunkIndex,
@@ -321,14 +381,14 @@ void sortRangeByIdChunks(std::vector<std::size_t> &order, const Nodes &nodes,
         [](std::vector<std::size_t> &sortOrder, const Nodes &sortNodes,
            const IdTraits &sortTraits, std::size_t sortBegin,
            std::size_t sortEnd) {
-            stableSortRangeSmallLinear(sortOrder, sortNodes, sortTraits,
-                                       sortBegin, sortEnd);
+            stableSortRangeSmallLinear<SmallThreshold>(
+                sortOrder, sortNodes, sortTraits, sortBegin, sortEnd);
         };
     using ScratchType =
         std::conditional_t<std::is_same_v<CountPolicy, FullClearCounts>,
                            EmptyScratch, BitmaskTouchedCountScratch>;
     ScratchType touchedScratch;
-    sortRangeByIdChunksWithSmallSorter<ChunkBytes, CountPolicy>(
+    sortRangeByIdChunksWithSmallSorter<ChunkBytes, CountPolicy, SmallThreshold>(
         order, nodes, traits, rangeBegin, rangeEnd, chunkIndex, pending,
         chunkBufferCurrent, chunkBufferNext, touchedScratch,
         linearSmallRangeSorter);

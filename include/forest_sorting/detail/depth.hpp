@@ -2,7 +2,8 @@
 #define FOREST_SORTING_DETAIL_DEPTH_HPP
 
 #include "forest_sorting/detail/constants.hpp"
-#include "forest_sorting/detail/radix.hpp"
+#include "forest_sorting/detail/id_compare.hpp"
+#include "forest_sorting/detail/parent_sentinel.hpp"
 
 #include <algorithm>
 #include <concepts>
@@ -103,7 +104,7 @@ computeDepths(const Nodes &nodes, const std::vector<std::size_t> &parent,
             visitState[current] = DepthVisitState::Visiting;
             stack.push_back(current);
 
-            if (traits.is_root_parent(traits.parent_id(nodes[current])) ||
+            if (isParentSentinel(traits, traits.parent_id(nodes[current])) ||
                 parent[current] == no_parent) {
                 reachedRoot = true;
                 break;
@@ -169,7 +170,7 @@ bool verifyWithParentIndex(const Nodes &nodes,
         const typename Traits::Id currentId = traits.id(nodes[nodeIdx]);
 
         Depth currentDepth = 0;
-        if (!traits.is_root_parent(traits.parent_id(nodes[nodeIdx])) &&
+        if (!isParentSentinel(traits, traits.parent_id(nodes[nodeIdx])) &&
             parentIndex[nodeIdx] != no_parent) {
             const std::size_t parentNodeIndex = parentIndex[nodeIdx];
             if (!depthReady[parentNodeIndex]) {

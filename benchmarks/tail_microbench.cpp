@@ -1,5 +1,7 @@
 #include "adaptive_sort_variants.hpp"
+#include "benchmark_output.hpp"
 #include "benchmark_stats.hpp"
+#include "tail_benchmark_output.hpp"
 
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
@@ -10,12 +12,10 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
-#include <iomanip>
 #include <iostream>
 #include <numeric>
 #include <random>
 #include <ratio>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -74,8 +74,8 @@ struct Options {
         Pattern::SameHigh32,       Pattern::SameHigh64,
         Pattern::LongCommonPrefix, Pattern::FirstByteDiffers,
         Pattern::LastByteDiffers};
-    std::vector<std::string> sorts = {"linear", "linear-chunk-cache", "binary",
-                                      "exponential", "branchless-bitwise"};
+    std::vector<std::string> sorts = {"linear", "binary", "exponential",
+                                      "branchless-bitwise"};
     int iterations = 100;
     int warmup = 10;
     std::size_t numRanges = 1000;
@@ -355,8 +355,7 @@ void printHelp() {
            "first-byte-differs|last-byte-differs|all\n"
         << "  --sort NAME                      repeatable (default: all)\n"
         << "                                   "
-           "linear|linear-chunk-cache|binary|exponential|branchless-"
-           "bitwise\n"
+           "linear|binary|exponential|branchless-bitwise\n"
         << "  --iterations N                   (default: 100)\n"
         << "  --warmup N                       (default: 10)\n"
         << "  --ranges N                       (default: 1000)\n"
@@ -383,13 +382,7 @@ std::vector<MicroResult> runMicrobenchmarks(const Options &options) {
         {"linear",
          [](auto &order, const auto &nodes, const auto &traits, auto begin,
             auto end) {
-             LinearSmallSorter{}(order, nodes, traits, begin, end);
-         }},
-        {"linear-chunk-cache",
-         [](auto &order, const auto &nodes, const auto &traits, auto begin,
-            auto end) {
-             LinearCachedChunksSmallSorterDynamic{}(order, nodes, traits, begin,
-                                                    end);
+             LinearSmallSorterDynamic{}(order, nodes, traits, begin, end);
          }},
         {"binary",
          [](auto &order, const auto &nodes, const auto &traits, auto begin,
@@ -496,146 +489,28 @@ void computeDeltas(std::vector<MicroResult> &results,
     }
 }
 
-inline std::string formatDouble(double val, int precision) {
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(precision) << val;
-    return oss.str();
-}
-
-void printTable(const std::vector<MicroResult> &results,
-                std::string_view baselineSort) {
-    std::cout << std::left << std::setw(24) << "pattern" << std::right << "  "
-              << std::setw(6) << "size"
-              << "  " << std::left << std::setw(22) << "algorithm"
-              << "  " << std::right << std::setw(12) << "median_ns"
-              << "  " << std::setw(22) << "timing_ci95_ns"
-              << "  " << std::setw(12) << "delta_%"
-              << "  " << std::setw(22) << "delta_ci95_%"
-              << "  " << std::left << std::setw(12) << "winner"
-              << "  status\n";
-
-    for (const auto &res : results) {
-        std::cout << std::left << std::setw(24) << res.pattern << std::right
-                  << "  " << std::setw(6) << res.rangeSize << "  " << std::left
-                  << std::setw(22) << res.algorithm << std::right << std::fixed
-                  << std::setprecision(1);
-        if (res.status == "ok") {
-            std::string timingCi = "[" + formatDouble(res.stats.ci95.low, 1) +
-                                   ", " + formatDouble(res.stats.ci95.high, 1) +
-                                   "]";
-            std::cout << "  " << std::setw(12) << res.stats.median << "  "
-                      << std::setw(22) << timingCi;
-            if (res.algorithm == baselineSort) {
-                std::cout << "  " << std::setw(12) << "0.0"
-                          << "  " << std::setw(22) << "[0.0, 0.0]"
-                          << "  " << std::left << std::setw(12) << "baseline";
-            } else {
-                std::string deltaCi =
-                    "[" + formatDouble(res.deltaPctCi95.low, 1) + ", " +
-                    formatDouble(res.deltaPctCi95.high, 1) + "]";
-                std::cout << "  " << std::setw(12) << res.deltaMedianPct << "  "
-                          << std::setw(22) << deltaCi << "  " << std::left
-                          << std::setw(12) << res.winner;
-            }
-        } else {
-            std::cout << "  " << std::setw(12) << "n/a"
-                      << "  " << std::setw(22) << "n/a"
-                      << "  " << std::setw(12) << "n/a"
-                      << "  " << std::setw(22) << "n/a"
-                      << "  " << std::left << std::setw(12) << "n/a";
-        }
-        std::cout << "  " << res.status << "\n";
-    }
-}
-
-void printDelimited(const std::vector<MicroResult> &results, char delimiter,
+std::vector<MicroOutputRow>
+makeMicroOutputRows(const std::vector<MicroResult> &results,
                     std::string_view baselineSort) {
-    std::cout << "pattern" << delimiter << "size" << delimiter << "algorithm"
-              << delimiter << "median_ns" << delimiter << "mean_ns" << delimiter
-              << "min_ns" << delimiter << "max_ns" << delimiter << "ci95_low_ns"
-              << delimiter << "ci95_high_ns" << delimiter << "delta_pct"
-              << delimiter << "delta_ci95_low_pct" << delimiter
-              << "delta_ci95_high_pct" << delimiter << "winner" << delimiter
-              << "status\n";
-    for (const auto &res : results) {
-        std::cout << res.pattern << delimiter << res.rangeSize << delimiter
-                  << res.algorithm << delimiter;
-        if (res.status == "ok") {
-            std::cout << std::fixed << std::setprecision(3) << res.stats.median
-                      << delimiter << res.stats.mean << delimiter
-                      << res.stats.min << delimiter << res.stats.max
-                      << delimiter << res.stats.ci95.low << delimiter
-                      << res.stats.ci95.high << delimiter;
-            if (res.algorithm == baselineSort) {
-                std::cout << "0.0" << delimiter << "0.0" << delimiter << "0.0"
-                          << delimiter << "baseline" << delimiter;
-            } else {
-                std::cout << res.deltaMedianPct << delimiter
-                          << res.deltaPctCi95.low << delimiter
-                          << res.deltaPctCi95.high << delimiter << res.winner
-                          << delimiter;
-            }
-        } else {
-            std::cout << "" << delimiter << "" << delimiter << "" << delimiter
-                      << "" << delimiter << "" << delimiter << "" << delimiter
-                      << "" << delimiter << "" << delimiter << "" << delimiter
-                      << "" << delimiter << "" << delimiter;
-        }
-        std::cout << res.status << "\n";
+    std::vector<MicroOutputRow> rows;
+    rows.reserve(results.size());
+    for (const MicroResult &result : results) {
+        rows.push_back(makeMicroOutputRow(result, baselineSort));
     }
+    return rows;
 }
 
-void printJson(const std::vector<MicroResult> &results,
+void printJson(const std::vector<MicroOutputRow> &rows,
                const Options &options) {
     std::cout << "{\n  \"iterations\": " << options.iterations
               << ",\n  \"warmup\": " << options.warmup
               << ",\n  \"num_ranges\": " << options.numRanges
               << ",\n  \"seed\": " << options.seed
-              << ",\n  \"baseline_sort\": \"" << options.baselineSort << "\""
-              << ",\n  \"results\": [\n";
-    for (std::size_t i = 0; i < results.size(); ++i) {
-        const auto &res = results[i];
-        std::cout << "    {\n"
-                  << "      \"pattern\": \"" << res.pattern << "\",\n"
-                  << "      \"size\": " << res.rangeSize << ",\n"
-                  << "      \"algorithm\": \"" << res.algorithm << "\",\n";
-        if (res.status == "ok") {
-            std::cout << "      \"median_ns\": " << res.stats.median << ",\n"
-                      << "      \"mean_ns\": " << res.stats.mean << ",\n"
-                      << "      \"min_ns\": " << res.stats.min << ",\n"
-                      << "      \"max_ns\": " << res.stats.max << ",\n"
-                      << "      \"ci95_low_ns\": " << res.stats.ci95.low
-                      << ",\n"
-                      << "      \"ci95_high_ns\": " << res.stats.ci95.high
-                      << ",\n"
-                      << "      \"delta_pct\": "
-                      << (res.algorithm == options.baselineSort
-                              ? 0.0
-                              : res.deltaMedianPct)
-                      << ",\n"
-                      << "      \"delta_ci95_low_pct\": "
-                      << (res.algorithm == options.baselineSort
-                              ? 0.0
-                              : res.deltaPctCi95.low)
-                      << ",\n"
-                      << "      \"delta_ci95_high_pct\": "
-                      << (res.algorithm == options.baselineSort
-                              ? 0.0
-                              : res.deltaPctCi95.high)
-                      << ",\n"
-                      << "      \"winner\": \""
-                      << (res.algorithm == options.baselineSort ? "baseline"
-                                                                : res.winner)
-                      << "\",\n";
-        }
-        std::cout << "      \"status\": \"" << res.status << "\"\n"
-                  << "    }";
-        if (i + 1 < results.size()) {
-            std::cout << ",";
-        }
-        std::cout << "\n";
-    }
-    std::cout << "  ]\n}\n";
+              << ",\n  \"baseline_sort\": \""
+              << jsonEscape(options.baselineSort) << "\""
+              << ",\n  \"results\": ";
+    printMicroJsonRows(std::cout, rows);
+    std::cout << "\n}\n";
 }
 
 int main(int argc, char **argv) {
@@ -648,19 +523,20 @@ int main(int argc, char **argv) {
 
         auto results = runMicrobenchmarks(options);
         computeDeltas(results, options.baselineSort);
+        const auto rows = makeMicroOutputRows(results, options.baselineSort);
 
         switch (options.format) {
         case OutputFormat::Table:
-            printTable(results, options.baselineSort);
+            printMicroTable(std::cout, rows);
             break;
         case OutputFormat::Csv:
-            printDelimited(results, ',', options.baselineSort);
+            printMicroDelimited(std::cout, rows, ',');
             break;
         case OutputFormat::Tsv:
-            printDelimited(results, '\t', options.baselineSort);
+            printMicroDelimited(std::cout, rows, '\t');
             break;
         case OutputFormat::Json:
-            printJson(results, options);
+            printJson(rows, options);
             break;
         }
         return 0;

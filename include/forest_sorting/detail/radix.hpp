@@ -5,15 +5,12 @@
 #include "forest_sorting/detail/radix_counts.hpp"
 #include <array>
 #include <bit>
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
 #include <vector>
 
 namespace forest_sorting::detail {
-
-inline constexpr std::size_t chunk_byte_count = 8;
 
 template <typename Word>
 inline uint8_t wordByte(Word value, std::size_t byteIndex) noexcept {
@@ -209,95 +206,6 @@ void radixMsdPartitionRanges(std::vector<std::size_t> &order,
     radixMsdPartitionCore<CountPolicy>(begin, end, firstDigit, digitCount,
                                        digitForOffset, moveToScratch,
                                        copyFromScratch, rangeDone);
-}
-
-template <typename Traits, typename Id>
-concept HasChunkMsbFirst =
-    requires(const Traits &traits, const Id &nodeId, std::size_t chunkIndex) {
-        {
-            traits.chunk_msb_first(nodeId, chunkIndex)
-        } -> std::convertible_to<std::uint64_t>;
-    };
-
-template <std::size_t ChunkBytes> struct ChunkValue;
-template <> struct ChunkValue<1> {
-    using Type = uint8_t;
-};
-template <> struct ChunkValue<2> {
-    using Type = uint16_t;
-};
-template <> struct ChunkValue<4> {
-    using Type = uint32_t;
-};
-template <> struct ChunkValue<8> {
-    using Type = uint64_t;
-};
-
-template <std::size_t ChunkBytes>
-using ChunkValueType = ChunkValue<ChunkBytes>::Type;
-
-template <std::size_t ChunkBytes, typename Id, typename Traits>
-ChunkValueType<ChunkBytes> buildChunkFromBytes(const Id &nodeId,
-                                               std::size_t chunkIndex,
-                                               const Traits &traits) noexcept {
-    uint64_t value = 0;
-    const std::size_t firstByte = chunkIndex * ChunkBytes;
-    for (std::size_t offset = 0; offset < ChunkBytes; ++offset) {
-        const std::size_t byteIndex = firstByte + offset;
-        value <<= radix_bits;
-        if (byteIndex < Traits::id_byte_count) {
-            value |= traits.byte_msb_first(nodeId, byteIndex);
-        }
-    }
-    return static_cast<ChunkValueType<ChunkBytes>>(value);
-}
-
-template <typename Traits, typename Id, std::size_t ChunkBytes>
-concept HasTemplatedChunkMsbFirst =
-    requires(const Traits &traits, const Id &nodeId, std::size_t chunkIndex) {
-        {
-            traits.template chunk_msb_first<ChunkBytes>(nodeId, chunkIndex)
-        } -> std::convertible_to<ChunkValueType<ChunkBytes>>;
-    };
-
-template <std::size_t ChunkBytes = chunk_byte_count, typename Id,
-          typename Traits>
-ChunkValueType<ChunkBytes> chunkMsbFirst(const Id &nodeId,
-                                         std::size_t chunkIndex,
-                                         const Traits &traits) noexcept {
-    if constexpr (HasTemplatedChunkMsbFirst<Traits, Id, ChunkBytes>) {
-        return static_cast<ChunkValueType<ChunkBytes>>(
-            traits.template chunk_msb_first<ChunkBytes>(nodeId, chunkIndex));
-    } else if constexpr (ChunkBytes == chunk_byte_count &&
-                         HasChunkMsbFirst<Traits, Id>) {
-        return static_cast<ChunkValueType<ChunkBytes>>(
-            traits.chunk_msb_first(nodeId, chunkIndex));
-    } else {
-        return buildChunkFromBytes<ChunkBytes>(nodeId, chunkIndex, traits);
-    }
-}
-
-template <typename Id, typename Traits>
-inline int compareIdsMsbFirst(const Id &lhs, const Id &rhs,
-                              const Traits &traits) noexcept {
-    constexpr std::size_t chunkCount =
-        (Traits::id_byte_count + chunk_byte_count - 1) / chunk_byte_count;
-    for (std::size_t chunkIdx = 0; chunkIdx < chunkCount; ++chunkIdx) {
-        const uint64_t lhsChunk = chunkMsbFirst(lhs, chunkIdx, traits);
-        const uint64_t rhsChunk = chunkMsbFirst(rhs, chunkIdx, traits);
-        if (lhsChunk < rhsChunk) {
-            return -1;
-        }
-        if (lhsChunk > rhsChunk) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-template <typename Id, typename Traits>
-bool idLess(const Id &lhs, const Id &rhs, const Traits &traits) noexcept {
-    return compareIdsMsbFirst(lhs, rhs, traits) < 0;
 }
 
 } // namespace forest_sorting::detail

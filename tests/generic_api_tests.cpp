@@ -1,14 +1,20 @@
 #include "forest_sorting/algorithms.hpp"
 #include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/depth.hpp"
+#include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
-#include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"
 #include "uint128_fixtures.hpp"
 
+#include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/hash.hpp"
+#include "forest_sorting/detail/parent_index.hpp"
+#include "forest_sorting/uint128.hpp"
+
 #include <algorithm>
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -140,13 +146,18 @@ template <std::size_t ByteCount> void assert_chunk_comparison_matches_bytes() {
     requireSameComparison(finalByteLow, finalByteHigh);
 }
 
+#define FS_GENERIC_ID_BYTE_WIDTHS(X)                                           \
+    X(16)                                                                      \
+    X(20)                                                                      \
+    X(28)                                                                      \
+    X(32)                                                                      \
+    X(37)                                                                      \
+    X(64)
+
 void test_chunk_comparison_matches_byte_lexicographic_order() {
-    assert_chunk_comparison_matches_bytes<16>();
-    assert_chunk_comparison_matches_bytes<20>();
-    assert_chunk_comparison_matches_bytes<28>();
-    assert_chunk_comparison_matches_bytes<32>();
-    assert_chunk_comparison_matches_bytes<37>();
-    assert_chunk_comparison_matches_bytes<64>();
+#define X(width) assert_chunk_comparison_matches_bytes<(width)>();
+    FS_GENERIC_ID_BYTE_WIDTHS(X)
+#undef X
 }
 
 template <std::size_t ByteCount>
@@ -183,37 +194,18 @@ void assert_chunk_permutation_sort_matches_stable_comparison() {
 }
 
 void test_chunk_permutation_sort_generic_id_widths() {
-    assert_chunk_permutation_sort_matches_stable_comparison<16>();
-    assert_chunk_permutation_sort_matches_stable_comparison<20>();
-    assert_chunk_permutation_sort_matches_stable_comparison<28>();
-    assert_chunk_permutation_sort_matches_stable_comparison<32>();
-    assert_chunk_permutation_sort_matches_stable_comparison<37>();
-    assert_chunk_permutation_sort_matches_stable_comparison<64>();
+#define X(width)                                                               \
+    assert_chunk_permutation_sort_matches_stable_comparison<(width)>();
+    FS_GENERIC_ID_BYTE_WIDTHS(X)
+#undef X
 }
 
-void test_generic_16_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<16>();
-}
-
-void test_generic_20_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<20>();
-}
-
-void test_generic_28_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<28>();
-}
-
-void test_generic_32_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<32>();
-}
-
-void test_generic_64_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<64>();
-}
-
-void test_generic_37_byte_public_api_forms() {
-    assert_generic_fixed_hash_api_orders_by_depth_then_id<37>();
-}
+#define X(width)                                                               \
+    void test_generic_##width##_byte_public_api_forms() {                      \
+        assert_generic_fixed_hash_api_orders_by_depth_then_id<(width)>();      \
+    }
+FS_GENERIC_ID_BYTE_WIDTHS(X)
+#undef X
 
 void test_sort_accepts_depth_over_two_byte_prefix_limit_with_three_byte() {
     std::vector<Node> nodes;
@@ -437,12 +429,93 @@ void test_dense_threshold_boundaries() {
             "depth above histogram cap accepted dense grouping");
 }
 
-void test_precomputed_depth_api_accepts_empty_input() {
-    std::vector<Node> nodes;
-    std::vector<uint32_t> depths;
-    const auto order = forest_sorting::sortedOrderByDepthAndIdWithDepths<4>(
-        nodes, UInt128NodeTraits{}, depths);
-    require(order.empty(), "empty precomputed-depth order changed");
+void test_empty_forest_handling() {
+    std::vector<Node> emptyNodes;
+    UInt128NodeTraits traits;
+
+    // sortedOrderByDepthAndId(empty) returns empty
+    {
+        const auto order1 =
+            forest_sorting::sortedOrderByDepthAndId(emptyNodes, traits);
+        require(order1.empty(),
+                "sortedOrderByDepthAndId(empty) did not return empty");
+
+        const auto order2 =
+            forest_sorting::sortedOrderByDepthAndId<2>(emptyNodes, traits);
+        require(order2.empty(),
+                "sortedOrderByDepthAndId<2>(empty) did not return empty");
+    }
+
+    // sortedOrderByDepthAndIdWithDepths(empty, emptyDepths) returns empty
+    {
+        std::vector<uint32_t> emptyDepths;
+        const auto order1 =
+            forest_sorting::sortedOrderByDepthAndIdWithDepths<2>(
+                emptyNodes, traits, emptyDepths);
+        require(order1.empty(), "sortedOrderByDepthAndIdWithDepths<2>(empty, "
+                                "emptyDepths) did not return empty");
+    }
+
+    // sortedOrderByDepthAndIdWithDepths(empty, nonemptyDepths) throws size
+    // mismatch
+    {
+        std::vector<uint32_t> nonemptyDepths = {1, 2};
+        bool threwMismatch = false;
+        try {
+            (void)forest_sorting::sortedOrderByDepthAndIdWithDepths<2>(
+                emptyNodes, traits, nonemptyDepths);
+        } catch (const std::runtime_error &) {
+            threwMismatch = true;
+        }
+        require(threwMismatch, "sortedOrderByDepthAndIdWithDepths<2>(empty, "
+                               "nonemptyDepths) did not throw size mismatch");
+    }
+
+    // sortedCopyByDepthAndId(empty) returns empty
+    {
+        const auto copy1 =
+            forest_sorting::sortedCopyByDepthAndId(emptyNodes, traits);
+        require(copy1.empty(),
+                "sortedCopyByDepthAndId(empty) did not return empty");
+
+        const auto copy2 =
+            forest_sorting::sortedCopyByDepthAndId<2>(emptyNodes, traits);
+        require(copy2.empty(),
+                "sortedCopyByDepthAndId<2>(empty) did not return empty");
+    }
+
+    // sortForestByDepthAndId(empty) returns empty
+    {
+        const auto forestCopy1 =
+            forest_sorting::sortForestByDepthAndId(emptyNodes);
+        require(forestCopy1.empty(),
+                "sortForestByDepthAndId(empty) did not return empty");
+        const auto forestCopy2 =
+            forest_sorting::sortForestByDepthAndId<2>(emptyNodes);
+        require(forestCopy2.empty(),
+                "sortForestByDepthAndId<2>(empty) did not return empty");
+    }
+
+    // sortInPlaceByDepthAndId(empty) does not crash
+    {
+        auto nodesToSort1 = emptyNodes;
+        forest_sorting::sortInPlaceByDepthAndId(nodesToSort1, traits);
+        require(nodesToSort1.empty(),
+                "sortInPlaceByDepthAndId(empty) modified elements");
+
+        auto nodesToSort2 = emptyNodes;
+        forest_sorting::sortInPlaceByDepthAndId<2>(nodesToSort2, traits);
+        require(nodesToSort2.empty(),
+                "sortInPlaceByDepthAndId<2>(empty) modified elements");
+    }
+
+    // verifySortedByDepthAndId(empty) returns true
+    {
+        require(forest_sorting::verifySortedByDepthAndId(emptyNodes, traits),
+                "verifySortedByDepthAndId(empty) did not return true");
+        require(forest_sorting::verifySortedByDepthAndId<2>(emptyNodes, traits),
+                "verifySortedByDepthAndId<2>(empty) did not return true");
+    }
 }
 
 void test_precomputed_depth_api_accepts_singleton_uint32_depth() {
@@ -515,23 +588,299 @@ void test_sort_accepts_many_sparse_singletons() {
     requireSortedByDepthThenId(order, nodes, depths);
 }
 
+template <std::size_t ByteCount> struct CustomMockId {
+    std::array<uint8_t, ByteCount> bytes{};
+};
+
+template <std::size_t ByteCount> struct CustomMockNode {
+    CustomMockId<ByteCount> id;
+    CustomMockId<ByteCount> parentId;
+};
+
+template <std::size_t ByteCount> struct CustomMockTraits {
+    using Id = CustomMockId<ByteCount>;
+    static constexpr std::size_t id_byte_count = ByteCount;
+
+    Id id(const CustomMockNode<ByteCount> &node) const noexcept {
+        return node.id;
+    }
+    Id parent_id(const CustomMockNode<ByteCount> &node) const noexcept {
+        return node.parentId;
+    }
+    std::size_t hash(const Id &nodeId) const noexcept {
+        return forest_sorting::detail::fold_fnv1a128(
+            forest_sorting::detail::fnv1a128_hash_bytes(nodeId.bytes.data(),
+                                                        ByteCount));
+    }
+    uint8_t byte_msb_first(const Id &nodeId,
+                           std::size_t byteIndex) const noexcept {
+        return nodeId.bytes[byteIndex];
+    }
+};
+
+template <std::size_t ByteCount>
+CustomMockId<ByteCount> makeMockBytes(uint8_t high, uint8_t low) {
+    CustomMockId<ByteCount> nodeId{};
+    nodeId.bytes[0] = high;
+    nodeId.bytes[ByteCount - 1] = low;
+    return nodeId;
+}
+
+void test_id_equal_falls_back_to_msb_chunks_without_equal_hook() {
+    using IdType = CustomMockId<12>;
+    using TraitsType = CustomMockTraits<12>;
+    const TraitsType traits;
+
+    static_assert(
+        !forest_sorting::detail::HasForestTraitsEqual<TraitsType, IdType>);
+    static_assert(!forest_sorting::detail::HasNativeIdEqual<IdType>);
+    static_assert(forest_sorting::detail::shouldCacheChunkIds<TraitsType>);
+
+    const IdType low = makeMockBytes<12>(1, 2);
+    const IdType sameLow = makeMockBytes<12>(1, 2);
+    const IdType high = makeMockBytes<12>(1, 3);
+
+    require(forest_sorting::detail::idEqual(low, sameLow, traits),
+            "idEqual did not fall back to MSB chunk equality");
+    require(!forest_sorting::detail::idEqual(low, high, traits),
+            "idEqual treated different byte IDs as equal");
+}
+
+template <typename Traits, typename Node, typename Maker>
+void assert_parent_join_correctness_and_paths(Maker maker) {
+    using Id = decltype(std::declval<Traits>().id(std::declval<Node>()));
+    Traits traits;
+
+    // 1. Correctness: Root parent, child parent, and missing parent resolutions
+    std::vector<Node> nodes(4);
+    nodes[0].id = maker(1, 1);
+    nodes[0].parentId = Id{}; // Root
+
+    nodes[1].id = maker(1, 2); // Child of 0
+    nodes[1].parentId = maker(1, 1);
+
+    nodes[2].id = maker(2, 3); // Child of 1
+    nodes[2].parentId = maker(1, 2);
+
+    nodes[3].id = maker(3, 4); // Child of non-existent parent
+    nodes[3].parentId = maker(9, 9);
+
+    auto result =
+        forest_sorting::detail::buildParentIndexRadixJoin(nodes, traits);
+    require(result[0] == forest_sorting::detail::no_parent);
+    require(result[1] == 0);
+    require(result[2] == 1);
+    require(result[3] == forest_sorting::detail::no_parent);
+
+    // 2. Duplicate ID detection
+    std::vector<Node> dupNodes = nodes;
+    dupNodes.push_back(Node{maker(1, 1), Id{}});
+    bool threwDuplicate = false;
+    try {
+        forest_sorting::detail::buildParentIndexRadixJoin(dupNodes, traits);
+    } catch (const std::runtime_error &) {
+        threwDuplicate = true;
+    }
+    require(threwDuplicate, "duplicate ID did not throw runtime_error");
+}
+
+void test_parent_radix_join_compile_paths_and_correctness() {
+    // A. Verify compile-time branching decisions via static assertions
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<TestBytesTraits<4>>);
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<TestBytesTraits<8>>);
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<TestBytesTraits<12>>);
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<TestBytesTraits<16>>);
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<UInt128NodeTraits>);
+
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<CustomMockTraits<4>>);
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<CustomMockTraits<8>>);
+    static_assert(
+        forest_sorting::detail::shouldCacheChunkIds<CustomMockTraits<12>>);
+    static_assert(
+        forest_sorting::detail::shouldCacheChunkIds<CustomMockTraits<16>>);
+
+    struct CustomTraitsWithLess : UInt128NodeTraits {
+        static bool less(forest_sorting::UInt128 lhs,
+                         forest_sorting::UInt128 rhs) noexcept {
+            return lhs < rhs;
+        }
+    };
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<CustomTraitsWithLess>);
+
+    // B. Run correctness test across both cached and non-cached branches for
+    // different sizes
+    assert_parent_join_correctness_and_paths<TestBytesTraits<4>, TestNode<4>>(
+        [](uint8_t high, uint8_t low) { return makeTestBytes<4>(high, low); });
+    assert_parent_join_correctness_and_paths<TestBytesTraits<8>, TestNode<8>>(
+        [](uint8_t high, uint8_t low) { return makeTestBytes<8>(high, low); });
+    assert_parent_join_correctness_and_paths<TestBytesTraits<12>, TestNode<12>>(
+        [](uint8_t high, uint8_t low) { return makeTestBytes<12>(high, low); });
+    assert_parent_join_correctness_and_paths<TestBytesTraits<16>, TestNode<16>>(
+        [](uint8_t high, uint8_t low) { return makeTestBytes<16>(high, low); });
+
+    // Custom mock IDs lack native comparison and equality hooks. They exercise
+    // cached ordering for >8-byte IDs and MSB-chunk equality fallback.
+    assert_parent_join_correctness_and_paths<CustomMockTraits<4>,
+                                             CustomMockNode<4>>(
+        [](uint8_t high, uint8_t low) { return makeMockBytes<4>(high, low); });
+    assert_parent_join_correctness_and_paths<CustomMockTraits<8>,
+                                             CustomMockNode<8>>(
+        [](uint8_t high, uint8_t low) { return makeMockBytes<8>(high, low); });
+    assert_parent_join_correctness_and_paths<CustomMockTraits<12>,
+                                             CustomMockNode<12>>(
+        [](uint8_t high, uint8_t low) { return makeMockBytes<12>(high, low); });
+    assert_parent_join_correctness_and_paths<CustomMockTraits<16>,
+                                             CustomMockNode<16>>(
+        [](uint8_t high, uint8_t low) { return makeMockBytes<16>(high, low); });
+
+    // C. Verify UInt128 (native comparable)
+    std::vector<forest_sorting::Node> uint128Nodes(4);
+    UInt128NodeTraits uint128Traits;
+
+    uint128Nodes[0].id = forest_sorting::makeId(1, 1);
+    uint128Nodes[0].parentId = 0; // Root
+
+    uint128Nodes[1].id = forest_sorting::makeId(1, 2);
+    uint128Nodes[1].parentId = forest_sorting::makeId(1, 1);
+
+    uint128Nodes[2].id = forest_sorting::makeId(2, 3);
+    uint128Nodes[2].parentId = forest_sorting::makeId(1, 2);
+
+    uint128Nodes[3].id = forest_sorting::makeId(3, 4);
+    uint128Nodes[3].parentId = forest_sorting::makeId(9, 9);
+
+    auto result = forest_sorting::detail::buildParentIndexRadixJoin(
+        uint128Nodes, uint128Traits);
+    require(result[0] == forest_sorting::detail::no_parent);
+    require(result[1] == 0);
+    require(result[2] == 1);
+    require(result[3] == forest_sorting::detail::no_parent);
+}
+
+void test_parent_index_lookup_semantics() {
+    // 1. Custom trait with no sentinel hook: compiles and sorts/resolves
+    // correctly. parent ID == 0 and node with ID 0 exists: child attaches to
+    // node 0 (because there's no sentinel hook)
+    {
+        using MockNode = CustomMockNode<8>;
+        using MockTraits = CustomMockTraits<8>;
+        MockTraits traits;
+
+        std::vector<MockNode> nodes(3);
+        // Node 0: ID = 0, Parent = 99 (missing -> root)
+        nodes[0].id = makeMockBytes<8>(0, 0);
+        nodes[0].parentId = makeMockBytes<8>(0, 99);
+
+        // Node 1: ID = 1, Parent = 0 (exists -> should attach to Node 0)
+        nodes[1].id = makeMockBytes<8>(0, 1);
+        nodes[1].parentId = makeMockBytes<8>(0, 0);
+
+        // Node 2: ID = 2, Parent = 99 (missing -> root)
+        nodes[2].id = makeMockBytes<8>(0, 2);
+        nodes[2].parentId = makeMockBytes<8>(0, 99);
+
+        // Test with buildParentIndex (control table path)
+        auto parentIdxControl =
+            forest_sorting::detail::buildParentIndex(nodes, traits);
+        require(parentIdxControl[0] == forest_sorting::detail::no_parent);
+        require(parentIdxControl[1] == 0); // Attaches to Node 0!
+        require(parentIdxControl[2] == forest_sorting::detail::no_parent);
+
+        // Test with buildParentIndexRadixJoin (radix join path)
+        auto parentIdxRadix =
+            forest_sorting::detail::buildParentIndexRadixJoin(nodes, traits);
+        require(parentIdxRadix[0] == forest_sorting::detail::no_parent);
+        require(parentIdxRadix[1] == 0); // Attaches to Node 0!
+        require(parentIdxRadix[2] == forest_sorting::detail::no_parent);
+    }
+
+    // 2. legacy UInt128Traits with optional sentinel hook (parent 0 is a
+    // sentinel): parent ID == 0 and node with ID 0 exists: child becomes
+    // root/no_parent (because 0 is sentinel)
+    {
+        using Node128 = forest_sorting::Node;
+        using Traits128 = UInt128NodeTraits;
+        Traits128 traits;
+
+        std::vector<Node128> nodes(3);
+        // Node 0: ID = 0, Parent = 99 (missing -> root)
+        nodes[0].id = 0;
+        nodes[0].parentId = 99;
+
+        // Node 1: ID = 1, Parent = 0 (sentinel -> should skip lookup and become
+        // root/no_parent)
+        nodes[1].id = 1;
+        nodes[1].parentId = 0;
+
+        // Node 2: ID = 2, Parent = 99 (missing -> root)
+        nodes[2].id = 2;
+        nodes[2].parentId = 99;
+
+        // Test with buildParentIndex
+        auto parentIdxControl =
+            forest_sorting::detail::buildParentIndex(nodes, traits);
+        require(parentIdxControl[0] == forest_sorting::detail::no_parent);
+        require(parentIdxControl[1] ==
+                forest_sorting::detail::no_parent); // Sentinel skipped lookup!
+        require(parentIdxControl[2] == forest_sorting::detail::no_parent);
+
+        // Test with buildParentIndexRadixJoin
+        auto parentIdxRadix =
+            forest_sorting::detail::buildParentIndexRadixJoin(nodes, traits);
+        require(parentIdxRadix[0] == forest_sorting::detail::no_parent);
+        require(parentIdxRadix[1] ==
+                forest_sorting::detail::no_parent); // Sentinel skipped lookup!
+        require(parentIdxRadix[2] == forest_sorting::detail::no_parent);
+    }
+
+    // 3. parent ID missing from list: child becomes root/no_parent
+    // parent ID == 0 and no node with ID 0 exists: child becomes root/no_parent
+    {
+        using MockNode = CustomMockNode<8>;
+        using MockTraits = CustomMockTraits<8>;
+        MockTraits traits;
+
+        std::vector<MockNode> nodes(2);
+        // Node 0: ID = 1, Parent = 0 (missing -> root)
+        nodes[0].id = makeMockBytes<8>(0, 1);
+        nodes[0].parentId = makeMockBytes<8>(0, 0);
+
+        // Node 1: ID = 2, Parent = 99 (missing -> root)
+        nodes[1].id = makeMockBytes<8>(0, 2);
+        nodes[1].parentId = makeMockBytes<8>(0, 99);
+
+        // Test with buildParentIndex
+        auto parentIdxControl =
+            forest_sorting::detail::buildParentIndex(nodes, traits);
+        require(parentIdxControl[0] == forest_sorting::detail::no_parent);
+        require(parentIdxControl[1] == forest_sorting::detail::no_parent);
+
+        // Test with buildParentIndexRadixJoin
+        auto parentIdxRadix =
+            forest_sorting::detail::buildParentIndexRadixJoin(nodes, traits);
+        require(parentIdxRadix[0] == forest_sorting::detail::no_parent);
+        require(parentIdxRadix[1] == forest_sorting::detail::no_parent);
+    }
+}
+
 void runGenericApiAndDepthTests() {
     runTest("chunk comparison matches byte lexicographic order",
             test_chunk_comparison_matches_byte_lexicographic_order);
     runTest("chunk permutation sort supports generic ID widths",
             test_chunk_permutation_sort_generic_id_widths);
-    runTest("generic 16-byte public API forms",
-            test_generic_16_byte_public_api_forms);
-    runTest("generic 20-byte public API forms",
-            test_generic_20_byte_public_api_forms);
-    runTest("generic 28-byte public API forms",
-            test_generic_28_byte_public_api_forms);
-    runTest("generic 32-byte public API forms",
-            test_generic_32_byte_public_api_forms);
-    runTest("generic 64-byte public API forms",
-            test_generic_64_byte_public_api_forms);
-    runTest("generic 37-byte public API forms",
-            test_generic_37_byte_public_api_forms);
+#define X(width)                                                               \
+    runTest("generic " #width "-byte public API forms",                        \
+            test_generic_##width##_byte_public_api_forms);
+    FS_GENERIC_ID_BYTE_WIDTHS(X)
+#undef X
     runTest("sort accepts depth over two-byte prefix limit with three-byte",
             test_sort_accepts_depth_over_two_byte_prefix_limit_with_three_byte);
     runTest("precomputed depth API validates inputs",
@@ -547,8 +896,7 @@ void runGenericApiAndDepthTests() {
     runTest("sort accepts sparse huge depth outlier",
             test_sort_accepts_sparse_huge_depth_outlier);
     runTest("dense threshold boundaries", test_dense_threshold_boundaries);
-    runTest("precomputed depth API accepts empty input",
-            test_precomputed_depth_api_accepts_empty_input);
+    runTest("empty forest handling", test_empty_forest_handling);
     runTest("precomputed depth API accepts singleton uint32 depth",
             test_precomputed_depth_api_accepts_singleton_uint32_depth);
     runTest("sort accepts shared prefix huge depths",
@@ -557,4 +905,10 @@ void runGenericApiAndDepthTests() {
             test_sort_accepts_all_equal_huge_depths);
     runTest("sort accepts many sparse singletons",
             test_sort_accepts_many_sparse_singletons);
+    runTest("idEqual falls back without equal hook",
+            test_id_equal_falls_back_to_msb_chunks_without_equal_hook);
+    runTest("parent radix join compile paths and correctness",
+            test_parent_radix_join_compile_paths_and_correctness);
+    runTest("parent index lookup semantics",
+            test_parent_index_lookup_semantics);
 }

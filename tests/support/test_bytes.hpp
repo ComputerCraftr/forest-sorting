@@ -2,12 +2,12 @@
 #define FOREST_SORTING_SUPPORT_TEST_BYTES_HPP
 
 #include "forest_sorting/detail/hash.hpp"
+#include "forest_sorting/detail/id_chunks.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <type_traits>
 
 template <std::size_t ByteCount> struct TestBytes {
     std::array<uint8_t, ByteCount> bytes{};
@@ -36,13 +36,9 @@ template <std::size_t ByteCount> struct TestBytesTraits {
         return node.parentId;
     }
 
-    bool is_root_parent(const Id &nodeId) const noexcept {
+    bool is_parent_sentinel(const Id &nodeId) const noexcept {
         return std::ranges::all_of(
             nodeId.bytes, [](uint8_t byteValue) { return byteValue == 0; });
-    }
-
-    bool equal(const Id &lhs, const Id &rhs) const noexcept {
-        return lhs == rhs;
     }
 
     std::size_t hash(const Id &nodeId) const noexcept {
@@ -62,24 +58,11 @@ template <std::size_t ByteCount> struct TestBytesTraits {
         static_assert(ChunkBytes == 1 || ChunkBytes == 2 || ChunkBytes == 4 ||
                           ChunkBytes == 8,
                       "chunk_msb_first supports 1, 2, 4, and 8-byte chunks");
-        using ValueType = std::conditional_t<
-            ChunkBytes == 1, uint8_t,
-            std::conditional_t<
-                ChunkBytes == 2, uint16_t,
-                std::conditional_t<ChunkBytes == 4, uint32_t, uint64_t>>>;
-
         if constexpr (ChunkBytes == 1) {
             return nodeId.bytes[chunkIndex];
         } else {
-            ValueType value = 0;
-            const std::size_t start = chunkIndex * ChunkBytes;
-            for (std::size_t byteIdx = 0; byteIdx < ChunkBytes; ++byteIdx) {
-                value <<= 8;
-                if (start + byteIdx < ByteCount) {
-                    value |= nodeId.bytes[start + byteIdx];
-                }
-            }
-            return value;
+            return forest_sorting::detail::buildChunkFromBytes<ChunkBytes>(
+                nodeId, chunkIndex, *this);
         }
     }
 

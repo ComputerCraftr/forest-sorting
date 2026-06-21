@@ -1,4 +1,5 @@
 #include "benchmark_stats.hpp"
+#include "forest_benchmark_output.hpp"
 #include "forest_sorting/detail/depth.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
@@ -85,9 +86,11 @@ struct BenchmarkResult {
     std::string sortAlgorithm;
     std::vector<double> parentSamples;
     std::vector<double> sortSamples;
+    std::vector<double> pipelineSamples;
     std::vector<double> verifySamples;
     SampleStats parentStats;
     SampleStats sortStats;
+    SampleStats pipelineStats;
     SampleStats verifyStats;
     std::string sortBaseline;
     std::string sortComparisonStatus = "none";
@@ -101,22 +104,32 @@ struct BenchmarkResult {
     double parentDeltaMedianMs = 0.0;
     double parentDeltaMedianPct = 0.0;
     ConfidenceInterval parentDeltaPctCi95;
+    std::string pipelineBaselineParent;
+    std::string pipelineBaselineSort;
+    std::string pipelineComparisonStatus = "none";
+    std::string pipelineWinner = "none";
+    double pipelineDeltaMedianMs = 0.0;
+    double pipelineDeltaMedianPct = 0.0;
+    ConfidenceInterval pipelineDeltaPctCi95;
     std::string status = "ok";
 };
 
 double timeParentBuildMs(const std::vector<Node> &nodes, ParentKind parentKind,
-                         std::vector<std::size_t> &parentIndex) {
+                         ParentBuildArtifacts &artifacts) {
     const auto start = std::chrono::steady_clock::now();
-    parentIndex = buildParentIndexForKind(parentKind, nodes);
+    artifacts = buildParentArtifactsForKind(parentKind, nodes);
     const auto end = std::chrono::steady_clock::now();
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
 double timeSortMs(const std::vector<Node> &nodes,
-                  const std::vector<std::size_t> &parentIndex,
-                  SortKind sortKind, std::vector<Node> &sorted) {
+                  const ParentBuildArtifacts &artifacts, SortKind sortKind,
+                  std::vector<Node> &sorted) {
     const auto start = std::chrono::steady_clock::now();
-    sorted = sortForestForKind(sortKind, nodes, parentIndex);
+    const std::vector<std::size_t> *idPermutation =
+        artifacts.hasIdPermutation ? &artifacts.idPermutation : nullptr;
+    sorted = sortForestForKind(sortKind, nodes, artifacts.parentIndex,
+                               idPermutation);
     const auto end = std::chrono::steady_clock::now();
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
@@ -431,23 +444,24 @@ std::string appendStatus(std::string status, std::string_view marker) {
 void recordBenchmarkSample(BenchmarkResult &result,
                            const DatasetContext &context, ParentKind parentKind,
                            SortKind sortKind, bool recordSample) {
-    std::vector<std::size_t> parentIndex;
+    ParentBuildArtifacts parentArtifacts;
     std::vector<Node> sorted;
     bool verified = false;
 
     const double parentMs =
-        timeParentBuildMs(context.nodes, parentKind, parentIndex);
+        timeParentBuildMs(context.nodes, parentKind, parentArtifacts);
     const double sortMs =
-        timeSortMs(context.nodes, parentIndex, sortKind, sorted);
+        timeSortMs(context.nodes, parentArtifacts, sortKind, sorted);
     const double verifyMs = timeVerifyMs(sorted, verified);
 
     if (recordSample) {
         result.parentSamples.push_back(parentMs);
         result.sortSamples.push_back(sortMs);
+        result.pipelineSamples.push_back(parentMs + sortMs);
         result.verifySamples.push_back(verifyMs);
     }
 
-    if (parentIndex != context.expectedParent) {
+    if (parentArtifacts.parentIndex != context.expectedParent) {
         result.status = appendStatus(result.status, "parent-mismatch");
     }
 
@@ -473,6 +487,7 @@ void recordBenchmarkSample(BenchmarkResult &result,
 void summarizeBenchmarkResult(BenchmarkResult &result) {
     result.parentStats = computeSampleStats(result.parentSamples);
     result.sortStats = computeSampleStats(result.sortSamples);
+    result.pipelineStats = computeSampleStats(result.pipelineSamples);
     result.verifyStats = computeSampleStats(result.verifySamples);
 }
 
@@ -516,6 +531,20 @@ BenchmarkResult *findParentBaseline(std::vector<BenchmarkResult> &results,
     return nullptr;
 }
 
+BenchmarkResult *findPipelineBaseline(std::vector<BenchmarkResult> &results,
+                                      const BenchmarkResult &result,
+                                      std::string_view baselineParent,
+                                      std::string_view baselineSort) {
+    for (BenchmarkResult &candidate : results) {
+        if (sameComparisonGroup(result, candidate) &&
+            candidate.parentBuilder == baselineParent &&
+            candidate.sortAlgorithm == baselineSort) {
+            return &candidate;
+        }
+    }
+    return nullptr;
+}
+
 void applySortBaseline(BenchmarkResult &result,
                        const BenchmarkResult &baseline) {
     result.sortBaseline = baseline.sortAlgorithm;
@@ -542,6 +571,21 @@ void applyParentBaseline(BenchmarkResult &result,
         result.parentSamples, baseline.parentSamples);
     result.parentWinner = std::string(classifyBenchmarkWinner(
         result.parentDeltaMedianPct, result.parentDeltaPctCi95));
+}
+
+void applyPipelineBaseline(BenchmarkResult &result,
+                           const BenchmarkResult &baseline) {
+    result.pipelineBaselineParent = baseline.parentBuilder;
+    result.pipelineBaselineSort = baseline.sortAlgorithm;
+    result.pipelineComparisonStatus = "ok";
+    result.pipelineDeltaMedianMs = medianOfSamples(
+        pairedAbsoluteDeltas(result.pipelineSamples, baseline.pipelineSamples));
+    result.pipelineDeltaMedianPct = medianOfSamples(
+        pairedRelativeDeltas(result.pipelineSamples, baseline.pipelineSamples));
+    result.pipelineDeltaPctCi95 = bootstrapPairedRelativeDeltaCi95(
+        result.pipelineSamples, baseline.pipelineSamples);
+    result.pipelineWinner = std::string(classifyBenchmarkWinner(
+        result.pipelineDeltaMedianPct, result.pipelineDeltaPctCi95));
 }
 
 std::string seedHex(uint32_t seed) {
@@ -672,6 +716,8 @@ std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
                     static_cast<std::size_t>(options.iterations));
                 result.sortSamples.reserve(
                     static_cast<std::size_t>(options.iterations));
+                result.pipelineSamples.reserve(
+                    static_cast<std::size_t>(options.iterations));
                 result.verifySamples.reserve(
                     static_cast<std::size_t>(options.iterations));
 
@@ -743,54 +789,31 @@ std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
         }
     }
 
+    if (options.hasBaselineParent && options.hasBaselineSort) {
+        const std::string_view baselineParent =
+            parentName(options.baselineParent);
+        const std::string_view baselineSort = sortName(options.baselineSort);
+        for (BenchmarkResult &result : results) {
+            if (result.parentBuilder == baselineParent &&
+                result.sortAlgorithm == baselineSort) {
+                result.pipelineBaselineParent = std::string(baselineParent);
+                result.pipelineBaselineSort = std::string(baselineSort);
+                result.pipelineComparisonStatus = "baseline";
+                continue;
+            }
+            BenchmarkResult *baseline = findPipelineBaseline(
+                results, result, baselineParent, baselineSort);
+            if (baseline == nullptr) {
+                result.pipelineComparisonStatus = "missing-baseline";
+                result.status =
+                    appendStatus(result.status, "pipeline-baseline-missing");
+            } else {
+                applyPipelineBaseline(result, *baseline);
+            }
+        }
+    }
+
     return results;
-}
-
-std::string csvEscape(std::string_view value) {
-    bool needsQuotes = false;
-    std::string escaped;
-    for (char character : value) {
-        if (character == '"' || character == ',' || character == '\n' ||
-            character == '\r') {
-            needsQuotes = true;
-        }
-        if (character == '"') {
-            escaped += "\"\"";
-        } else {
-            escaped += character;
-        }
-    }
-    if (!needsQuotes) {
-        return escaped;
-    }
-    return "\"" + escaped + "\"";
-}
-
-std::string jsonEscape(std::string_view value) {
-    std::string escaped;
-    for (char character : value) {
-        switch (character) {
-        case '"':
-            escaped += "\\\"";
-            break;
-        case '\\':
-            escaped += "\\\\";
-            break;
-        case '\n':
-            escaped += "\\n";
-            break;
-        case '\r':
-            escaped += "\\r";
-            break;
-        case '\t':
-            escaped += "\\t";
-            break;
-        default:
-            escaped += character;
-            break;
-        }
-    }
-    return escaped;
 }
 
 void printBenchmarkHeader() {
@@ -802,11 +825,14 @@ void printBenchmarkHeader() {
               << "  " << std::setw(kNameColumnWidth) << "sort_algorithm"
               << "  " << std::setw(kTimingColumnWidth) << "parent_med_ms"
               << "  " << std::setw(kTimingColumnWidth) << "sort_med_ms"
+              << "  " << std::setw(kTimingColumnWidth) << "pipeline_med_ms"
               << "  " << std::setw(kTimingColumnWidth) << "verify_med_ms"
               << "  " << std::setw(kDeltaColumnWidth) << "sort_delta_%"
               << "  " << std::setw(kDeltaColumnWidth) << "parent_delta_%"
+              << "  " << std::setw(kDeltaColumnWidth) << "pipeline_delta_%"
               << "  " << std::setw(kWinnerColumnWidth) << "sort_win"
               << "  " << std::setw(kWinnerColumnWidth) << "parent_win"
+              << "  " << std::setw(kWinnerColumnWidth) << "pipeline_win"
               << "  status\n";
 }
 
@@ -826,144 +852,30 @@ void printTable(const std::vector<BenchmarkResult> &results) {
                   << result.sortAlgorithm;
         printTiming(result.parentStats.median);
         printTiming(result.sortStats.median);
+        printTiming(result.pipelineStats.median);
         printTiming(result.verifyStats.median);
         std::cout << "  " << std::setw(kDeltaColumnWidth)
                   << result.sortDeltaMedianPct << "  "
                   << std::setw(kDeltaColumnWidth) << result.parentDeltaMedianPct
-                  << "  " << std::setw(kWinnerColumnWidth) << result.sortWinner
-                  << "  " << std::setw(kWinnerColumnWidth)
-                  << result.parentWinner;
+                  << "  " << std::setw(kDeltaColumnWidth)
+                  << result.pipelineDeltaMedianPct << "  "
+                  << std::setw(kWinnerColumnWidth) << result.sortWinner << "  "
+                  << std::setw(kWinnerColumnWidth) << result.parentWinner;
+        std::cout << "  " << std::setw(kWinnerColumnWidth)
+                  << result.pipelineWinner;
         std::cout << "  " << result.status << "\n";
     }
 }
 
-void printStatsHeader(std::string_view prefix, char delimiter) {
-    std::cout << prefix << "_min_ms" << delimiter << prefix << "_median_ms"
-              << delimiter << prefix << "_mean_ms" << delimiter << prefix
-              << "_stddev_ms" << delimiter << prefix << "_max_ms" << delimiter
-              << prefix << "_ci95_low_ms" << delimiter << prefix
-              << "_ci95_high_ms";
-}
-
-void printStatsDelimited(const SampleStats &stats, char delimiter) {
-    std::cout << stats.min << delimiter << stats.median << delimiter
-              << stats.mean << delimiter << stats.stddev << delimiter
-              << stats.max << delimiter << stats.ci95.low << delimiter
-              << stats.ci95.high;
-}
-
-void printDelimited(const std::vector<BenchmarkResult> &results,
-                    char delimiter) {
-    const bool csv = delimiter == ',';
-    std::cout << "dataset" << delimiter << "node_count" << delimiter
-              << "data_seed" << delimiter << "parent_builder" << delimiter
-              << "sort_algorithm" << delimiter << "samples" << delimiter
-              << "sort_baseline" << delimiter << "sort_comparison_status"
-              << delimiter << "sort_winner" << delimiter
-              << "sort_delta_median_ms" << delimiter << "sort_delta_median_pct"
-              << delimiter << "sort_delta_ci95_low_pct" << delimiter
-              << "sort_delta_ci95_high_pct" << delimiter << "parent_baseline"
-              << delimiter << "parent_comparison_status" << delimiter
-              << "parent_winner" << delimiter << "parent_delta_median_ms"
-              << delimiter << "parent_delta_median_pct" << delimiter
-              << "parent_delta_ci95_low_pct" << delimiter
-              << "parent_delta_ci95_high_pct" << delimiter;
-    printStatsHeader("parent", delimiter);
-    std::cout << delimiter;
-    printStatsHeader("sort", delimiter);
-    std::cout << delimiter;
-    printStatsHeader("verify", delimiter);
-    std::cout << delimiter << "status\n";
+std::vector<BenchmarkOutputRow>
+makeBenchmarkOutputRows(const std::vector<BenchmarkResult> &results) {
+    std::vector<BenchmarkOutputRow> rows;
+    rows.reserve(results.size());
     for (const BenchmarkResult &result : results) {
-        if (csv) {
-            std::cout << csvEscape(result.dataset) << delimiter;
-        } else {
-            std::cout << result.dataset << delimiter;
-        }
-        std::cout << result.nodeCount << delimiter << seedHex(result.dataSeed)
-                  << delimiter;
-        if (csv) {
-            std::cout << csvEscape(result.parentBuilder) << delimiter
-                      << csvEscape(result.sortAlgorithm) << delimiter;
-        } else {
-            std::cout << result.parentBuilder << delimiter
-                      << result.sortAlgorithm << delimiter;
-        }
-        std::cout << result.sortSamples.size() << delimiter;
-        if (csv) {
-            std::cout << csvEscape(result.sortBaseline) << delimiter;
-        } else {
-            std::cout << result.sortBaseline << delimiter;
-        }
-        if (csv) {
-            std::cout << csvEscape(result.sortComparisonStatus) << delimiter;
-        } else {
-            std::cout << result.sortComparisonStatus << delimiter;
-        }
-        if (csv) {
-            std::cout << csvEscape(result.sortWinner) << delimiter;
-        } else {
-            std::cout << result.sortWinner << delimiter;
-        }
-        std::cout << result.sortDeltaMedianMs << delimiter
-                  << result.sortDeltaMedianPct << delimiter
-                  << result.sortDeltaPctCi95.low << delimiter
-                  << result.sortDeltaPctCi95.high << delimiter;
-        if (csv) {
-            std::cout << csvEscape(result.parentBaseline) << delimiter;
-        } else {
-            std::cout << result.parentBaseline << delimiter;
-        }
-        if (csv) {
-            std::cout << csvEscape(result.parentComparisonStatus) << delimiter;
-        } else {
-            std::cout << result.parentComparisonStatus << delimiter;
-        }
-        if (csv) {
-            std::cout << csvEscape(result.parentWinner) << delimiter;
-        } else {
-            std::cout << result.parentWinner << delimiter;
-        }
-        std::cout << result.parentDeltaMedianMs << delimiter
-                  << result.parentDeltaMedianPct << delimiter
-                  << result.parentDeltaPctCi95.low << delimiter
-                  << result.parentDeltaPctCi95.high << delimiter;
-        printStatsDelimited(result.parentStats, delimiter);
-        std::cout << delimiter;
-        printStatsDelimited(result.sortStats, delimiter);
-        std::cout << delimiter;
-        printStatsDelimited(result.verifyStats, delimiter);
-        std::cout << delimiter;
-        if (csv) {
-            std::cout << csvEscape(result.status);
-        } else {
-            std::cout << result.status;
-        }
-        std::cout << "\n";
+        rows.push_back(
+            makeBenchmarkOutputRow(result, seedHex(result.dataSeed)));
     }
-}
-
-void printJsonStats(std::string_view name, const SampleStats &stats) {
-    std::cout << "\"" << name << "\": {"
-              << "\"min_ms\": " << stats.min
-              << ", \"median_ms\": " << stats.median
-              << ", \"mean_ms\": " << stats.mean
-              << ", \"stddev_ms\": " << stats.stddev
-              << ", \"max_ms\": " << stats.max
-              << ", \"ci95_low_ms\": " << stats.ci95.low
-              << ", \"ci95_high_ms\": " << stats.ci95.high << "}";
-}
-
-void printJsonSamples(std::string_view name,
-                      const std::vector<double> &samples) {
-    std::cout << "\"" << name << "\": [";
-    for (std::size_t sampleIdx = 0; sampleIdx < samples.size(); ++sampleIdx) {
-        if (sampleIdx > 0) {
-            std::cout << ", ";
-        }
-        std::cout << samples[sampleIdx];
-    }
-    std::cout << "]";
+    return rows;
 }
 
 void printJsonDataSeeds(const std::vector<uint32_t> &dataSeeds) {
@@ -977,7 +889,7 @@ void printJsonDataSeeds(const std::vector<uint32_t> &dataSeeds) {
     std::cout << "]";
 }
 
-void printJson(const std::vector<BenchmarkResult> &results,
+void printJson(const std::vector<BenchmarkOutputRow> &rows,
                const Options &options) {
     std::cout << "{\n  \"iterations\": " << options.iterations
               << ",\n  \"warmup\": " << options.warmup
@@ -987,60 +899,11 @@ void printJson(const std::vector<BenchmarkResult> &results,
               << ",\n  \"order_seed\": \"" << seedHex(options.orderSeed)
               << "\",\n  ";
     printJsonDataSeeds(options.dataSeeds);
-    std::cout << ",\n  \"results\": [\n";
-    for (std::size_t resultIndex = 0; resultIndex < results.size();
-         ++resultIndex) {
-        const BenchmarkResult &result = results[resultIndex];
-        std::cout
-            << "    {"
-            << "\"dataset\": \"" << jsonEscape(result.dataset)
-            << "\", \"node_count\": " << result.nodeCount
-            << ", \"data_seed\": \"" << seedHex(result.dataSeed) << "\""
-            << ", \"parent_builder\": \"" << jsonEscape(result.parentBuilder)
-            << "\", \"sort_algorithm\": \"" << jsonEscape(result.sortAlgorithm)
-            << "\", \"samples\": " << result.sortSamples.size()
-            << ", \"sort_baseline\": \"" << jsonEscape(result.sortBaseline)
-            << "\", \"sort_comparison_status\": \""
-            << jsonEscape(result.sortComparisonStatus)
-            << "\", \"sort_winner\": \"" << jsonEscape(result.sortWinner)
-            << "\", \"sort_delta_median_ms\": " << result.sortDeltaMedianMs
-            << ", \"sort_delta_median_pct\": " << result.sortDeltaMedianPct
-            << ", \"sort_delta_ci95_low_pct\": " << result.sortDeltaPctCi95.low
-            << ", \"sort_delta_ci95_high_pct\": "
-            << result.sortDeltaPctCi95.high << ", \"parent_baseline\": \""
-            << jsonEscape(result.parentBaseline)
-            << "\", \"parent_comparison_status\": \""
-            << jsonEscape(result.parentComparisonStatus)
-            << "\", \"parent_winner\": \"" << jsonEscape(result.parentWinner)
-            << "\", \"parent_delta_median_ms\": " << result.parentDeltaMedianMs
-            << ", \"parent_delta_median_pct\": " << result.parentDeltaMedianPct
-            << ", \"parent_delta_ci95_low_pct\": "
-            << result.parentDeltaPctCi95.low
-            << ", \"parent_delta_ci95_high_pct\": "
-            << result.parentDeltaPctCi95.high;
-        if (options.sampleOutput != SampleOutput::None) {
-            std::cout << ", ";
-            printJsonStats("parent", result.parentStats);
-            std::cout << ", ";
-            printJsonStats("sort", result.sortStats);
-            std::cout << ", ";
-            printJsonStats("verify", result.verifyStats);
-        }
-        if (options.sampleOutput == SampleOutput::Raw) {
-            std::cout << ", ";
-            printJsonSamples("parent_samples_ms", result.parentSamples);
-            std::cout << ", ";
-            printJsonSamples("sort_samples_ms", result.sortSamples);
-            std::cout << ", ";
-            printJsonSamples("verify_samples_ms", result.verifySamples);
-        }
-        std::cout << ", \"status\": \"" << jsonEscape(result.status) << "\"}";
-        if (resultIndex + 1 < results.size()) {
-            std::cout << ",";
-        }
-        std::cout << "\n";
-    }
-    std::cout << "  ]\n}\n";
+    std::cout << ",\n  \"results\": ";
+    printBenchmarkJsonRows(std::cout, rows,
+                           options.sampleOutput != SampleOutput::None,
+                           options.sampleOutput == SampleOutput::Raw);
+    std::cout << "\n}\n";
 }
 
 void printResults(const std::vector<BenchmarkResult> &results,
@@ -1050,13 +913,15 @@ void printResults(const std::vector<BenchmarkResult> &results,
         printTable(results);
         break;
     case OutputFormat::Csv:
-        printDelimited(results, ',');
+        printBenchmarkDelimited(std::cout, makeBenchmarkOutputRows(results),
+                                ',');
         break;
     case OutputFormat::Tsv:
-        printDelimited(results, '\t');
+        printBenchmarkDelimited(std::cout, makeBenchmarkOutputRows(results),
+                                '\t');
         break;
     case OutputFormat::Json:
-        printJson(results, options);
+        printJson(makeBenchmarkOutputRows(results), options);
         break;
     }
 }
