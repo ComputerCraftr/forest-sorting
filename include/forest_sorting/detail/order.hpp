@@ -24,13 +24,14 @@ makeValidatedGlobalIdPermutation(const Nodes &nodes, const Traits &traits) {
         return order;
     }
 
-    IdChunkSortWorkspace<production_id_chunk_bytes, ProductionIdCountPolicy>
+    IdMsdChunkSortWorkspace<production_id_radix_chunk_bytes,
+                            ProductionIdCountPolicy>
         workspace;
     auto idForIndex = [&](std::size_t nodeIndex) {
         return traits.id(nodes[nodeIndex]);
     };
-    sortIndexRangeByIdChunks<production_id_chunk_bytes,
-                             ProductionIdCountPolicy>(
+    sortIndexRangeByIdMsdChunks<production_id_radix_chunk_bytes,
+                                ProductionIdCountPolicy>(
         order, idForIndex, traits, 0, order.size(), 0, workspace);
     rejectAdjacentDuplicates(
         order,

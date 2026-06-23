@@ -111,20 +111,28 @@ RadixParentIndexResult buildParentIndexRadixJoinWithPermutationSorter(
         });
 }
 
-template <typename Nodes, typename Traits>
-RadixParentIndexResult buildParentIndexRadixJoinResult(const Nodes &nodes,
-                                                       const Traits &traits) {
-    IdChunkSortWorkspace<production_id_chunk_bytes, ProductionIdCountPolicy>
-        workspace;
+template <std::size_t RadixChunkBytes,
+          typename CountPolicy = ProductionIdCountPolicy, typename Nodes,
+          typename Traits>
+RadixParentIndexResult
+buildParentIndexRadixJoinResultByMsdChunks(const Nodes &nodes,
+                                           const Traits &traits) {
+    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> workspace;
     auto sortPermutation = [&](std::vector<std::size_t> &permutation,
                                auto idForIndex, const auto &sortTraits) {
-        sortIndexRangeByIdChunks<production_id_chunk_bytes,
-                                 ProductionIdCountPolicy>(
+        sortIndexRangeByIdMsdChunks<RadixChunkBytes, CountPolicy>(
             permutation, idForIndex, sortTraits, 0, permutation.size(), 0,
             workspace);
     };
     return buildParentIndexRadixJoinWithPermutationSorter(nodes, traits,
                                                           sortPermutation);
+}
+
+template <typename Nodes, typename Traits>
+RadixParentIndexResult buildParentIndexRadixJoinResult(const Nodes &nodes,
+                                                       const Traits &traits) {
+    return buildParentIndexRadixJoinResultByMsdChunks<
+        production_id_radix_chunk_bytes>(nodes, traits);
 }
 
 template <typename Nodes, typename Traits>

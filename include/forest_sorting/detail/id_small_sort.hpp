@@ -95,7 +95,8 @@ void withFixedSmallSortAccessor(const std::vector<std::size_t> &order,
     if constexpr (shouldCacheChunkIds<IdTraits>) {
         requireFixedSmallSortCapacity<MaxRangeSize>(rangeSize);
         constexpr std::size_t chunkCount =
-            (IdTraits::id_byte_count + chunk_byte_count - 1) / chunk_byte_count;
+            (IdTraits::id_byte_count + cached_comparison_chunk_bytes - 1) /
+            cached_comparison_chunk_bytes;
         using CachedId = CachedChunkId<chunkCount>;
         std::array<CachedId, MaxRangeSize> idChunks;
         CachedKeyAccessor<IdForIndex, IdTraits, decltype(idChunks)> accessor{
@@ -122,7 +123,8 @@ void withDynamicSmallSortAccessor(const std::vector<std::size_t> &order,
 
     if constexpr (shouldCacheChunkIds<IdTraits>) {
         constexpr std::size_t chunkCount =
-            (IdTraits::id_byte_count + chunk_byte_count - 1) / chunk_byte_count;
+            (IdTraits::id_byte_count + cached_comparison_chunk_bytes - 1) /
+            cached_comparison_chunk_bytes;
         using CachedId = CachedChunkId<chunkCount>;
         std::vector<CachedId> idChunks(rangeSize);
         CachedKeyAccessor<IdForIndex, IdTraits, decltype(idChunks)> accessor{

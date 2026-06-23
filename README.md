@@ -8,8 +8,9 @@ outliers without dense depth-bucket allocations, and rejects depths that do not
 fit the selected explicit depth prefix. IDs are exposed through fixed-width
 most-significant-first bytes. Production sorting obtains one global ID order
 from the radix parent join, then stably groups that permutation by depth. The
-shared ID radix engine uses most-significant 32-bit chunks with stable LSD byte
-passes inside each chunk.
+shared ID radix engine uses most-significant packed 32-bit radix partition
+chunks with stable byte-LSD passes inside each chunk. This width is independent
+of cached comparison chunk storage.
 Duplicate full IDs are rejected.
 
 Parent ID lookup defaults to a hash-free radix join. Its retained global ID
@@ -136,50 +137,59 @@ full-key byte-MSD, and adaptive chunk-MSD sort variants with selectable datasets
 and output formats.
 
 Parent builders are selected with `unordered`, `flat`, `control`,
-`control-finalizer-hash`, `radix`, and `radix-byte-msd`. `radix` is the production
-default: it sorts stationary ID and parent-query index permutations with the
-same u32 chunk radix engine used by the sorter and retains the global ID
-permutation for final stable depth grouping. `control` is the support-only bounded
+`control-finalizer-hash`, `radix-join-id-msd-chunk8`,
+`radix-join-id-msd-chunk16`, `radix-join-id-msd-chunk32`,
+`radix-join-id-msd-chunk64`, and `radix-join-id-msd-byte-partition-core`.
+`radix-join-id-msd-chunk32` is the production default: it sorts stationary ID
+and parent-query index permutations with the same packed 32-bit radix chunks
+used by the sorter and retains the global ID permutation for final stable depth
+grouping. `control` is the support-only bounded
 control-byte hash-table comparator; it falls back to the shipped radix join if
 probe chains become pathological. `control-finalizer-hash` is a
-diagnostic control-table hash-policy comparator. The opt-in `radix-byte-msd` comparator
+diagnostic control-table hash-policy comparator. The opt-in `radix-join-id-msd-byte-partition-core` comparator
 sorts the same permutations with byte-MSD and is excluded from `--parent default`.
+`radix-join-id-msd-chunk8` and
+`radix-join-id-msd-byte-partition-core` produce the same byte-MSD ID ordering.
+The chunk8 row uses the unified MSD-chunk scheduler with
+`RadixChunkBytes = 1`, the production counter policy, and the linear-small32
+cutoff; the byte-partition-core row uses the generic byte-MSD partition
+implementation without that scheduler or an equivalent small-range policy.
 Datasets include `random`, `outliers`, `same-high64`, `same-high32`,
 `sequential`, `external-parents`, and `siblings`. By default, the benchmark
-runs the curated default sort set: `global-id-u32-msd-radix-then-depth-stable`,
-`depth2-first-then-id-u32-msd-bitmask-le512`, and `comparison`. `--sort default`
+runs the curated default sort set: `global-id-msd-chunk32-radix-then-depth-stable`,
+`depth2-first-then-id-msd-chunk32-bitmask-le512`, and `comparison`. `--sort default`
 selects this curated set explicitly; all other sort rows are opt-in and excluded
 from the defaults. Sort algorithms are selected with:
 
 - `comparison`: `std::sort` over `depth || id`
 - `dense-depth2-buckets-then-id-lsd`: dense vector-of-buckets by depth, then LSD per bucket (previously `depth-bucket-depth2-lsd`)
 - `composite-depth2-id-lsd`: full composite key `depth[2] || id[16]`, sorted by LSD passes (previously `composite-depth2-lsd`)
-- `dense-depth2-buckets-then-id-msd`: dense vector-of-buckets by depth, then ID MSD per bucket (previously `depth-bucket-depth2-chunk-msd`)
-- `composite-depth2-id-msd-copyback`: full composite key `depth[2] || id[16]`, MSD with copyback after each scatter (previously `composite-depth2-byte-msd-copyback`)
-- `composite-depth2-id-msd-lowcopy-branchy`: full composite key `depth[2] || id[16]`, MSD using the previous branchy low-copy core (previously `composite-depth2-byte-msd-lowcopy-branchy`)
-- `composite-depth2-id-msd-lowcopy-flattened`: full composite key `depth[2] || id[16]`, MSD using the flattened low-copy core (previously `composite-depth2-byte-msd-lowcopy-flattened`)
-- `composite-depth2-id-msd-lowcopy-batched`: full composite key `depth[2] || id[16]`, MSD using depth-limited batched low-copy (previously `composite-depth2-byte-msd-lowcopy-batched`)
-- `depth2-first-then-id-u32-msd-no-dense`: depth-MSD grouping + adaptive 4-byte ID MSD, dense shortcut disabled
-- `depth2-first-then-id-u32-msd-bitmask-le512`: depth-first comparator that groups by depth and runs u32 ID radix independently inside each depth range (also accepts compatibility alias `depth2-first-then-id-u32-msd`)
-- `global-id-u32-msd-radix-then-depth-stable`: production row that obtains one global u32 ID radix order and stably groups it by depth; radix parent builders reuse their retained ID permutation, while other benchmark parent builders compute the permutation in the sort phase
-- `depth2-first-then-id-u32-msd-full-clear`: old full-clear counter comparator for the production-style 4-byte path
-- `depth2-first-then-id-u8-msd-full-clear`: depth-first path using the unified chunk engine with 1-byte ID MSD and full-clear counters
-- `depth2-first-then-id-u8-msd-bitmask-le512`: depth-first path using 1-byte ID MSD and bitmask-le512 counters
-- `depth2-first-then-id-u16-msd-full-clear`: opt-in depth-first comparator using 2-byte ID MSD and full-clear counters
-- `depth2-first-then-id-u16-msd-bitmask-le512`: opt-in depth-first comparator using 2-byte ID MSD and bitmask-le512 counters
-- `depth2-first-then-id-u64-msd-full-clear`: depth-first path using the unified chunk engine with 8-byte ID MSD and full-clear counters
-- `depth4-first-then-id-u32-msd-full-clear`: production-style depth-first path, configured for a 4-byte depth prefix
-- `depth2-first-then-id-u32-msd-bitmask-le128`, `depth2-first-then-id-u32-msd-bitmask-le256`, `depth2-first-then-id-u32-msd-bitmask-le1024`, `depth2-first-then-id-u32-msd-bitmask-le4096`: opt-in Track B2 variants using branch-free bitmask touched bucket counters for ranges up to the named threshold
-- `depth2-first-then-id-range-ladder-u8-le1024-u16-le16384-*`, `depth2-first-then-id-range-ladder-u8-le2048-u16-le32768-*`, `depth2-first-then-id-range-ladder-u8-le4096-u16-le65536-*`: opt-in range-local chunk ladders; `full-clear` rows isolate chunk width and `bitmask-le512` rows use the production counter policy
+- `dense-depth2-buckets-then-id-msd-chunk64-full-clear`: dense vector-of-buckets by depth, then ID MSD per bucket (previously `depth-bucket-depth2-chunk-msd`)
+- `composite-depth2-id-byte-msd-copyback`: full composite key `depth[2] || id[16]`, MSD with copyback after each scatter (previously `composite-depth2-byte-msd-copyback`)
+- `composite-depth2-id-byte-msd-lowcopy-branchy`: full composite key `depth[2] || id[16]`, MSD using the previous branchy low-copy core (previously `composite-depth2-byte-msd-lowcopy-branchy`)
+- `composite-depth2-id-byte-msd-lowcopy-flattened`: full composite key `depth[2] || id[16]`, MSD using the flattened low-copy core (previously `composite-depth2-byte-msd-lowcopy-flattened`)
+- `composite-depth2-id-byte-msd-lowcopy-batched`: full composite key `depth[2] || id[16]`, MSD using depth-limited batched low-copy (previously `composite-depth2-byte-msd-lowcopy-batched`)
+- `depth2-first-then-id-msd-chunk32-bitmask-le512-no-dense`: depth-MSD grouping + packed 32-bit ID radix chunks, dense shortcut disabled
+- `depth2-first-then-id-msd-chunk32-bitmask-le512`: depth-first comparator that groups by depth and runs packed 32-bit ID radix chunks independently inside each depth range
+- `global-id-msd-chunk32-radix-then-depth-stable`: production row that obtains one global chunk32 ID radix order and stably groups it by depth; radix parent builders reuse their retained ID permutation, while other benchmark parent builders compute the permutation in the sort phase
+- `depth2-first-then-id-msd-chunk32-full-clear`: old full-clear counter comparator for the production-style 4-byte path
+- `depth2-first-then-id-msd-chunk8-full-clear`: depth-first path using packed 8-bit ID radix chunks and full-clear counters
+- `depth2-first-then-id-msd-chunk8-bitmask-le512`: depth-first path using packed 8-bit ID radix chunks and bitmask-le512 counters
+- `depth2-first-then-id-msd-chunk16-full-clear`: opt-in depth-first comparator using packed 16-bit ID radix chunks and full-clear counters
+- `depth2-first-then-id-msd-chunk16-bitmask-le512`: opt-in depth-first comparator using packed 16-bit ID radix chunks and bitmask-le512 counters
+- `depth2-first-then-id-msd-chunk64-full-clear`: depth-first path using packed 64-bit ID radix chunks and full-clear counters
+- `depth4-first-then-id-msd-chunk32-full-clear`: production-style depth-first path, configured for a 4-byte depth prefix
+- `depth2-first-then-id-msd-chunk32-bitmask-le128`, `depth2-first-then-id-msd-chunk32-bitmask-le256`, `depth2-first-then-id-msd-chunk32-bitmask-le1024`, `depth2-first-then-id-msd-chunk32-bitmask-le4096`: opt-in Track B2 variants using branch-free bitmask touched bucket counters for ranges up to the named threshold
+- `depth2-first-then-id-range-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise-*`, `depth2-first-then-id-range-ladder-chunk8-le2048-chunk16-le32768-chunk32-otherwise-*`, `depth2-first-then-id-range-ladder-chunk8-le4096-chunk16-le65536-chunk32-otherwise-*`: opt-in range-local chunk ladders; `full-clear` rows isolate chunk width and `bitmask-le512` rows use the production counter policy
 
 Main forest benchmark labels describe full pipeline order. Tail-sort variants are measured by the tail microbench (`tail_microbench.cpp`), not registered as full forest pipeline rows, because they are local small-range policy experiments.
 
-The `depth2-first-then-id-u32-msd-bitmask-le512` benchmark preserves the former depth-first adaptive path as a comparator: adaptive depth grouping followed by the unified chunk scheduler with MSB-first 4-byte ID chunks, stable LSD byte passes inside each chunk, and one shared `bitmask-le512` radix count policy for depth grouping and ID chunk partitioning.
-The production `global-id-u32-msd-radix-then-depth-stable` row applies that ID radix globally once, then uses stable dense/sparse depth grouping to preserve ID order within each depth.
-The `depth2-first-then-id-u32-msd-full-clear` row preserves the previous full-clear counter path as an explicit comparator. The `depth2-first-then-id-u8-msd-full-clear` and `depth2-first-then-id-u64-msd-full-clear` rows use the same scheduler with 1-byte and 8-byte chunks. The `depth2-first-then-id-u32-msd-no-dense` variant explicitly disables the dense grouping shortcut to measure its benefit.
+The `depth2-first-then-id-msd-chunk32-bitmask-le512` benchmark preserves the former depth-first adaptive path as a comparator: adaptive depth grouping followed by the unified chunk scheduler with MSB-first 4-byte ID chunks, stable byte-LSD passes inside each chunk, and one shared `bitmask-le512` radix count policy for depth grouping and ID chunk partitioning.
+The production `global-id-msd-chunk32-radix-then-depth-stable` row applies that ID radix globally once, then uses stable dense/sparse depth grouping to preserve ID order within each depth.
+The `depth2-first-then-id-msd-chunk32-full-clear` row preserves the previous full-clear counter path as an explicit comparator. The `depth2-first-then-id-msd-chunk8-full-clear` and `depth2-first-then-id-msd-chunk64-full-clear` rows use the same scheduler with 1-byte and 8-byte chunks. The `depth2-first-then-id-msd-chunk32-bitmask-le512-no-dense` variant explicitly disables the dense grouping shortcut to measure its benefit.
 The remaining `*-bitmask-le*` rows are explicit opt-in A/B variants of the same chunk scheduler. The bitmask-threshold rows replace the rejected generation-table touched-count loop with bitmask bucket tracking and only change radix counter initialization policy for ranges up to the named threshold; larger ranges still use full-clear counters. The 512-node cap is represented by the depth-first comparator label.
-The `same-high32` dataset keeps the top 32 ID bits fixed while varying lower bits, which is useful for checking whether wider small-tail thresholds regress when many IDs share the first u32 chunk.
-The `composite-depth2-id-msd-copyback`, `composite-depth2-id-msd-lowcopy-branchy`, `composite-depth2-id-msd-lowcopy-flattened`, and `composite-depth2-id-msd-lowcopy-batched` rows compare old copyback, previous branchy low-copy, flattened low-copy, and depth-limited batched low-copy over the same full 18-byte combined depth and ID key.
+The `same-high32` dataset keeps the top 32 ID bits fixed while varying lower bits, which is useful for checking whether wider small-tail thresholds regress when many IDs share the first chunk32 radix partition.
+The `composite-depth2-id-byte-msd-copyback`, `composite-depth2-id-byte-msd-lowcopy-branchy`, `composite-depth2-id-byte-msd-lowcopy-flattened`, and `composite-depth2-id-byte-msd-lowcopy-batched` rows compare old copyback, previous branchy low-copy, flattened low-copy, and depth-limited batched low-copy over the same full 18-byte combined depth and ID key.
 
 Benchmark rows use retained samples rather than one averaged run. The default
 is `--iterations 7 --warmup 1`; table output shows median timings, CSV/TSV
@@ -208,16 +218,20 @@ cmake --build --preset release --target forest-sorting-bench
   --size 10000 \
   --dataset random \
   --parent default \
-  --sort global-id-u32-msd-radix-then-depth-stable
+  --sort global-id-msd-chunk32-radix-then-depth-stable
 
 # Run multiple sizes, datasets, and custom seeds with bootstrapped delta comparison
 ./out/build/release/benchmarks/forest-sorting-bench \
   --format json --sample-output summary \
   --size 10000 --size 100000 --size 1000000 \
-  --dataset random --dataset same-high32 --dataset same-high64 \
-  --parent radix --parent radix-byte-msd \
-  --baseline-parent radix-byte-msd \
-  --sort depth2-first-then-id-u32-msd-bitmask-le512 \
+  --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers \
+  --parent radix-join-id-msd-chunk8 \
+  --parent radix-join-id-msd-chunk16 \
+  --parent radix-join-id-msd-chunk32 \
+  --parent radix-join-id-msd-chunk64 \
+  --parent radix-join-id-msd-byte-partition-core \
+  --baseline-parent radix-join-id-msd-chunk32 \
+  --sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
   --iterations 30 --warmup 3 --shuffle \
   --order-seed 0x5eed \
   --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
@@ -227,11 +241,11 @@ cmake --build --preset release --target forest-sorting-bench
   --format json --sample-output summary \
   --size 10000 --size 100000 --size 1000000 \
   --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers \
-  --parent control --parent radix \
-  --sort depth2-first-then-id-u32-msd-bitmask-le512 \
-  --sort global-id-u32-msd-radix-then-depth-stable \
+  --parent control --parent radix-join-id-msd-chunk32 \
+  --sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
+  --sort global-id-msd-chunk32-radix-then-depth-stable \
   --baseline-parent control \
-  --baseline-sort depth2-first-then-id-u32-msd-bitmask-le512 \
+  --baseline-sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
   --iterations 50 --warmup 10 --shuffle \
   --order-seed 0x5eed \
   --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
@@ -242,20 +256,20 @@ cmake --build --preset release --target forest-sorting-bench
   --dataset random \
   --sort dense-depth2-buckets-then-id-lsd \
   --sort composite-depth2-id-lsd \
-  --sort depth2-first-then-id-u8-msd-full-clear \
-  --sort depth2-first-then-id-u32-msd-bitmask-le512 \
-  --sort depth2-first-then-id-u64-msd-full-clear
+  --sort depth2-first-then-id-msd-chunk8-full-clear \
+  --sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
+  --sort depth2-first-then-id-msd-chunk64-full-clear
 
 # Compare composite depth-MSD partition and low-copy variants
 ./out/build/release/benchmarks/forest-sorting-bench \
   --size 100000 \
   --dataset random \
   --parent control \
-  --sort composite-depth2-id-msd-copyback \
-  --sort composite-depth2-id-msd-lowcopy-branchy \
-  --sort composite-depth2-id-msd-lowcopy-flattened \
-  --sort composite-depth2-id-msd-lowcopy-batched \
-  --baseline-sort composite-depth2-id-msd-copyback \
+  --sort composite-depth2-id-byte-msd-copyback \
+  --sort composite-depth2-id-byte-msd-lowcopy-branchy \
+  --sort composite-depth2-id-byte-msd-lowcopy-flattened \
+  --sort composite-depth2-id-byte-msd-lowcopy-batched \
+  --baseline-sort composite-depth2-id-byte-msd-copyback \
   --iterations 30 --warmup 3 --shuffle \
   --order-seed 0x5eed \
   --data-seed 1 --data-seed 2 --data-seed 3 \

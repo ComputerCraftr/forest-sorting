@@ -423,13 +423,13 @@ void assert_chunk_permutation_sort_matches_stable_comparison() {
         expected.begin(), expected.end(),
         [&](std::size_t lhs, std::size_t rhs) { return ids[lhs] < ids[rhs]; });
 
-    forest_sorting::detail::IdChunkSortWorkspace<
-        forest_sorting::detail::production_id_chunk_bytes,
+    forest_sorting::detail::IdMsdChunkSortWorkspace<
+        forest_sorting::detail::production_id_radix_chunk_bytes,
         forest_sorting::detail::ProductionIdCountPolicy>
         workspace;
     auto idForIndex = [&](std::size_t index) { return ids[index]; };
-    forest_sorting::detail::sortIndexRangeByIdChunks<
-        forest_sorting::detail::production_id_chunk_bytes,
+    forest_sorting::detail::sortIndexRangeByIdMsdChunks<
+        forest_sorting::detail::production_id_radix_chunk_bytes,
         forest_sorting::detail::ProductionIdCountPolicy>(
         actual, idForIndex, traits, 0, actual.size(), 0, workspace);
 
@@ -1095,6 +1095,18 @@ void assert_parent_join_correctness_and_paths(Maker maker) {
 
     auto result =
         forest_sorting::detail::buildParentIndexRadixJoin(nodes, traits);
+    const auto chunk8 =
+        forest_sorting::detail::buildParentIndexRadixJoinResultByMsdChunks<1>(
+            nodes, traits);
+    const auto chunk16 =
+        forest_sorting::detail::buildParentIndexRadixJoinResultByMsdChunks<2>(
+            nodes, traits);
+    const auto chunk32 =
+        forest_sorting::detail::buildParentIndexRadixJoinResultByMsdChunks<4>(
+            nodes, traits);
+    const auto chunk64 =
+        forest_sorting::detail::buildParentIndexRadixJoinResultByMsdChunks<8>(
+            nodes, traits);
     const auto defaultResult =
         forest_sorting::detail::buildParentIndex(nodes, traits);
     require(defaultResult == result,
@@ -1103,6 +1115,13 @@ void assert_parent_join_correctness_and_paths(Maker maker) {
     require(result[1] == 0);
     require(result[2] == 1);
     require(result[3] == forest_sorting::detail::no_parent);
+    require(chunk8.parentIndex == result && chunk16.parentIndex == result &&
+                chunk32.parentIndex == result && chunk64.parentIndex == result,
+            "radix join chunk widths produced different parent indexes");
+    require(chunk8.idPermutation == chunk16.idPermutation &&
+                chunk16.idPermutation == chunk32.idPermutation &&
+                chunk32.idPermutation == chunk64.idPermutation,
+            "radix join chunk widths produced different ID permutations");
 
     // 2. Duplicate ID detection
     std::vector<Node> dupNodes = nodes;
@@ -1114,6 +1133,23 @@ void assert_parent_join_correctness_and_paths(Maker maker) {
         threwDuplicate = true;
     }
     require(threwDuplicate, "duplicate ID did not throw runtime_error");
+
+    auto requireChunkDuplicateRejected = [&]<std::size_t RadixChunkBytes>() {
+        bool rejected = false;
+        try {
+            (void)forest_sorting::detail::
+                buildParentIndexRadixJoinResultByMsdChunks<RadixChunkBytes>(
+                    dupNodes, traits);
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        }
+        require(rejected,
+                "radix join chunk width accepted a duplicate node ID");
+    };
+    requireChunkDuplicateRejected.template operator()<1>();
+    requireChunkDuplicateRejected.template operator()<2>();
+    requireChunkDuplicateRejected.template operator()<4>();
+    requireChunkDuplicateRejected.template operator()<8>();
 }
 
 void test_parent_radix_join_compile_paths_and_correctness() {

@@ -45,7 +45,8 @@ concept HasNativeIdEqual = requires(const IdType &lhs, const IdType &rhs) {
 
 template <typename Traits>
 inline constexpr bool shouldCacheChunkIds =
-    ((Traits::id_byte_count + chunk_byte_count - 1) / chunk_byte_count) > 1 &&
+    ((Traits::id_byte_count + cached_comparison_chunk_bytes - 1) /
+     cached_comparison_chunk_bytes) > 1 &&
     !HasCheapForestTraitsIdOrder<Traits>;
 
 template <std::size_t ChunkCount, typename LhsChunkAt, typename RhsChunkAt>
@@ -134,7 +135,8 @@ template <typename NodeId, typename NodeTraits>
 inline int compareIdsMsbFirst(const NodeId &lhs, const NodeId &rhs,
                               const NodeTraits &traits) noexcept {
     constexpr std::size_t chunkCount =
-        (NodeTraits::id_byte_count + chunk_byte_count - 1) / chunk_byte_count;
+        (NodeTraits::id_byte_count + cached_comparison_chunk_bytes - 1) /
+        cached_comparison_chunk_bytes;
     return compareChunkSequence<chunkCount>(
         [&](std::size_t chunkIdx) noexcept {
             return chunkMsbFirst(lhs, chunkIdx, traits);

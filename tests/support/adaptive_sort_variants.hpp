@@ -4,7 +4,6 @@
 #include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/depth.hpp"
-#include "forest_sorting/detail/id_chunks.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/order.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
@@ -244,16 +243,11 @@ inline std::vector<Node> sortForestByAdaptiveRangeSorterWithParent(
     return materializeOrder(nodes, order);
 }
 
-template <std::size_t ChunkBytes,
-          typename CountPolicy = detail::FullClearCounts>
-using AdaptiveChunkWorkspace =
-    detail::IdChunkSortWorkspace<ChunkBytes, CountPolicy>;
-
-template <std::size_t ChunkBytes = detail::chunk_byte_count,
+template <std::size_t RadixChunkBytes,
           typename CountPolicy = detail::FullClearCounts,
           std::size_t SmallThreshold = detail::small_id_range_sort_threshold,
           typename SmallRangeSorter, typename Depth>
-inline void sortDepthRangesByChunkMsd(
+inline void sortDepthRangesByIdMsdChunks(
     std::vector<std::size_t> &order, const std::vector<Node> &nodes,
     const std::vector<detail::DepthRange<Depth>> &depthRanges,
     SmallRangeSorter smallRangeSorter) {
@@ -267,28 +261,18 @@ inline void sortDepthRangesByChunkMsd(
         }
     }
 
-    AdaptiveChunkWorkspace<ChunkBytes, CountPolicy> workspace;
+    detail::IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> workspace;
     workspace.allocate(maxRadixRangeSize);
 
     for (const detail::DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeBegin = range.begin;
         const std::size_t rangeEnd = range.end;
-        detail::sortRangeByIdChunksWithSmallSorter<ChunkBytes, CountPolicy,
-                                                   SmallThreshold>(
+        detail::sortRangeByIdMsdChunksWithSmallSorter<
+            RadixChunkBytes, CountPolicy, SmallThreshold>(
             order, nodes, UInt128NodeTraits{}, rangeBegin, rangeEnd, 0,
             workspace.pending, workspace.current.get(), workspace.next.get(),
             workspace.touchedScratch, smallRangeSorter);
     }
-}
-
-template <std::size_t ChunkBytes, typename CountPolicy,
-          std::size_t SmallThreshold, typename SmallRangeSorter, typename Depth>
-inline void sortDepthRangesWithTunedParams(
-    std::vector<std::size_t> &order, const std::vector<Node> &nodes,
-    const std::vector<detail::DepthRange<Depth>> &depthRanges) {
-    SmallRangeSorter smallRangeSorter;
-    sortDepthRangesByChunkMsd<ChunkBytes, CountPolicy, SmallThreshold>(
-        order, nodes, depthRanges, smallRangeSorter);
 }
 
 template <typename Nodes, typename IdTraits>
@@ -566,98 +550,89 @@ struct BranchlessBitwiseSmallSorterDynamic {
     }
 };
 
-enum class AdaptiveChunkWidth : uint8_t {
-    U8 = 1,
-    U16 = 2,
-    U32 = 4,
+enum class AdaptiveRadixChunkWidth : uint8_t {
+    Chunk8 = 1,
+    Chunk16 = 2,
+    Chunk32 = 4,
 };
 
-template <std::size_t U8MaxRangeSize, std::size_t U16MaxRangeSize>
+template <std::size_t Chunk8MaxRangeSize, std::size_t Chunk16MaxRangeSize>
 struct RangeLadder {
-    static_assert(U8MaxRangeSize < U16MaxRangeSize);
+    static_assert(Chunk8MaxRangeSize < Chunk16MaxRangeSize);
 
-    static constexpr AdaptiveChunkWidth
+    static constexpr AdaptiveRadixChunkWidth
     chunkWidthForRange(std::size_t rangeSize) noexcept {
-        if (rangeSize <= U8MaxRangeSize) {
-            return AdaptiveChunkWidth::U8;
+        if (rangeSize <= Chunk8MaxRangeSize) {
+            return AdaptiveRadixChunkWidth::Chunk8;
         }
-        if (rangeSize <= U16MaxRangeSize) {
-            return AdaptiveChunkWidth::U16;
+        if (rangeSize <= Chunk16MaxRangeSize) {
+            return AdaptiveRadixChunkWidth::Chunk16;
         }
-        return AdaptiveChunkWidth::U32;
+        return AdaptiveRadixChunkWidth::Chunk32;
     }
 };
 
-template <std::size_t ChunkBytes, typename CountPolicy,
-          typename SmallRangeSorter>
-inline void sortOneDepthRangeByChunkMsd(
-    std::vector<std::size_t> &order, const std::vector<Node> &nodes,
-    std::size_t rangeBegin, std::size_t rangeEnd,
-    AdaptiveChunkWorkspace<ChunkBytes, CountPolicy> &workspace,
-    SmallRangeSorter smallRangeSorter) {
-    detail::sortRangeByIdChunksWithSmallSorter<
-        ChunkBytes, CountPolicy, detail::small_id_range_sort_threshold>(
-        order, nodes, UInt128NodeTraits{}, rangeBegin, rangeEnd, 0,
-        workspace.pending, workspace.current.get(), workspace.next.get(),
-        workspace.touchedScratch, smallRangeSorter);
-}
-
 template <typename LadderPolicy, typename CountPolicy, typename Depth>
-inline void sortDepthRangesByRangeLadderChunkMsd(
+inline void sortDepthRangesByIdMsdChunkLadder(
     std::vector<std::size_t> &order, const std::vector<Node> &nodes,
     const std::vector<detail::DepthRange<Depth>> &depthRanges) {
-    std::size_t maxU8RangeSize = 0;
-    std::size_t maxU16RangeSize = 0;
-    std::size_t maxU32RangeSize = 0;
+    std::size_t maxChunk8RangeSize = 0;
+    std::size_t maxChunk16RangeSize = 0;
+    std::size_t maxChunk32RangeSize = 0;
     for (const detail::DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeSize = range.end - range.begin;
         if (rangeSize <= detail::small_id_range_sort_threshold) {
             continue;
         }
         switch (LadderPolicy::chunkWidthForRange(rangeSize)) {
-        case AdaptiveChunkWidth::U8:
-            maxU8RangeSize = std::max(maxU8RangeSize, rangeSize);
+        case AdaptiveRadixChunkWidth::Chunk8:
+            maxChunk8RangeSize = std::max(maxChunk8RangeSize, rangeSize);
             break;
-        case AdaptiveChunkWidth::U16:
-            maxU16RangeSize = std::max(maxU16RangeSize, rangeSize);
+        case AdaptiveRadixChunkWidth::Chunk16:
+            maxChunk16RangeSize = std::max(maxChunk16RangeSize, rangeSize);
             break;
-        case AdaptiveChunkWidth::U32:
-            maxU32RangeSize = std::max(maxU32RangeSize, rangeSize);
+        case AdaptiveRadixChunkWidth::Chunk32:
+            maxChunk32RangeSize = std::max(maxChunk32RangeSize, rangeSize);
             break;
         }
     }
 
-    AdaptiveChunkWorkspace<1, CountPolicy> u8Workspace;
-    AdaptiveChunkWorkspace<2, CountPolicy> u16Workspace;
-    AdaptiveChunkWorkspace<4, CountPolicy> u32Workspace;
-    u8Workspace.allocate(maxU8RangeSize);
-    u16Workspace.allocate(maxU16RangeSize);
-    u32Workspace.allocate(maxU32RangeSize);
+    detail::IdMsdChunkSortWorkspace<1, CountPolicy> chunk8Workspace;
+    detail::IdMsdChunkSortWorkspace<2, CountPolicy> chunk16Workspace;
+    detail::IdMsdChunkSortWorkspace<4, CountPolicy> chunk32Workspace;
+    chunk8Workspace.allocate(maxChunk8RangeSize);
+    chunk16Workspace.allocate(maxChunk16RangeSize);
+    chunk32Workspace.allocate(maxChunk32RangeSize);
     const LinearSmallSorter<> smallRangeSorter;
+
+    auto sortRange = [&]<typename Workspace>(
+                         const detail::DepthRange<Depth> &range,
+                         Workspace &workspace) {
+        detail::sortRangeByIdMsdChunksWithSmallSorter<
+            Workspace::radix_chunk_bytes, CountPolicy,
+            detail::small_id_range_sort_threshold>(
+            order, nodes, UInt128NodeTraits{}, range.begin, range.end, 0,
+            workspace.pending, workspace.current.get(), workspace.next.get(),
+            workspace.touchedScratch, smallRangeSorter);
+    };
 
     for (const detail::DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeSize = range.end - range.begin;
         switch (LadderPolicy::chunkWidthForRange(rangeSize)) {
-        case AdaptiveChunkWidth::U8:
-            sortOneDepthRangeByChunkMsd<1, CountPolicy>(
-                order, nodes, range.begin, range.end, u8Workspace,
-                smallRangeSorter);
+        case AdaptiveRadixChunkWidth::Chunk8:
+            sortRange(range, chunk8Workspace);
             break;
-        case AdaptiveChunkWidth::U16:
-            sortOneDepthRangeByChunkMsd<2, CountPolicy>(
-                order, nodes, range.begin, range.end, u16Workspace,
-                smallRangeSorter);
+        case AdaptiveRadixChunkWidth::Chunk16:
+            sortRange(range, chunk16Workspace);
             break;
-        case AdaptiveChunkWidth::U32:
-            sortOneDepthRangeByChunkMsd<4, CountPolicy>(
-                order, nodes, range.begin, range.end, u32Workspace,
-                smallRangeSorter);
+        case AdaptiveRadixChunkWidth::Chunk32:
+            sortRange(range, chunk32Workspace);
             break;
         }
     }
 }
 
-template <std::size_t U8MaxRangeSize, std::size_t U16MaxRangeSize,
+template <std::size_t Chunk8MaxRangeSize, std::size_t Chunk16MaxRangeSize,
           typename CountPolicy>
 inline std::vector<Node> sortForestByDepth2FirstThenIdRangeLadderWithParent(
     const std::vector<Node> &nodes,
@@ -665,35 +640,34 @@ inline std::vector<Node> sortForestByDepth2FirstThenIdRangeLadderWithParent(
     auto rangeSorter = [](std::vector<std::size_t> &order,
                           const std::vector<Node> &sortNodes,
                           const auto &depthRanges) {
-        sortDepthRangesByRangeLadderChunkMsd<
-            RangeLadder<U8MaxRangeSize, U16MaxRangeSize>, CountPolicy>(
+        sortDepthRangesByIdMsdChunkLadder<
+            RangeLadder<Chunk8MaxRangeSize, Chunk16MaxRangeSize>, CountPolicy>(
             order, sortNodes, depthRanges);
     };
     return sortForestByAdaptiveRangeSorterWithParent<2>(nodes, parentIndex,
                                                         true, rangeSorter);
 }
 
-template <std::size_t DepthPrefixBytes, std::size_t ChunkBytes,
+template <std::size_t DepthPrefixBytes, std::size_t RadixChunkBytes,
           typename CountPolicy = detail::FullClearCounts,
           std::size_t SmallThreshold = detail::small_id_range_sort_threshold,
           typename SmallRangeSorter = LinearSmallSorter<SmallThreshold>>
-inline std::vector<Node>
-sortForestByAdaptiveChunkWithParent(const std::vector<Node> &nodes,
-                                    const std::vector<std::size_t> &parentIndex,
-                                    bool allowDenseDepthGrouping) {
+inline std::vector<Node> sortForestByAdaptiveIdMsdChunkWithParent(
+    const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
+    bool allowDenseDepthGrouping) {
     auto rangeSorter = [](std::vector<std::size_t> &order,
                           const std::vector<Node> &sortNodes,
                           const auto &depthRanges) {
-        sortDepthRangesWithTunedParams<ChunkBytes, CountPolicy, SmallThreshold,
-                                       SmallRangeSorter>(order, sortNodes,
-                                                         depthRanges);
+        sortDepthRangesByIdMsdChunks<RadixChunkBytes, CountPolicy,
+                                     SmallThreshold>(
+            order, sortNodes, depthRanges, SmallRangeSorter{});
     };
 
     return sortForestByAdaptiveRangeSorterWithParent<DepthPrefixBytes>(
         nodes, parentIndex, allowDenseDepthGrouping, rangeSorter);
 }
 
-inline std::vector<Node> sortForestByGlobalIdU32MsdRadixThenDepthStable(
+inline std::vector<Node> sortForestByGlobalIdMsdChunk32RadixThenDepthStable(
     const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
     const std::vector<std::size_t> *idPermutation) {
     if (idPermutation != nullptr && idPermutation->size() != nodes.size()) {
@@ -715,10 +689,11 @@ inline std::vector<Node> sortForestByGlobalIdU32MsdRadixThenDepthStable(
     return materializeOrder(nodes, order);
 }
 
-inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdNoDenseWithParent(
+inline std::vector<Node>
+sortForestByDepth2FirstThenIdMsdChunk32BitmaskLe512NoDenseWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<
+    return sortForestByAdaptiveIdMsdChunkWithParent<
         2, 4,
         detail::BitmaskTouchedCountsUpTo<
             detail::production_touched_count_max_range_size>>(
@@ -726,44 +701,39 @@ inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdNoDenseWithParent(
 }
 
 inline std::vector<Node>
-sortForestByDepth2FirstThenIdU32MsdBitmaskLe512TailLinear32WithParent(
+sortForestByDepth2FirstThenIdMsdChunk32BitmaskLe512TailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<
+    return sortForestByAdaptiveIdMsdChunkWithParent<
         2, 4,
         detail::BitmaskTouchedCountsUpTo<
             detail::production_touched_count_max_range_size>>(
         nodes, parentIndex, true);
 }
 
-inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdWithParent(
-    const std::vector<Node> &nodes,
-    const std::vector<std::size_t> &parentIndex) {
-    return sortForestByDepth2FirstThenIdU32MsdBitmaskLe512TailLinear32WithParent(
-        nodes, parentIndex);
-}
-
 inline std::vector<Node>
-sortForestByDepth2FirstThenIdU32MsdFullClearTailLinear32WithParent(
+sortForestByDepth2FirstThenIdMsdChunk32FullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<2, 4, detail::FullClearCounts>(
+    return sortForestByAdaptiveIdMsdChunkWithParent<2, 4,
+                                                    detail::FullClearCounts>(
         nodes, parentIndex, true);
 }
 
 inline std::vector<Node>
-sortForestByDepth2FirstThenIdU8MsdFullClearTailLinear32WithParent(
+sortForestByDepth2FirstThenIdMsdChunk8FullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<2, 1, detail::FullClearCounts>(
+    return sortForestByAdaptiveIdMsdChunkWithParent<2, 1,
+                                                    detail::FullClearCounts>(
         nodes, parentIndex, true);
 }
 
 inline std::vector<Node>
-sortForestByDepth2FirstThenIdU8MsdBitmaskLe512TailLinear32WithParent(
+sortForestByDepth2FirstThenIdMsdChunk8BitmaskLe512TailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<
+    return sortForestByAdaptiveIdMsdChunkWithParent<
         2, 1,
         detail::BitmaskTouchedCountsUpTo<
             detail::production_touched_count_max_range_size>>(
@@ -771,18 +741,19 @@ sortForestByDepth2FirstThenIdU8MsdBitmaskLe512TailLinear32WithParent(
 }
 
 inline std::vector<Node>
-sortForestByDepth2FirstThenIdU16MsdFullClearTailLinear32WithParent(
+sortForestByDepth2FirstThenIdMsdChunk16FullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<2, 2, detail::FullClearCounts>(
+    return sortForestByAdaptiveIdMsdChunkWithParent<2, 2,
+                                                    detail::FullClearCounts>(
         nodes, parentIndex, true);
 }
 
 inline std::vector<Node>
-sortForestByDepth2FirstThenIdU16MsdBitmaskLe512TailLinear32WithParent(
+sortForestByDepth2FirstThenIdMsdChunk16BitmaskLe512TailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<
+    return sortForestByAdaptiveIdMsdChunkWithParent<
         2, 2,
         detail::BitmaskTouchedCountsUpTo<
             detail::production_touched_count_max_range_size>>(
@@ -790,47 +761,33 @@ sortForestByDepth2FirstThenIdU16MsdBitmaskLe512TailLinear32WithParent(
 }
 
 inline std::vector<Node>
-sortForestByDepth2FirstThenIdU64MsdFullClearTailLinear32WithParent(
+sortForestByDepth2FirstThenIdMsdChunk64FullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<2, 8>(nodes, parentIndex, true);
+    return sortForestByAdaptiveIdMsdChunkWithParent<2, 8>(nodes, parentIndex,
+                                                          true);
 }
 
 inline std::vector<Node>
-sortForestByDepth4FirstThenIdU32MsdFullClearTailLinear32WithParent(
+sortForestByDepth4FirstThenIdMsdChunk32FullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<4, 4>(nodes, parentIndex, true);
-}
-
-template <typename SmallRangeSorter, std::size_t SmallThreshold,
-          typename CountPolicy = detail::FullClearCounts>
-inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdTailTunedWithParent(
-    const std::vector<Node> &nodes,
-    const std::vector<std::size_t> &parentIndex) {
-    auto rangeSorter = [](std::vector<std::size_t> &order,
-                          const std::vector<Node> &sortNodes,
-                          const auto &depthRanges) {
-        sortDepthRangesWithTunedParams<4, CountPolicy, SmallThreshold,
-                                       SmallRangeSorter>(order, sortNodes,
-                                                         depthRanges);
-    };
-
-    return sortForestByAdaptiveRangeSorterWithParent<2>(nodes, parentIndex,
-                                                        true, rangeSorter);
+    return sortForestByAdaptiveIdMsdChunkWithParent<4, 4>(nodes, parentIndex,
+                                                          true);
 }
 
 template <std::size_t BitmaskMaxRangeSize>
-inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdBitmaskLeWithParent(
+inline std::vector<Node>
+sortForestByDepth2FirstThenIdMsdChunk32BitmaskLeWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto rangeSorter = [](std::vector<std::size_t> &order,
                           const std::vector<Node> &sortNodes,
                           const auto &depthRanges) {
-        sortDepthRangesWithTunedParams<
+        sortDepthRangesByIdMsdChunks<
             4, detail::BitmaskTouchedCountsUpTo<BitmaskMaxRangeSize>,
-            detail::small_id_range_sort_threshold, LinearSmallSorter<>>(
-            order, sortNodes, depthRanges);
+            detail::small_id_range_sort_threshold>(
+            order, sortNodes, depthRanges, LinearSmallSorter<>{});
     };
 
     return sortForestByAdaptiveRangeSorterWithParent<2>(nodes, parentIndex,

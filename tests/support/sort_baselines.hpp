@@ -3,7 +3,6 @@
 
 #include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/depth.hpp"
-#include "forest_sorting/detail/id_chunks.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
@@ -14,10 +13,8 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <numeric>
 #include <vector>
 
@@ -216,56 +213,32 @@ inline std::vector<Node> sortForestByCompositeDepth2IdLsdWithParent(
     return materializeOrder(nodes, order);
 }
 
-inline void radixMsdSortBucketById(
-    std::vector<std::size_t> &bucket, const std::vector<Node> &nodes,
-    std::vector<detail::IdChunkRange> &pending,
-    detail::ChunkedIndex<detail::chunk_byte_count> *chunkBufferCurrent,
-    detail::ChunkedIndex<detail::chunk_byte_count> *chunkBufferNext) {
-    if (bucket.size() <= 1) {
-        return;
-    }
-
-#ifndef NDEBUG
-    assert(bucket.size() <= detail::small_id_range_sort_threshold ||
-           (chunkBufferCurrent != nullptr && chunkBufferNext != nullptr));
-#endif
-
-    detail::sortRangeByIdChunks(bucket, nodes, UInt128NodeTraits{}, 0,
-                                bucket.size(), 0, pending, chunkBufferCurrent,
-                                chunkBufferNext);
-}
+inline constexpr std::size_t dense_bucket_id_msd_radix_chunk_bytes = 8;
 
 // Benchmark-only baseline
 // Dense vector-of-buckets by depth
 // Fixed 2-byte depth prefix limit
 // No sparse-depth MSD fallback
 // Unsafe without the validation guard for very large observed depths.
-inline std::vector<Node> sortForestByDenseDepth2BucketsThenIdMsdWithParent(
+inline std::vector<Node>
+sortForestByDenseDepth2BucketsThenIdMsdChunk64FullClearWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto sortBuckets = [&](std::vector<std::vector<std::size_t>> &buckets,
                            std::size_t maxBucketSize) {
-        std::vector<detail::IdChunkRange> pending;
-        pending.reserve(detail::initial_range_stack_capacity);
-        std::unique_ptr<detail::ChunkedIndex<detail::chunk_byte_count>[]>
-            chunkBufferCurrent;
-        std::unique_ptr<detail::ChunkedIndex<detail::chunk_byte_count>[]>
-            chunkBufferNext;
-        if (maxBucketSize > detail::small_id_range_sort_threshold) {
-            chunkBufferCurrent = std::unique_ptr<
-                detail::ChunkedIndex<detail::chunk_byte_count>[]>(
-                new detail::ChunkedIndex<
-                    detail::chunk_byte_count>[maxBucketSize]);
-            chunkBufferNext = std::unique_ptr<
-                detail::ChunkedIndex<detail::chunk_byte_count>[]>(
-                new detail::ChunkedIndex<
-                    detail::chunk_byte_count>[maxBucketSize]);
-        }
+        detail::IdMsdChunkSortWorkspace<dense_bucket_id_msd_radix_chunk_bytes,
+                                        detail::FullClearCounts>
+            workspace;
+        workspace.allocate(maxBucketSize);
+        const UInt128NodeTraits traits;
+        auto idForIndex = [&](std::size_t nodeIndex) {
+            return UInt128NodeTraits::id(nodes[nodeIndex]);
+        };
 
         for (auto &bucket : buckets) {
-            radixMsdSortBucketById(bucket, nodes, pending,
-                                   chunkBufferCurrent.get(),
-                                   chunkBufferNext.get());
+            detail::sortIndexRangeByIdMsdChunks<
+                dense_bucket_id_msd_radix_chunk_bytes, detail::FullClearCounts>(
+                bucket, idForIndex, traits, 0, bucket.size(), 0, workspace);
         }
     };
 
@@ -450,8 +423,8 @@ inline void radixMsdPartitionRangesFlattenedLowcopy(
 
         if (sourceIsOrder) {
             auto digitFromOrder = [&](std::size_t offset,
-                                      std::size_t digitIndex) {
-                return digitForIndex(order[offset], digitIndex);
+                                      std::size_t passDigitIndex) {
+                return digitForIndex(order[offset], passDigitIndex);
             };
             auto moveOrderToScratch = [&](std::size_t offset,
                                           std::size_t scratchOffset) {
@@ -462,8 +435,8 @@ inline void radixMsdPartitionRangesFlattenedLowcopy(
                                                moveOrderToScratch, false);
         } else {
             auto digitFromScratch = [&](std::size_t offset,
-                                        std::size_t digitIndex) {
-                return digitForIndex(scratch[offset], digitIndex);
+                                        std::size_t passDigitIndex) {
+                return digitForIndex(scratch[offset], passDigitIndex);
             };
             auto moveScratchToOrder = [&](std::size_t offset,
                                           std::size_t orderOffset) {
@@ -660,7 +633,7 @@ inline std::vector<Node> sortForestByCompositeDepth2MsdWithParent(
 
 // Benchmark wrapper for Composite MSD with full copyback after each scatter.
 // Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
-inline std::vector<Node> sortForestByCompositeDepth2IdMsdCopybackWithParent(
+inline std::vector<Node> sortForestByCompositeDepth2IdByteMsdCopybackWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto partitioner = [](std::vector<std::size_t> &order,
@@ -679,7 +652,7 @@ inline std::vector<Node> sortForestByCompositeDepth2IdMsdCopybackWithParent(
 // source selection inside the count/scatter loops to provide direct A/B data
 // against the copyback default and the flattened low-copy contender.
 inline std::vector<Node>
-sortForestByCompositeDepth2IdMsdLowcopyBranchyWithParent(
+sortForestByCompositeDepth2IdByteMsdLowcopyBranchyWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto partitioner = [](std::vector<std::size_t> &order,
@@ -697,7 +670,7 @@ sortForestByCompositeDepth2IdMsdLowcopyBranchyWithParent(
 // as a shipped candidate before copyback won the target-workload A/B run.
 // Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
 inline std::vector<Node>
-sortForestByCompositeDepth2IdMsdLowcopyFlattenedWithParent(
+sortForestByCompositeDepth2IdByteMsdLowcopyFlattenedWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto partitioner = [](std::vector<std::size_t> &order,
@@ -714,7 +687,7 @@ sortForestByCompositeDepth2IdMsdLowcopyFlattenedWithParent(
 // Benchmark wrapper for depth-limited low-copy. It keeps ownership state only
 // for large ranges and then falls back to the measured copyback default.
 inline std::vector<Node>
-sortForestByCompositeDepth2IdMsdLowcopyBatchedWithParent(
+sortForestByCompositeDepth2IdByteMsdLowcopyBatchedWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto partitioner = [](std::vector<std::size_t> &order,

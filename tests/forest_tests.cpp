@@ -61,9 +61,16 @@ void requireUniqueDatasetParentAndSortRegistries() {
 
     const auto parentKinds = registeredParentKinds();
     require(!parentKinds.empty(), "parent registry is empty");
+    std::size_t defaultParentCount = 0;
     for (std::size_t kindIdx = 0; kindIdx < parentKinds.size(); ++kindIdx) {
         require(!parentName(parentKinds[kindIdx]).empty(),
                 "parent registry contains an empty name");
+        const ParentRegistryEntry &entry = getParentRegistry()[kindIdx];
+        require(entry.kind == parentKinds[kindIdx],
+                "parent registry kind projection is inconsistent");
+        require(entry.build != nullptr,
+                "parent registry contains an empty builder");
+        defaultParentCount += entry.includeByDefault ? 1U : 0U;
         for (std::size_t otherIdx = kindIdx + 1; otherIdx < parentKinds.size();
              ++otherIdx) {
             require(parentKinds[kindIdx] != parentKinds[otherIdx],
@@ -74,16 +81,17 @@ void requireUniqueDatasetParentAndSortRegistries() {
         }
     }
     const auto defParentKinds = defaultParentKinds();
-    require(defParentKinds.size() == 1 &&
-                defParentKinds.front() == ParentKind::Radix,
-            "radix must be the sole default parent builder");
+    require(defaultParentCount == 1 && defParentKinds.size() == 1 &&
+                defParentKinds.front() == ParentKind::RadixJoinIdMsdChunk32,
+            "chunk32 radix join must be the sole default parent builder");
 
     validateSortRegistry();
 
     const auto &registry = getSortRegistry();
     const auto globalIdFirstIt =
         std::ranges::find_if(registry, [](const SortRegistryEntry &entry) {
-            return entry.kind == SortKind::GlobalIdU32MsdRadixThenDepthStable;
+            return entry.kind ==
+                   SortKind::GlobalIdMsdChunk32RadixThenDepthStable;
         });
     require(globalIdFirstIt != registry.end(),
             "global-ID-first sort is missing from the registry");
@@ -93,13 +101,12 @@ void requireUniqueDatasetParentAndSortRegistries() {
             "global-ID-first sorting must be the production benchmark row");
     require(globalIdFirst.sortFunction == nullptr &&
                 globalIdFirst.optionalIdPermutationSortFunction ==
-                    sortForestByGlobalIdU32MsdRadixThenDepthStable,
+                    sortForestByGlobalIdMsdChunk32RadixThenDepthStable,
             "global-ID-first registry row is wired to the wrong pipeline");
     const auto depthFirstIt =
         std::ranges::find_if(registry, [](const SortRegistryEntry &entry) {
             return entry.kind ==
-                       SortKind::Depth2FirstThenIdU32MsdBitmaskLe512 &&
-                   entry.category != SortCategory::Alias;
+                   SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe512;
         });
     require(depthFirstIt != registry.end(),
             "depth-first comparator is missing from the registry");
@@ -108,7 +115,7 @@ void requireUniqueDatasetParentAndSortRegistries() {
             "depth-first per-range ID sorting must remain a comparator");
     require(
         depthFirst.sortFunction ==
-                sortForestByDepth2FirstThenIdU32MsdBitmaskLe512TailLinear32WithParent &&
+                sortForestByDepth2FirstThenIdMsdChunk32BitmaskLe512TailLinear32WithParent &&
             depthFirst.optionalIdPermutationSortFunction == nullptr,
         "depth-first comparator is wired to the wrong pipeline");
 }
@@ -134,11 +141,8 @@ void assertParentBuildersMatch(const std::vector<Node> &nodes) {
 void requireAllRegisteredSortsMatch(const std::vector<Node> &nodes,
                                     const std::vector<Node> &expected) {
     const auto artifacts =
-        buildParentArtifactsForKind(ParentKind::Radix, nodes);
+        buildParentArtifactsForKind(ParentKind::RadixJoinIdMsdChunk32, nodes);
     for (const SortRegistryEntry &entry : getSortRegistry()) {
-        if (entry.category == SortCategory::Alias) {
-            continue;
-        }
         const auto sorted = sortForestForKind(
             entry.kind, nodes, artifacts.parentIndex, &artifacts.idPermutation);
         if (!sameNodes(sorted, expected)) {
@@ -159,8 +163,19 @@ void test_support_registries_are_unique() {
             "same-high32 dataset label is not registered");
 }
 
-void test_removed_generation_touched_count_labels_do_not_parse() {
+void test_removed_benchmark_labels_do_not_parse() {
     constexpr std::string_view kRemovedLabels[] = {
+        "dense-depth2-buckets-then-id-msd", "composite-depth2-id-msd-copyback",
+        "composite-depth2-id-msd-lowcopy-branchy",
+        "composite-depth2-id-msd-lowcopy-flattened",
+        "composite-depth2-id-msd-lowcopy-batched",
+        "depth2-first-then-id-u8-msd-full-clear",
+        "depth2-first-then-id-u16-msd-full-clear",
+        "depth2-first-then-id-u32-msd-full-clear",
+        "depth2-first-then-id-u64-msd-full-clear",
+        "depth2-first-then-id-u32-msd-bitmask-le512",
+        "depth2-first-then-id-u32-msd",
+        "global-id-u32-msd-radix-then-depth-stable",
         "adaptive-depth2-u8-chunk-msd-touched-counts",
         "adaptive-depth2-u32-chunk-msd-touched-counts",
         "adaptive-depth2-u64-chunk-msd-touched-counts",
@@ -196,15 +211,16 @@ void test_bitmask_touched_chunk_sort_reuses_scratch() {
         {makeId(0x2000000000000000ULL, 4), 0},
     };
     std::vector<std::size_t> order = {0, 1, 2, 3};
-    std::vector<forest_sorting::detail::ChunkedIndex<1>> current(order.size());
-    std::vector<forest_sorting::detail::ChunkedIndex<1>> next(order.size());
+    std::vector<forest_sorting::detail::IdMsdChunkEntry<1>> current(
+        order.size());
+    std::vector<forest_sorting::detail::IdMsdChunkEntry<1>> next(order.size());
     forest_sorting::detail::BitmaskTouchedCountScratch scratch;
     const UInt128NodeTraits traits;
     auto idForIndex = [&](std::size_t nodeIndex) {
         return UInt128NodeTraits::id(nodes[nodeIndex]);
     };
 
-    forest_sorting::detail::stableLsdSortIndexRangeByIdChunkWithCounter(
+    forest_sorting::detail::stableLsdSortIndexRangeByIdMsdChunkWithCounter(
         order, idForIndex, traits, 0, order.size(), 0, current.data(),
         next.data(), scratch);
     require((order == std::vector<std::size_t>{1, 3, 2, 0}),
@@ -217,7 +233,7 @@ void test_bitmask_touched_chunk_sort_reuses_scratch() {
         {makeId(0x0400000000000000ULL, 4), 0},
     };
     order = {0, 1, 2, 3};
-    forest_sorting::detail::stableLsdSortIndexRangeByIdChunkWithCounter(
+    forest_sorting::detail::stableLsdSortIndexRangeByIdMsdChunkWithCounter(
         order, idForIndex, traits, 0, order.size(), 0, current.data(),
         next.data(), scratch);
     require((order == std::vector<std::size_t>{1, 2, 0, 3}),
@@ -232,12 +248,12 @@ void test_parent_builders_match_for_registered_datasets() {
 }
 
 void test_radix_parent_artifacts_retain_sorted_node_permutations() {
-    constexpr std::array<ParentKind, 2> kRadixKinds = {
-        ParentKind::Radix, ParentKind::RadixByteMsd};
+    constexpr std::array<ParentKind, 5> kRadixKinds = {
+        ParentKind::RadixJoinIdMsdChunk8, ParentKind::RadixJoinIdMsdChunk16,
+        ParentKind::RadixJoinIdMsdChunk32, ParentKind::RadixJoinIdMsdChunk64,
+        ParentKind::RadixJoinIdMsdBytePartitionCore};
     const UInt128NodeTraits traits;
-
-    for (DatasetKind datasetKind : allDatasetKinds()) {
-        const auto nodes = makeGeneratedForestForKind(datasetKind, 1000);
+    auto verifyArtifacts = [&](const std::vector<Node> &nodes) {
         const auto expectedParent =
             buildParentIndexForKind(ParentKind::Control, nodes);
         for (ParentKind parentKind : kRadixKinds) {
@@ -267,7 +283,29 @@ void test_radix_parent_artifacts_retain_sorted_node_permutations() {
                 }
             }
         }
+
+        const auto chunk8Artifacts = buildParentArtifactsForKind(
+            ParentKind::RadixJoinIdMsdChunk8, nodes);
+        const auto bytePartitionArtifacts = buildParentArtifactsForKind(
+            ParentKind::RadixJoinIdMsdBytePartitionCore, nodes);
+        require(chunk8Artifacts.parentIndex ==
+                        bytePartitionArtifacts.parentIndex &&
+                    chunk8Artifacts.idPermutation ==
+                        bytePartitionArtifacts.idPermutation,
+                "chunk8 and byte-partition-core parent radix paths differ");
+    };
+
+    for (DatasetKind datasetKind : allDatasetKinds()) {
+        verifyArtifacts(makeGeneratedForestForKind(datasetKind, 1000));
     }
+
+    auto sortedNodes = makeGeneratedForestForKind(DatasetKind::Random, 1000);
+    std::ranges::sort(sortedNodes, [&](const Node &lhs, const Node &rhs) {
+        return forest_sorting::detail::idLess(lhs.id, rhs.id, traits);
+    });
+    verifyArtifacts(sortedNodes);
+    std::ranges::reverse(sortedNodes);
+    verifyArtifacts(sortedNodes);
 }
 
 void test_global_id_first_sort_computes_or_reuses_id_permutation() {
@@ -282,16 +320,16 @@ void test_global_id_first_sort_computes_or_reuses_id_permutation() {
                 sortForestByComparisonWithParent(nodes, artifacts.parentIndex);
             const std::vector<std::size_t> *idPermutation =
                 artifacts.hasIdPermutation ? &artifacts.idPermutation : nullptr;
-            const auto actual =
-                sortForestForKind(SortKind::GlobalIdU32MsdRadixThenDepthStable,
-                                  nodes, artifacts.parentIndex, idPermutation);
+            const auto actual = sortForestForKind(
+                SortKind::GlobalIdMsdChunk32RadixThenDepthStable, nodes,
+                artifacts.parentIndex, idPermutation);
             require(sameNodes(actual, expected),
                     std::string(parentName(parentKind)) +
                         " global-ID-first sort differed from comparison");
 
-            const auto computed =
-                sortForestForKind(SortKind::GlobalIdU32MsdRadixThenDepthStable,
-                                  nodes, artifacts.parentIndex, nullptr);
+            const auto computed = sortForestForKind(
+                SortKind::GlobalIdMsdChunk32RadixThenDepthStable, nodes,
+                artifacts.parentIndex, nullptr);
             require(sameNodes(computed, actual),
                     "computed and reused ID permutations produced different "
                     "orders");
@@ -508,7 +546,7 @@ void test_parent_radix_cached_path_differentiates_low64() {
     };
 
     const auto artifacts =
-        buildParentArtifactsForKind(ParentKind::Radix, nodes);
+        buildParentArtifactsForKind(ParentKind::RadixJoinIdMsdChunk32, nodes);
 
     require(artifacts.parentIndex[2] == 1,
             "child of A pointed to wrong parent index");
@@ -575,17 +613,18 @@ void test_adaptive_sort_uses_low64_when_high64_matches() {
     require(sorted[3].id == makeId(9, 3));
 }
 
-void test_public_sort_matches_u32_chunk_support_path() {
+void test_public_sort_matches_msd_chunk32_support_path() {
     constexpr std::size_t nodeCount = 10000;
     const auto nodes = makeGeneratedForest(nodeCount, kCommonFixtureMaxDepth);
     const auto parentIndex =
         buildParentIndexForKind(ParentKind::Control, nodes);
 
     const auto productionSorted = sortForestByDepthAndId(nodes);
-    const auto u32SupportSorted =
-        sortForestByDepth2FirstThenIdU32MsdWithParent(nodes, parentIndex);
+    const auto chunk32SupportSorted =
+        sortForestByDepth2FirstThenIdMsdChunk32BitmaskLe512TailLinear32WithParent(
+            nodes, parentIndex);
 
-    require(sameNodes(productionSorted, u32SupportSorted));
+    require(sameNodes(productionSorted, chunk32SupportSorted));
     require(verifySortedByDepthAndId(productionSorted));
 }
 
@@ -809,8 +848,9 @@ void test_dense_depth2_baseline_limits() {
         appendDeepChain(nodes, 65535, 0x111ULL);
         const auto parentIndex =
             buildParentIndexForKind(ParentKind::Control, nodes);
-        const auto sorted = sortForestByDenseDepth2BucketsThenIdMsdWithParent(
-            nodes, parentIndex);
+        const auto sorted =
+            sortForestByDenseDepth2BucketsThenIdMsdChunk64FullClearWithParent(
+                nodes, parentIndex);
         require(verifySortedByDepthAndId(sorted));
     }
 
@@ -822,8 +862,9 @@ void test_dense_depth2_baseline_limits() {
             buildParentIndexForKind(ParentKind::Control, nodes);
         bool rejected = false;
         try {
-            (void)sortForestByDenseDepth2BucketsThenIdMsdWithParent(
-                nodes, parentIndex);
+            (void)
+                sortForestByDenseDepth2BucketsThenIdMsdChunk64FullClearWithParent(
+                    nodes, parentIndex);
         } catch (const std::runtime_error &) {
             rejected = true;
         }
@@ -843,15 +884,12 @@ std::vector<Node> rootNodesFromIds(const std::vector<UInt128> &ids) {
 
 void requireChunkMsdSortsMatchComparison(const std::vector<Node> &inputNodes,
                                          std::string_view caseName) {
-    const auto artifacts =
-        buildParentArtifactsForKind(ParentKind::Radix, inputNodes);
+    const auto artifacts = buildParentArtifactsForKind(
+        ParentKind::RadixJoinIdMsdChunk32, inputNodes);
     const auto expected =
         sortForestByComparisonWithParent(inputNodes, artifacts.parentIndex);
 
     for (const SortRegistryEntry &entry : getSortRegistry()) {
-        if (entry.category == SortCategory::Alias) {
-            continue;
-        }
         const auto sorted =
             sortForestForKind(entry.kind, inputNodes, artifacts.parentIndex,
                               &artifacts.idPermutation);
@@ -998,8 +1036,8 @@ int main() {
         std::cout << "forest sorting tests\n";
         runTest("support registries are unique",
                 test_support_registries_are_unique);
-        runTest("removed generation touched-count labels do not parse",
-                test_removed_generation_touched_count_labels_do_not_parse);
+        runTest("removed benchmark labels do not parse",
+                test_removed_benchmark_labels_do_not_parse);
         runTest("bitmask touched chunk sort reuses scratch",
                 test_bitmask_touched_chunk_sort_reuses_scratch);
         runTest("radix MSD materializes scratch at max digit",
@@ -1051,8 +1089,8 @@ int main() {
                 test_adaptive_sort_uses_low64_when_high64_matches);
         runTest("parent radix cached path differentiates low64",
                 test_parent_radix_cached_path_differentiates_low64);
-        runTest("public sort matches u32 chunk support path",
-                test_public_sort_matches_u32_chunk_support_path);
+        runTest("public sort matches MSD chunk32 support path",
+                test_public_sort_matches_msd_chunk32_support_path);
         runTest("adaptive sort matches comparison for shuffled input",
                 test_adaptive_sort_matches_comparison_for_shuffled_input);
         runTest(

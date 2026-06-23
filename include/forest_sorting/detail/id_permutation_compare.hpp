@@ -109,7 +109,8 @@ decltype(auto) withIdPermutationComparator(const std::vector<Id> &leftIds,
                                            Callback callback) {
     if constexpr (shouldCacheChunkIds<Traits>) {
         constexpr std::size_t chunkCount =
-            (Traits::id_byte_count + chunk_byte_count - 1) / chunk_byte_count;
+            (Traits::id_byte_count + cached_comparison_chunk_bytes - 1) /
+            cached_comparison_chunk_bytes;
         CachedIdPermutationComparator<Id, Traits, chunkCount> comparator(
             leftIds, rightIds, traits);
         return std::forward<Callback>(callback)(comparator);

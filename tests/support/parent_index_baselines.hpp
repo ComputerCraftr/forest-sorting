@@ -10,7 +10,6 @@
 #include "hash_support.hpp"
 #include "uint128_fixtures.hpp"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -32,42 +31,49 @@ enum class ParentKind : uint8_t {
     Flat,
     Control,
     ControlFinalizerHash,
-    Radix,
-    RadixByteMsd,
+    RadixJoinIdMsdChunk8,
+    RadixJoinIdMsdChunk16,
+    RadixJoinIdMsdChunk32,
+    RadixJoinIdMsdChunk64,
+    RadixJoinIdMsdBytePartitionCore,
 };
 
-inline constexpr std::array<ParentKind, 1> kDefaultParentKinds = {
-    ParentKind::Radix,
+using ParentBuildFunction =
+    ParentBuildArtifacts (*)(const std::vector<Node> &nodes);
+
+struct ParentRegistryEntry {
+    ParentKind kind;
+    std::string_view name;
+    ParentBuildFunction build;
+    bool includeByDefault;
 };
 
-constexpr std::array<ParentKind, 1> defaultParentKinds() noexcept {
-    return kDefaultParentKinds;
+const std::vector<ParentRegistryEntry> &getParentRegistry();
+
+inline std::vector<ParentKind> defaultParentKinds() {
+    std::vector<ParentKind> kinds;
+    for (const ParentRegistryEntry &entry : getParentRegistry()) {
+        if (entry.includeByDefault) {
+            kinds.push_back(entry.kind);
+        }
+    }
+    return kinds;
 }
 
-inline constexpr std::array<ParentKind, 6> kRegisteredParentKinds = {
-    ParentKind::Unordered, ParentKind::Flat,
-    ParentKind::Control,   ParentKind::ControlFinalizerHash,
-    ParentKind::Radix,     ParentKind::RadixByteMsd,
-};
-
-constexpr std::array<ParentKind, 6> registeredParentKinds() noexcept {
-    return kRegisteredParentKinds;
+inline std::vector<ParentKind> registeredParentKinds() {
+    std::vector<ParentKind> kinds;
+    kinds.reserve(getParentRegistry().size());
+    for (const ParentRegistryEntry &entry : getParentRegistry()) {
+        kinds.push_back(entry.kind);
+    }
+    return kinds;
 }
 
 inline std::string_view parentName(ParentKind parentKind) {
-    switch (parentKind) {
-    case ParentKind::Unordered:
-        return "unordered";
-    case ParentKind::Flat:
-        return "flat";
-    case ParentKind::Control:
-        return "control";
-    case ParentKind::ControlFinalizerHash:
-        return "control-finalizer-hash";
-    case ParentKind::Radix:
-        return "radix";
-    case ParentKind::RadixByteMsd:
-        return "radix-byte-msd";
+    for (const ParentRegistryEntry &entry : getParentRegistry()) {
+        if (entry.kind == parentKind) {
+            return entry.name;
+        }
     }
     return "unknown";
 }
@@ -84,37 +90,39 @@ template <typename Id, typename IdTraits> class FlatIdIndex {
         : idTraits_(idTraits),
           slots_(detail::nextPowerOfTwo((itemCount * 2) + 1)) {}
 
-    bool insert(const Id &nodeId, std::size_t nodeIndex) {
+    ControlInsertResult insertBounded(const Id &nodeId, std::size_t nodeIndex,
+                                      std::size_t maxProbeLimit) {
         const std::size_t mask = slots_.size() - 1;
         std::size_t slotIndex = idTraits_.hash(nodeId) & mask;
-        for (;;) {
+        for (std::size_t probeIdx = 0; probeIdx < maxProbeLimit; ++probeIdx) {
             FlatIdIndexSlot<Id> &slot = slots_[slotIndex];
             if (!slot.occupied) {
                 slot = FlatIdIndexSlot<Id>{nodeId, nodeIndex, true};
-                return true;
+                return ControlInsertResult::Inserted;
             }
             if (detail::idEqual(slot.id, nodeId, idTraits_)) {
-                return false;
+                return ControlInsertResult::Duplicate;
             }
             slotIndex = (slotIndex + 1) & mask;
         }
+        return ControlInsertResult::ProbeLimitExceeded;
     }
 
-    std::size_t find(const Id &nodeId) const noexcept {
+    ControlFindResult findBounded(const Id &nodeId,
+                                  std::size_t maxProbeLimit) const noexcept {
         const std::size_t mask = slots_.size() - 1;
         std::size_t slotIndex = idTraits_.hash(nodeId) & mask;
-        for (;;) {
+        for (std::size_t probeIdx = 0; probeIdx < maxProbeLimit; ++probeIdx) {
             const FlatIdIndexSlot<Id> &slot = slots_[slotIndex];
             if (!slot.occupied) {
-                break;
+                return {detail::no_parent, false, false};
             }
             if (detail::idEqual(slot.id, nodeId, idTraits_)) {
-                return slot.nodeIndex;
+                return {slot.nodeIndex, true, false};
             }
             slotIndex = (slotIndex + 1) & mask;
         }
-
-        return detail::no_parent;
+        return {detail::no_parent, false, true};
     }
 
   private:
@@ -127,9 +135,16 @@ std::vector<std::size_t> buildParentIndexFlatHash(const Nodes &nodes,
                                                   const Traits &traits) {
     using Id = Traits::Id;
     FlatIdIndex<Id, Traits> idToIndex(nodes.size(), traits);
+    const std::size_t maxProbeLimit = max_probe_groups_before_fallback * 8;
     for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
-        if (!idToIndex.insert(traits.id(nodes[nodeIdx]), nodeIdx)) {
+        const ControlInsertResult result = idToIndex.insertBounded(
+            traits.id(nodes[nodeIdx]), nodeIdx, maxProbeLimit);
+        if (result == ControlInsertResult::Duplicate) {
             throw std::runtime_error("duplicate node id");
+        }
+        if (result == ControlInsertResult::ProbeLimitExceeded) {
+            return detail::buildParentIndexRadixJoinResult(nodes, traits)
+                .parentIndex;
         }
     }
 
@@ -139,7 +154,15 @@ std::vector<std::size_t> buildParentIndexFlatHash(const Nodes &nodes,
         if (detail::isParentSentinel(traits, parentId)) {
             continue;
         }
-        parent[nodeIdx] = idToIndex.find(parentId);
+        const ControlFindResult result =
+            idToIndex.findBounded(parentId, maxProbeLimit);
+        if (result.probeLimitExceeded) {
+            return detail::buildParentIndexRadixJoinResult(nodes, traits)
+                .parentIndex;
+        }
+        if (result.found) {
+            parent[nodeIdx] = result.nodeIndex;
+        }
     }
 
     return parent;
@@ -178,7 +201,8 @@ buildParentIndexUnorderedMap(const std::vector<Node> &nodes) {
 }
 
 inline detail::RadixParentIndexResult
-buildParentIndexRadixByteMsdResult(const std::vector<Node> &nodes) {
+buildParentIndexRadixMsdBytePartitionCoreResult(
+    const std::vector<Node> &nodes) {
     std::vector<std::size_t> scratch;
     auto sortPermutation = [&](std::vector<std::size_t> &permutation,
                                auto idForIndex, const auto &sortTraits) {
@@ -213,36 +237,77 @@ struct UInt128NodeFinalizerHashTraits : UInt128NodeTraits {
     }
 };
 
+template <std::size_t RadixChunkBytes>
+ParentBuildArtifacts
+buildRadixJoinIdMsdChunkParentArtifacts(const std::vector<Node> &nodes) {
+    auto result =
+        detail::buildParentIndexRadixJoinResultByMsdChunks<RadixChunkBytes>(
+            nodes, UInt128NodeTraits{});
+    return {std::move(result.parentIndex), std::move(result.idPermutation),
+            true};
+}
+
+inline const std::vector<ParentRegistryEntry> &getParentRegistry() {
+    static const std::vector<ParentRegistryEntry> registry = {
+        {ParentKind::Unordered, "unordered",
+         [](const std::vector<Node> &nodes) {
+             return ParentBuildArtifacts{
+                 buildParentIndexUnorderedMap(nodes), {}, false};
+         },
+         false},
+        {ParentKind::Flat, "flat",
+         [](const std::vector<Node> &nodes) {
+             return ParentBuildArtifacts{
+                 buildParentIndexFlatHash(nodes, UInt128NodeHashedTraits{}),
+                 {},
+                 false};
+         },
+         false},
+        {ParentKind::Control, "control",
+         [](const std::vector<Node> &nodes) {
+             return ParentBuildArtifacts{
+                 buildParentIndexControl(nodes, UInt128NodeHashedTraits{}),
+                 {},
+                 false};
+         },
+         false},
+        {ParentKind::ControlFinalizerHash, "control-finalizer-hash",
+         [](const std::vector<Node> &nodes) {
+             return ParentBuildArtifacts{
+                 buildParentIndexControl(nodes,
+                                         UInt128NodeFinalizerHashTraits{}),
+                 {},
+                 false};
+         },
+         false},
+        {ParentKind::RadixJoinIdMsdChunk8, "radix-join-id-msd-chunk8",
+         buildRadixJoinIdMsdChunkParentArtifacts<1>, false},
+        {ParentKind::RadixJoinIdMsdChunk16, "radix-join-id-msd-chunk16",
+         buildRadixJoinIdMsdChunkParentArtifacts<2>, false},
+        {ParentKind::RadixJoinIdMsdChunk32, "radix-join-id-msd-chunk32",
+         buildRadixJoinIdMsdChunkParentArtifacts<4>, true},
+        {ParentKind::RadixJoinIdMsdChunk64, "radix-join-id-msd-chunk64",
+         buildRadixJoinIdMsdChunkParentArtifacts<8>, false},
+        {ParentKind::RadixJoinIdMsdBytePartitionCore,
+         "radix-join-id-msd-byte-partition-core",
+         [](const std::vector<Node> &nodes) {
+             auto result =
+                 buildParentIndexRadixMsdBytePartitionCoreResult(nodes);
+             return ParentBuildArtifacts{std::move(result.parentIndex),
+                                         std::move(result.idPermutation), true};
+         },
+         false},
+    };
+    return registry;
+}
+
 inline ParentBuildArtifacts
 buildParentArtifactsForKind(ParentKind parentKind,
                             const std::vector<Node> &nodes) {
-    switch (parentKind) {
-    case ParentKind::Unordered:
-        return {buildParentIndexUnorderedMap(nodes), {}, false};
-    case ParentKind::Flat:
-        return {buildParentIndexFlatHash(nodes, UInt128NodeHashedTraits{}),
-                {},
-                false};
-    case ParentKind::Control:
-        return {buildParentIndexControl(nodes, UInt128NodeHashedTraits{}),
-                {},
-                false};
-    case ParentKind::ControlFinalizerHash:
-        return {
-            buildParentIndexControl(nodes, UInt128NodeFinalizerHashTraits{}),
-            {},
-            false};
-    case ParentKind::Radix: {
-        auto result =
-            detail::buildParentIndexRadixJoinResult(nodes, UInt128NodeTraits{});
-        return {std::move(result.parentIndex), std::move(result.idPermutation),
-                true};
-    }
-    case ParentKind::RadixByteMsd: {
-        auto result = buildParentIndexRadixByteMsdResult(nodes);
-        return {std::move(result.parentIndex), std::move(result.idPermutation),
-                true};
-    }
+    for (const ParentRegistryEntry &entry : getParentRegistry()) {
+        if (entry.kind == parentKind) {
+            return entry.build(nodes);
+        }
     }
     throw std::runtime_error("unknown parent builder");
 }

@@ -33,10 +33,10 @@ add_test(NAME bench.forest.output.csv
                  --size 10000
                  --dataset random
                  --parent default
-                 --sort depth4-first-then-id-u32-msd-full-clear
+                 --sort depth4-first-then-id-msd-chunk32-full-clear
                  --iterations 2
                  --warmup 1
-                 --baseline-parent radix
+                 --baseline-parent radix-join-id-msd-chunk32
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
 add_test(NAME bench.forest.output.tsv
@@ -57,10 +57,10 @@ add_test(NAME bench.forest.output.json
                  --size 10000
                  --dataset same-high64
                  --parent default
-                 --sort depth4-first-then-id-u32-msd-full-clear
+                 --sort depth4-first-then-id-msd-chunk32-full-clear
                  --iterations 2
                  --warmup 1
-                 --baseline-parent radix
+                 --baseline-parent radix-join-id-msd-chunk32
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234
                  --data-seed 0x5eed1235)
@@ -73,7 +73,7 @@ add_test(NAME bench.forest.output.json-raw
                  --size 10000
                  --dataset random
                  --parent control
-                  --sort depth2-first-then-id-u32-msd-bitmask-le512
+                  --sort depth2-first-then-id-msd-chunk32-bitmask-le512
                   --iterations 1
                   --warmup 0
                   --order-seed 0x5eed
@@ -87,7 +87,7 @@ add_test(NAME bench.forest.output.json-none
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort depth2-first-then-id-u32-msd-bitmask-le512
+                 --sort depth2-first-then-id-msd-chunk32-bitmask-le512
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
@@ -108,10 +108,10 @@ add_test(NAME bench.forest.sort-family-smoke
                  --size 10000
                  --dataset random
                  --sort dense-depth2-buckets-then-id-lsd
-                 --sort dense-depth2-buckets-then-id-msd
-                 --sort depth2-first-then-id-u64-msd-full-clear
-                 --sort depth2-first-then-id-u8-msd-full-clear
-                 --sort depth2-first-then-id-u32-msd-bitmask-le512
+                 --sort dense-depth2-buckets-then-id-msd-chunk64-full-clear
+                 --sort depth2-first-then-id-msd-chunk64-full-clear
+                 --sort depth2-first-then-id-msd-chunk8-full-clear
+                 --sort depth2-first-then-id-msd-chunk32-bitmask-le512
                  --iterations 2
                  --warmup 1
                  --order-seed 0x5eed
@@ -121,9 +121,9 @@ add_test(NAME bench.forest.bitmask-le512-vs-full-clear
                  --size 10000
                  --dataset same-high64
                  --parent control
-                 --sort depth2-first-then-id-u32-msd-full-clear
-                 --sort depth2-first-then-id-u32-msd-bitmask-le512
-                 --baseline-sort depth2-first-then-id-u32-msd-full-clear
+                 --sort depth2-first-then-id-msd-chunk32-full-clear
+                 --sort depth2-first-then-id-msd-chunk32-bitmask-le512
+                 --baseline-sort depth2-first-then-id-msd-chunk32-full-clear
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
@@ -133,12 +133,12 @@ add_test(NAME bench.forest.range-ladder-full-clear
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort depth2-first-then-id-u32-msd-full-clear
-                 --sort depth2-first-then-id-u16-msd-full-clear
-                 --sort depth2-first-then-id-range-ladder-u8-le1024-u16-le16384-full-clear
-                 --sort depth2-first-then-id-range-ladder-u8-le2048-u16-le32768-full-clear
-                 --sort depth2-first-then-id-range-ladder-u8-le4096-u16-le65536-full-clear
-                 --baseline-sort depth2-first-then-id-u32-msd-full-clear
+                 --sort depth2-first-then-id-msd-chunk32-full-clear
+                 --sort depth2-first-then-id-msd-chunk16-full-clear
+                 --sort depth2-first-then-id-range-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise-full-clear
+                 --sort depth2-first-then-id-range-ladder-chunk8-le2048-chunk16-le32768-chunk32-otherwise-full-clear
+                 --sort depth2-first-then-id-range-ladder-chunk8-le4096-chunk16-le65536-chunk32-otherwise-full-clear
+                 --baseline-sort depth2-first-then-id-msd-chunk32-full-clear
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
@@ -148,25 +148,28 @@ add_test(NAME bench.forest.range-ladder-bitmask-le512
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort depth2-first-then-id-u32-msd-bitmask-le512
-                 --sort depth2-first-then-id-u16-msd-bitmask-le512
-                 --sort depth2-first-then-id-range-ladder-u8-le1024-u16-le16384-bitmask-le512
-                 --sort depth2-first-then-id-range-ladder-u8-le2048-u16-le32768-bitmask-le512
-                 --sort depth2-first-then-id-range-ladder-u8-le4096-u16-le65536-bitmask-le512
-                 --baseline-sort depth2-first-then-id-u32-msd-bitmask-le512
+                 --sort depth2-first-then-id-msd-chunk32-bitmask-le512
+                 --sort depth2-first-then-id-msd-chunk16-bitmask-le512
+                 --sort depth2-first-then-id-range-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise-bitmask-le512
+                 --sort depth2-first-then-id-range-ladder-chunk8-le2048-chunk16-le32768-chunk32-otherwise-bitmask-le512
+                 --sort depth2-first-then-id-range-ladder-chunk8-le4096-chunk16-le65536-chunk32-otherwise-bitmask-le512
+                 --baseline-sort depth2-first-then-id-msd-chunk32-bitmask-le512
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
 
-add_test(NAME bench.forest.parent-radix-chunk-vs-byte
+add_test(NAME bench.forest.parent-radix-chunk-widths
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset same-high64
-                 --parent radix
-                 --parent radix-byte-msd
-                 --sort depth2-first-then-id-u32-msd-bitmask-le512
-                 --baseline-parent radix-byte-msd
+                 --parent radix-join-id-msd-chunk8
+                 --parent radix-join-id-msd-chunk16
+                 --parent radix-join-id-msd-chunk32
+                 --parent radix-join-id-msd-chunk64
+                 --parent radix-join-id-msd-byte-partition-core
+                 --sort depth2-first-then-id-msd-chunk32-bitmask-le512
+                 --baseline-parent radix-join-id-msd-chunk32
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
@@ -179,11 +182,11 @@ add_test(NAME bench.forest.global-id-first
                  --size 10000
                  --dataset random
                  --parent control
-                 --parent radix
-                 --sort depth2-first-then-id-u32-msd-bitmask-le512
-                 --sort global-id-u32-msd-radix-then-depth-stable
+                 --parent radix-join-id-msd-chunk32
+                 --sort depth2-first-then-id-msd-chunk32-bitmask-le512
+                 --sort global-id-msd-chunk32-radix-then-depth-stable
                  --baseline-parent control
-                 --baseline-sort depth2-first-then-id-u32-msd-bitmask-le512
+                 --baseline-sort depth2-first-then-id-msd-chunk32-bitmask-le512
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
@@ -278,6 +281,20 @@ add_test(NAME bench.forest.invalid.parent-all
 set_tests_properties(bench.forest.invalid.parent-all
                      PROPERTIES WILL_FAIL TRUE)
 
+add_test(NAME bench.forest.invalid.legacy-parent-radix
+         COMMAND forest-sorting-bench --parent radix)
+set_tests_properties(bench.forest.invalid.legacy-parent-radix
+                     PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME bench.forest.invalid.legacy-parent-byte-msd
+         COMMAND forest-sorting-bench --parent radix-byte-msd)
+set_tests_properties(bench.forest.invalid.legacy-parent-byte-msd
+                     PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME bench.forest.invalid.legacy-parent-join-byte-msd
+         COMMAND forest-sorting-bench --parent radix-join-id-byte-msd)
+set_tests_properties(bench.forest.invalid.legacy-parent-join-byte-msd
+                     PROPERTIES WILL_FAIL TRUE)
 
 add_test(NAME bench.tail.invalid.size
          COMMAND forest-sorting-tail-bench --size 0)
@@ -293,4 +310,3 @@ add_test(NAME bench.tail.invalid.baseline
          COMMAND forest-sorting-tail-bench --baseline-sort non-existent)
 set_tests_properties(bench.tail.invalid.baseline
                      PROPERTIES WILL_FAIL TRUE)
-

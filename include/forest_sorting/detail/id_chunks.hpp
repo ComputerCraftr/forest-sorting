@@ -9,7 +9,7 @@
 
 namespace forest_sorting::detail {
 
-inline constexpr std::size_t chunk_byte_count = 8;
+inline constexpr std::size_t cached_comparison_chunk_bytes = 8;
 
 template <typename NodeTraits, typename NodeId>
 concept HasChunkMsbFirst = requires(
@@ -60,8 +60,8 @@ concept HasTemplatedChunkMsbFirst = requires(
     } -> std::convertible_to<ChunkValueType<SorterChunkBytes>>;
 };
 
-template <std::size_t SorterChunkBytes = chunk_byte_count, typename NodeId,
-          typename NodeTraits>
+template <std::size_t SorterChunkBytes = cached_comparison_chunk_bytes,
+          typename NodeId, typename NodeTraits>
 ChunkValueType<SorterChunkBytes>
 chunkMsbFirst(const NodeId &nodeId, std::size_t chunkIndex,
               const NodeTraits &traits) noexcept {
@@ -70,7 +70,7 @@ chunkMsbFirst(const NodeId &nodeId, std::size_t chunkIndex,
         return static_cast<ChunkValueType<SorterChunkBytes>>(
             traits.template chunk_msb_first<SorterChunkBytes>(nodeId,
                                                               chunkIndex));
-    } else if constexpr (SorterChunkBytes == chunk_byte_count &&
+    } else if constexpr (SorterChunkBytes == cached_comparison_chunk_bytes &&
                          HasChunkMsbFirst<NodeTraits, NodeId>) {
         return static_cast<ChunkValueType<SorterChunkBytes>>(
             traits.chunk_msb_first(nodeId, chunkIndex));
@@ -133,7 +133,8 @@ void fillCachedChunkId(CachedChunkId<ChunkCount> &cachedId,
                        const NodeTraits &traits) noexcept {
     for (std::size_t chunkIdx = 0; chunkIdx < ChunkCount; ++chunkIdx) {
         cachedId.chunks[chunkIdx] =
-            chunkMsbFirst<chunk_byte_count>(nodeId, chunkIdx, traits);
+            chunkMsbFirst<cached_comparison_chunk_bytes>(nodeId, chunkIdx,
+                                                         traits);
     }
 }
 

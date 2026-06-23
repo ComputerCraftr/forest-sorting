@@ -637,23 +637,26 @@ void test_small_sort_scratch_policies() {
 }
 
 template <typename LadderPolicy>
-void requireRangeLadderBoundaries(std::size_t u8Max, std::size_t u16Max) {
-    require(LadderPolicy::chunkWidthForRange(u8Max - 1) ==
-                AdaptiveChunkWidth::U8,
-            "range ladder left u8 below its threshold");
-    require(LadderPolicy::chunkWidthForRange(u8Max) == AdaptiveChunkWidth::U8,
-            "range ladder excluded its u8 threshold");
-    require(LadderPolicy::chunkWidthForRange(u8Max + 1) ==
-                AdaptiveChunkWidth::U16,
-            "range ladder did not enter u16 above u8 threshold");
-    require(LadderPolicy::chunkWidthForRange(u16Max - 1) ==
-                AdaptiveChunkWidth::U16,
-            "range ladder left u16 below its threshold");
-    require(LadderPolicy::chunkWidthForRange(u16Max) == AdaptiveChunkWidth::U16,
-            "range ladder excluded its u16 threshold");
-    require(LadderPolicy::chunkWidthForRange(u16Max + 1) ==
-                AdaptiveChunkWidth::U32,
-            "range ladder did not enter u32 above u16 threshold");
+void requireRangeLadderBoundaries(std::size_t chunk8Max,
+                                  std::size_t chunk16Max) {
+    require(LadderPolicy::chunkWidthForRange(chunk8Max - 1) ==
+                AdaptiveRadixChunkWidth::Chunk8,
+            "range ladder left chunk8 below its threshold");
+    require(LadderPolicy::chunkWidthForRange(chunk8Max) ==
+                AdaptiveRadixChunkWidth::Chunk8,
+            "range ladder excluded its chunk8 threshold");
+    require(LadderPolicy::chunkWidthForRange(chunk8Max + 1) ==
+                AdaptiveRadixChunkWidth::Chunk16,
+            "range ladder did not enter chunk16 above chunk8 threshold");
+    require(LadderPolicy::chunkWidthForRange(chunk16Max - 1) ==
+                AdaptiveRadixChunkWidth::Chunk16,
+            "range ladder left chunk16 below its threshold");
+    require(LadderPolicy::chunkWidthForRange(chunk16Max) ==
+                AdaptiveRadixChunkWidth::Chunk16,
+            "range ladder excluded its chunk16 threshold");
+    require(LadderPolicy::chunkWidthForRange(chunk16Max + 1) ==
+                AdaptiveRadixChunkWidth::Chunk32,
+            "range ladder did not enter chunk32 above chunk16 threshold");
 }
 
 void test_range_ladder_boundaries() {

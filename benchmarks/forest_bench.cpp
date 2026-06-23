@@ -54,7 +54,7 @@ struct Options {
     OutputFormat format = OutputFormat::Table;
     std::vector<std::size_t> sizes = {10000, 100000};
     std::vector<DatasetKind> datasets = vectorFromArray(allDatasetKinds());
-    std::vector<ParentKind> parents = vectorFromArray(defaultParentKinds());
+    std::vector<ParentKind> parents = defaultParentKinds();
     std::vector<SortKind> sorts = defaultSortKinds();
     int iterations = 7;
     int warmup = 1;
@@ -282,7 +282,7 @@ Options parseOptions(int argc, char **argv) {
                 customParents = true;
             }
             if (value == "default") {
-                options.parents = vectorFromArray(defaultParentKinds());
+                options.parents = defaultParentKinds();
             } else {
                 const ParentKind parsedParent = parseParent(value);
                 if (std::find(options.parents.begin(), options.parents.end(),
@@ -379,25 +379,27 @@ Options parseOptions(int argc, char **argv) {
 }
 
 void printHelp() {
-    std::cout
-        << "usage: forest-sorting-bench [options]\n"
-        << "\n"
-        << "options:\n"
-        << "  --format table|csv|tsv|json\n"
-        << "  --size N                         repeatable\n"
-        << "  --dataset "
-           "random|outliers|same-high64|same-high32|sequential|"
-           "external-parents|siblings|all\n"
-        << "  --parent "
-           "unordered|flat|control|control-finalizer-hash|radix|radix-byte-msd|"
-           "default\n"
-        << "  --sort ";
+    std::cout << "usage: forest-sorting-bench [options]\n"
+              << "\n"
+              << "options:\n"
+              << "  --format table|csv|tsv|json\n"
+              << "  --size N                         repeatable\n"
+              << "  --dataset "
+                 "random|outliers|same-high64|same-high32|sequential|"
+                 "external-parents|siblings|all\n"
+              << "  --parent ";
     bool first = true;
+    for (const ParentRegistryEntry &entry : getParentRegistry()) {
+        if (!first) {
+            std::cout << "|";
+        }
+        std::cout << entry.name;
+        first = false;
+    }
+    std::cout << "|default\n" << "  --sort ";
+    first = true;
     for (std::size_t entryIdx = 0; entryIdx < getSortRegistry().size();
          ++entryIdx) {
-        if (getSortRegistry()[entryIdx].category == SortCategory::Alias) {
-            continue;
-        }
         if (!first) {
             std::cout << "|";
         }
@@ -408,8 +410,9 @@ void printHelp() {
         << "|default\n"
         << "                                   depth2 labels use typed "
            "uint16_t "
-           "depth payloads; u8/u16/u32 chunk labels fix ID chunk width; "
-           "range-ladder labels choose u8/u16/u32 once per equal-depth range; "
+           "depth payloads; chunk8/chunk16/chunk32/chunk64 labels fix packed "
+           "ID radix width; range-ladder labels choose chunk8/chunk16/chunk32 "
+           "once per equal-depth range; "
            "full-clear and bitmask-le512 suffixes identify counter policy; "
            "default excludes opt-in tuning experiments\n"
         << "  --iterations N\n"

@@ -18,6 +18,26 @@ function(forest_sorting_apply_common_options target)
     target_compile_options(${target} PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
         $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -pedantic>
+        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>:
+            -Werror
+            -Wnewline-eof
+            -Wnull-dereference
+            -Wshadow-all
+            -Wswitch-enum
+            -Wundef
+            -Wunreachable-code
+            -Wunreachable-code-break
+            -Wunreachable-code-return
+            -Wunused-const-variable
+            -Wunused-function
+            -Wunused-lambda-capture
+            -Wunused-local-typedef
+            -Wunused-parameter
+            -Wunused-private-field
+            -Wunused-value
+            -Wunused-variable
+            -Wvla
+        >
         $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fsanitize=address,undefined>
         $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-fno-omit-frame-pointer>
     )
