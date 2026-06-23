@@ -379,18 +379,19 @@ Options parseOptions(int argc, char **argv) {
 }
 
 void printHelp() {
-    std::cout << "usage: forest-sorting-bench [options]\n"
-              << "\n"
-              << "options:\n"
-              << "  --format table|csv|tsv|json\n"
-              << "  --size N                         repeatable\n"
-              << "  --dataset "
-                 "random|outliers|same-high64|same-high32|sequential|"
-                 "external-parents|siblings|all\n"
-              << "  --parent "
-                 "unordered|flat|control|control-xor-hash|radix|radix-byte-msd|"
-                 "default\n"
-              << "  --sort ";
+    std::cout
+        << "usage: forest-sorting-bench [options]\n"
+        << "\n"
+        << "options:\n"
+        << "  --format table|csv|tsv|json\n"
+        << "  --size N                         repeatable\n"
+        << "  --dataset "
+           "random|outliers|same-high64|same-high32|sequential|"
+           "external-parents|siblings|all\n"
+        << "  --parent "
+           "unordered|flat|control|control-finalizer-hash|radix|radix-byte-msd|"
+           "default\n"
+        << "  --sort ";
     bool first = true;
     for (std::size_t entryIdx = 0; entryIdx < getSortRegistry().size();
          ++entryIdx) {

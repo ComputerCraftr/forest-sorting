@@ -5,10 +5,8 @@
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <cstdint>
 #include <vector>
 
 namespace forest_sorting::detail {
@@ -154,72 +152,6 @@ inline void stableGroupOrderByDepth(std::vector<std::size_t> &order,
     } else {
         groupOrderByDepthMsdWithConsumer<DepthPrefixBytes, CountPolicy>(
             order, scratch, depths, ignoreRange);
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Public detail entry point
-// -----------------------------------------------------------------------------
-
-template <std::size_t DepthPrefixBytes, typename Nodes, typename IdTraits,
-          typename Depth>
-void sortOrderByDepthAndId(std::vector<std::size_t> &order,
-                           std::vector<std::size_t> &scratch,
-                           const Nodes &nodes, const IdTraits &traits,
-                           const std::vector<Depth> &depths,
-                           uint32_t observedMaxDepth) {
-    if (order.size() <= 1) {
-        return;
-    }
-
-    // Dense grouping is limited to structurally possible depth values and a
-    // fixed histogram resource cap. Arbitrary precomputed or very large valid
-    // depths use MSD depth grouping instead.
-    std::vector<DepthRange<Depth>> depthRanges;
-    depthRanges.reserve(initial_range_stack_capacity);
-    std::vector<std::size_t> depthStarts;
-    std::vector<std::size_t> depthOffsets;
-
-    if (shouldUseDenseDepthGrouping(order.size(), observedMaxDepth)) {
-        groupOrderByDepthDense(order, scratch, depths,
-                               static_cast<Depth>(observedMaxDepth),
-                               depthRanges, depthStarts, depthOffsets);
-    } else {
-        groupOrderByDepthMsd<
-            DepthPrefixBytes,
-            BitmaskTouchedCountsUpTo<production_touched_count_max_range_size>>(
-            order, scratch, depths, depthRanges);
-    }
-
-    std::size_t maxRadixRangeSize = 0;
-    for (const DepthRange<Depth> &range : depthRanges) {
-        const std::size_t rangeBegin = range.begin;
-        const std::size_t rangeEnd = range.end;
-        const std::size_t rangeSize = rangeEnd - rangeBegin;
-        if (rangeSize > small_id_range_sort_threshold) {
-            maxRadixRangeSize = std::max(maxRadixRangeSize, rangeSize);
-        }
-    }
-
-    IdChunkSortWorkspace<production_id_chunk_bytes, ProductionIdCountPolicy>
-        idWorkspace;
-    idWorkspace.allocate(maxRadixRangeSize);
-    auto idForIndex = [&](std::size_t nodeIndex) {
-        return traits.id(nodes[nodeIndex]);
-    };
-
-    for (const DepthRange<Depth> &range : depthRanges) {
-        const std::size_t rangeBegin = range.begin;
-        const std::size_t rangeEnd = range.end;
-#ifndef NDEBUG
-        const Depth rangeDepth = range.depth;
-        for (std::size_t offset = rangeBegin; offset < rangeEnd; ++offset) {
-            assert(depths[order[offset]] == rangeDepth);
-        }
-#endif
-        sortIndexRangeByIdChunks<production_id_chunk_bytes,
-                                 ProductionIdCountPolicy>(
-            order, idForIndex, traits, rangeBegin, rangeEnd, 0, idWorkspace);
     }
 }
 

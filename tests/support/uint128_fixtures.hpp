@@ -17,6 +17,15 @@
 
 namespace forest_sorting::test_support {
 
+inline uint64_t mixDeterministicUInt128Word(uint64_t value) noexcept {
+    value ^= value >> 33U;
+    value *= 0xff51afd7ed558ccdULL;
+    value ^= value >> 33U;
+    value *= 0xc4ceb9fe1a85ec53ULL;
+    value ^= value >> 33U;
+    return value;
+}
+
 inline constexpr uint32_t kDefaultBenchmarkDataSeed = 0x5eed1234U;
 inline constexpr uint32_t kCommonFixtureMaxDepth = 30U;
 inline constexpr uint64_t kDefaultGeneratedForestSeed = 0x5eed1234ULL;
@@ -33,14 +42,34 @@ inline constexpr uint64_t kSiblingsDatasetSeedSalt = 0x200007ULL;
 
 using forest_sorting::makeId;
 
+template <typename Rng> inline forest_sorting::UInt128 makeRandomId(Rng &rng) {
+    const uint64_t high = static_cast<uint64_t>(rng());
+    const uint64_t low = static_cast<uint64_t>(rng());
+    return makeId(high, low);
+}
+
+inline constexpr uint64_t golden_ratio_64 = 0x9e3779b97f4a7c15ULL;
+
+inline forest_sorting::UInt128 makeRandomId(uint64_t seed,
+                                            std::size_t nodeIdx) {
+    const uint64_t kHighSalt = golden_ratio_64;
+    constexpr uint64_t kLowSalt = 0xbf58476d1ce4e5b9ULL;
+    constexpr uint64_t kIndexStride = 0x94d049bb133111ebULL;
+
+    const uint64_t indexWord = static_cast<uint64_t>(nodeIdx) + 1ULL;
+    const uint64_t high = mixDeterministicUInt128Word(
+        seed ^ kHighSalt ^ (indexWord * kIndexStride));
+    uint64_t low = mixDeterministicUInt128Word(seed ^ kLowSalt ^
+                                               (indexWord * kIndexStride));
+    if (high == 0 && low == 0) {
+        low = 1;
+    }
+    return makeId(high, low);
+}
+
 inline uint64_t mixFixtureSeed(uint32_t seed, uint64_t salt) {
-    uint64_t value = (static_cast<uint64_t>(seed) << 32U) ^ salt;
-    value ^= value >> 33U;
-    value *= 0xff51afd7ed558ccdULL;
-    value ^= value >> 33U;
-    value *= 0xc4ceb9fe1a85ec53ULL;
-    value ^= value >> 33U;
-    return value;
+    return mixDeterministicUInt128Word((static_cast<uint64_t>(seed) << 32U) ^
+                                       salt);
 }
 
 enum class DatasetKind : uint8_t {
@@ -110,7 +139,7 @@ inline bool sameNodes(const std::vector<Node> &lhs,
 }
 
 inline std::vector<Node> shuffledCopy(std::vector<Node> nodes, uint64_t seed) {
-    std::mt19937_64 rng(seed); // NOLINT(bugprone-random-generator-seed)
+    std::mt19937_64 rng(seed);
     std::shuffle(nodes.begin(), nodes.end(), rng);
     return nodes;
 }
@@ -147,18 +176,15 @@ inline std::vector<Node> makeDepthLinkedForest(std::size_t nodeCount,
 
 inline std::vector<Node> makeGeneratedForest(std::size_t nodeCount,
                                              uint32_t depthCycleMax,
-                                             uint64_t rngSeed) {
-    // NOLINTNEXTLINE(bugprone-random-generator-seed)
-    std::mt19937_64 rng(rngSeed);
+                                             uint64_t seed) {
     auto idGenerator = [&](std::size_t nodeIdx) {
-        const uint64_t high = rng();
-        const uint64_t low = static_cast<uint64_t>(nodeIdx) + 1ULL;
-        return makeId(high, low);
+        return makeRandomId(seed, nodeIdx);
     };
 
     std::vector<Node> nodes =
         makeDepthLinkedForest(nodeCount, depthCycleMax, idGenerator);
-    std::shuffle(nodes.begin(), nodes.end(), rng);
+    std::mt19937_64 shuffleRng(seed);
+    std::shuffle(nodes.begin(), nodes.end(), shuffleRng);
     return nodes;
 }
 

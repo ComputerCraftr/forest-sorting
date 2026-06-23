@@ -22,58 +22,44 @@ enum class SortCategory : uint8_t {
     Comparator,
     CounterPolicyExperiment,
     RangeLadderExperiment,
-    TailExperiment,
-    ReuseExperiment,
     Alias,
 };
 
 enum class SortKind : uint8_t {
     Comparison,
-    DepthBucketDepth2Lsd,
-    CompositeLsd,
-    DepthBucketDepth2ChunkMsd,
-    CompositeByteMsdCopyback,
-    CompositeByteMsdLowcopyBranchy,
-    CompositeByteMsdLowcopyFlattened,
-    CompositeByteMsdLowcopyBatched,
-    AdaptiveDepth2U32ChunkMsdNoDense,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32,
-    AdaptiveDepth2GlobalIdRadixStableDepth,
+    DenseDepth2BucketsThenIdLsd,
+    CompositeDepth2IdLsd,
+    DenseDepth2BucketsThenIdMsd,
+    CompositeDepth2IdMsdCopyback,
+    CompositeDepth2IdMsdLowcopyBranchy,
+    CompositeDepth2IdMsdLowcopyFlattened,
+    CompositeDepth2IdMsdLowcopyBatched,
+    Depth2FirstThenIdU32MsdNoDense,
+    Depth2FirstThenIdU32MsdBitmaskLe512,
+    GlobalIdU32MsdRadixThenDepthStable,
 
     // Comparators
-    AdaptiveDepth2U8ChunkMsdFullClearTailLinear32,
-    AdaptiveDepth2U8ChunkMsdBitmaskLe512TailLinear32,
-    AdaptiveDepth2U16ChunkMsdFullClearTailLinear32,
-    AdaptiveDepth2U16ChunkMsdBitmaskLe512TailLinear32,
-    AdaptiveDepth2U32ChunkMsdFullClearTailLinear32,
-    AdaptiveDepth2U64ChunkMsdFullClearTailLinear32,
-    AdaptiveDepth2U64ChunkMsdFullClearTailBinary32,
-    AdaptiveDepth4U32ChunkMsdFullClearTailLinear32,
+    Depth2FirstThenIdU8MsdFullClear,
+    Depth2FirstThenIdU8MsdBitmaskLe512,
+    Depth2FirstThenIdU16MsdFullClear,
+    Depth2FirstThenIdU16MsdBitmaskLe512,
+    Depth2FirstThenIdU32MsdFullClear,
+    Depth2FirstThenIdU64MsdFullClear,
+    Depth4FirstThenIdU32MsdFullClear,
 
     // Counter Policy Experiments
-    AdaptiveDepth2U32ChunkMsdBitmaskLe128TailLinear32,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe256TailLinear32,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe1024TailLinear32,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe4096TailLinear32,
-
-    // Tail Experiments
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear16,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear48,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential16,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential32,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential48,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise16,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise32,
-    AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise48,
+    Depth2FirstThenIdU32MsdBitmaskLe128,
+    Depth2FirstThenIdU32MsdBitmaskLe256,
+    Depth2FirstThenIdU32MsdBitmaskLe1024,
+    Depth2FirstThenIdU32MsdBitmaskLe4096,
 
     // Range Ladder Experiments
-    AdaptiveDepth2RangeLadderU8Le1024U16Le16384FullClearTailLinear32,
-    AdaptiveDepth2RangeLadderU8Le2048U16Le32768FullClearTailLinear32,
-    AdaptiveDepth2RangeLadderU8Le4096U16Le65536FullClearTailLinear32,
-    AdaptiveDepth2RangeLadderU8Le1024U16Le16384BitmaskLe512TailLinear32,
-    AdaptiveDepth2RangeLadderU8Le2048U16Le32768BitmaskLe512TailLinear32,
-    AdaptiveDepth2RangeLadderU8Le4096U16Le65536BitmaskLe512TailLinear32,
+    Depth2FirstThenIdRangeLadderU8Le1024U16Le16384FullClear,
+    Depth2FirstThenIdRangeLadderU8Le2048U16Le32768FullClear,
+    Depth2FirstThenIdRangeLadderU8Le4096U16Le65536FullClear,
+    Depth2FirstThenIdRangeLadderU8Le1024U16Le16384BitmaskLe512,
+    Depth2FirstThenIdRangeLadderU8Le2048U16Le32768BitmaskLe512,
+    Depth2FirstThenIdRangeLadderU8Le4096U16Le65536BitmaskLe512,
 };
 
 using SortFunction = std::vector<Node> (*)(const std::vector<Node> &,
@@ -105,34 +91,30 @@ sortForestByAdaptiveChunkWrapper(const std::vector<Node> &nodes,
         nodes, parentIndex, AllowDenseDepthGrouping);
 }
 
-inline bool defaultIncludeForCategory(SortCategory category, SortKind kind) {
-    if (category == SortCategory::Production ||
-        category == SortCategory::Baseline) {
+inline bool defaultIncludeForKind(SortKind kind) {
+    switch (kind) {
+    case SortKind::GlobalIdU32MsdRadixThenDepthStable:
+    case SortKind::Depth2FirstThenIdU32MsdBitmaskLe512:
+    case SortKind::Comparison:
         return true;
+    default:
+        return false;
     }
-    if (category == SortCategory::Comparator) {
-        return kind !=
-                   SortKind::AdaptiveDepth2U16ChunkMsdFullClearTailLinear32 &&
-               kind != SortKind::
-                           AdaptiveDepth2U16ChunkMsdBitmaskLe512TailLinear32 &&
-               kind != SortKind::AdaptiveDepth2U32ChunkMsdFullClearTailLinear32;
-    }
-    return false;
 }
 
 inline void addEntry(std::vector<SortRegistryEntry> &registry, SortKind kind,
                      std::string_view name, SortFunction sortFunc,
                      SortCategory category) {
-    registry.push_back({kind, name, sortFunc, nullptr, category,
-                        defaultIncludeForCategory(category, kind)});
+    registry.push_back(
+        {kind, name, sortFunc, nullptr, category, defaultIncludeForKind(kind)});
 }
 
 inline void
 addOptionalIdPermutationEntry(std::vector<SortRegistryEntry> &registry,
                               SortKind kind, std::string_view name,
                               OptionalIdPermutationSortFunction sortFunc) {
-    registry.push_back(
-        {kind, name, nullptr, sortFunc, SortCategory::ReuseExperiment, false});
+    registry.push_back({kind, name, nullptr, sortFunc, SortCategory::Production,
+                        defaultIncludeForKind(kind)});
 }
 
 inline void addAlias(std::vector<SortRegistryEntry> &registry, SortKind kind,
@@ -145,19 +127,8 @@ template <SortKind Kind, std::size_t Threshold>
 void addBitmaskThresholdEntry(std::vector<SortRegistryEntry> &registry,
                               std::string_view name) {
     const auto func =
-        sortForestByAdaptiveDepth2U32ChunkBitmaskLeWithParent<Threshold>;
+        sortForestByDepth2FirstThenIdU32MsdBitmaskLeWithParent<Threshold>;
     addEntry(registry, Kind, name, func, SortCategory::CounterPolicyExperiment);
-}
-
-template <SortKind Kind, typename SmallSorter, std::size_t Threshold>
-void addTailExperimentEntry(std::vector<SortRegistryEntry> &registry,
-                            std::string_view name) {
-    const auto func = sortForestByAdaptiveChunkWrapper<
-        2, 4,
-        detail::BitmaskTouchedCountsUpTo<
-            detail::production_touched_count_max_range_size>,
-        Threshold, SmallSorter>;
-    addEntry(registry, Kind, name, func, SortCategory::TailExperiment);
 }
 
 template <SortKind FullClearKind, SortKind BitmaskLe512Kind, std::size_t U8Max,
@@ -165,9 +136,9 @@ template <SortKind FullClearKind, SortKind BitmaskLe512Kind, std::size_t U8Max,
 void addRangeLadderEntries(std::vector<SortRegistryEntry> &registry,
                            std::string_view fullClearName,
                            std::string_view bitmaskLe512Name) {
-    const auto fcFunc = sortForestByAdaptiveDepth2RangeLadderWithParent<
+    const auto fcFunc = sortForestByDepth2FirstThenIdRangeLadderWithParent<
         U8Max, U16Max, detail::FullClearCounts>;
-    const auto bmFunc = sortForestByAdaptiveDepth2RangeLadderWithParent<
+    const auto bmFunc = sortForestByDepth2FirstThenIdRangeLadderWithParent<
         U8Max, U16Max,
         detail::BitmaskTouchedCountsUpTo<
             detail::production_touched_count_max_range_size>>;
@@ -183,164 +154,126 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
         std::vector<SortRegistryEntry> reg;
 
         // Local X-style macros for repetitive registry rows
-#define FS_ADD_TAIL_LINEAR(Threshold)                                          \
-    addTailExperimentEntry<                                                    \
-        SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear##Threshold,  \
-        LinearSmallSorter<Threshold>, Threshold>(                              \
-        reg,                                                                   \
-        "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear" #Threshold)
-
-#define FS_ADD_TAIL_EXPONENTIAL(Threshold)                                     \
-    addTailExperimentEntry<                                                    \
-        SortKind::                                                             \
-            AdaptiveDepth2U32ChunkMsdBitmaskLe512TailExponential##Threshold,   \
-        ExponentialSmallSorter<Threshold>, Threshold>(                         \
-        reg, "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-"               \
-             "exponential" #Threshold)
-
-#define FS_ADD_TAIL_BRANCHLESS_BITWISE(Threshold)                                  \
-    addTailExperimentEntry<                                                        \
-        SortKind::                                                                 \
-            AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBranchlessBitwise##Threshold, \
-        BranchlessBitwiseSmallSorter<Threshold>, Threshold>(                       \
-        reg, "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-branchless-"        \
-             "bitwise" #Threshold)
-
 #define FS_ADD_BITMASK_THRESHOLD(Threshold)                                    \
     addBitmaskThresholdEntry<                                                  \
-        SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe##Threshold##TailLinear32, \
-        Threshold>(reg, "adaptive-depth2-u32-chunk-msd-bitmask-le" #Threshold  \
-                        "-tail-linear32")
+        SortKind::Depth2FirstThenIdU32MsdBitmaskLe##Threshold, Threshold>(     \
+        reg, "depth2-first-then-id-u32-msd-bitmask-le" #Threshold)
 
-#define FS_ADD_RANGE_LADDER(U8Max, U16Max)                                                 \
-    addRangeLadderEntries<                                                                 \
-        SortKind::                                                                         \
-            AdaptiveDepth2RangeLadderU8Le##U8Max##U16Le##U16Max##FullClearTailLinear32,    \
-        SortKind::                                                                         \
-            AdaptiveDepth2RangeLadderU8Le##U8Max##U16Le##U16Max##BitmaskLe512TailLinear32, \
-        U8Max, U16Max>(reg,                                                                \
-                       "adaptive-depth2-range-ladder-u8-le" #U8Max                         \
-                       "-u16-le" #U16Max "-full-clear-tail-linear32",                      \
-                       "adaptive-depth2-range-ladder-u8-le" #U8Max                         \
-                       "-u16-le" #U16Max "-bitmask-le512-tail-linear32")
+#define FS_ADD_RANGE_LADDER(U8Max, U16Max)                                        \
+    addRangeLadderEntries<                                                        \
+        SortKind::                                                                \
+            Depth2FirstThenIdRangeLadderU8Le##U8Max##U16Le##U16Max##FullClear,    \
+        SortKind::                                                                \
+            Depth2FirstThenIdRangeLadderU8Le##U8Max##U16Le##U16Max##BitmaskLe512, \
+        U8Max, U16Max>(reg,                                                       \
+                       "depth2-first-then-id-range-ladder-u8-le" #U8Max           \
+                       "-u16-le" #U16Max "-full-clear",                           \
+                       "depth2-first-then-id-range-ladder-u8-le" #U8Max           \
+                       "-u16-le" #U16Max "-bitmask-le512")
 
-        // Baselines
+        // Support baselines and implementation comparators. These are explicit
+        // opt-in rows unless defaultIncludeForKind names them directly.
         addEntry(reg, SortKind::Comparison, "comparison",
                  sortForestByComparisonWithParent, SortCategory::Baseline);
-        addEntry(reg, SortKind::DepthBucketDepth2Lsd, "depth-bucket-depth2-lsd",
-                 sortForestByDenseDepth2BucketedLsdWithParent,
+        addEntry(reg, SortKind::DenseDepth2BucketsThenIdLsd,
+                 "dense-depth2-buckets-then-id-lsd",
+                 sortForestByDenseDepth2BucketsThenIdLsdWithParent,
                  SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeLsd, "composite-depth2-lsd",
-                 sortForestByCompositeDepth2LsdWithParent,
+        addEntry(reg, SortKind::CompositeDepth2IdLsd, "composite-depth2-id-lsd",
+                 sortForestByCompositeDepth2IdLsdWithParent,
                  SortCategory::Baseline);
-        addEntry(reg, SortKind::DepthBucketDepth2ChunkMsd,
-                 "depth-bucket-depth2-chunk-msd",
-                 sortForestByDenseDepth2BucketedMsdWithParent,
+        addEntry(reg, SortKind::DenseDepth2BucketsThenIdMsd,
+                 "dense-depth2-buckets-then-id-msd",
+                 sortForestByDenseDepth2BucketsThenIdMsdWithParent,
                  SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeByteMsdCopyback,
-                 "composite-depth2-byte-msd-copyback",
-                 sortForestByCompositeDepth2MsdCopybackWithParent,
+        addEntry(reg, SortKind::CompositeDepth2IdMsdCopyback,
+                 "composite-depth2-id-msd-copyback",
+                 sortForestByCompositeDepth2IdMsdCopybackWithParent,
                  SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeByteMsdLowcopyBranchy,
-                 "composite-depth2-byte-msd-lowcopy-branchy",
-                 sortForestByCompositeDepth2MsdLowcopyBranchyWithParent,
+        addEntry(reg, SortKind::CompositeDepth2IdMsdLowcopyBranchy,
+                 "composite-depth2-id-msd-lowcopy-branchy",
+                 sortForestByCompositeDepth2IdMsdLowcopyBranchyWithParent,
                  SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeByteMsdLowcopyFlattened,
-                 "composite-depth2-byte-msd-lowcopy-flattened",
-                 sortForestByCompositeDepth2MsdLowcopyFlattenedWithParent,
+        addEntry(reg, SortKind::CompositeDepth2IdMsdLowcopyFlattened,
+                 "composite-depth2-id-msd-lowcopy-flattened",
+                 sortForestByCompositeDepth2IdMsdLowcopyFlattenedWithParent,
                  SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeByteMsdLowcopyBatched,
-                 "composite-depth2-byte-msd-lowcopy-batched",
-                 sortForestByCompositeDepth2MsdLowcopyBatchedWithParent,
+        addEntry(reg, SortKind::CompositeDepth2IdMsdLowcopyBatched,
+                 "composite-depth2-id-msd-lowcopy-batched",
+                 sortForestByCompositeDepth2IdMsdLowcopyBatchedWithParent,
                  SortCategory::Baseline);
 
         // Comparators
-        addEntry(reg, SortKind::AdaptiveDepth2U32ChunkMsdNoDense,
-                 "adaptive-depth2-u32-chunk-msd-no-dense",
-                 sortForestByAdaptiveDepth2U32ChunkNoDenseWithParent,
+        addEntry(reg, SortKind::Depth2FirstThenIdU32MsdNoDense,
+                 "depth2-first-then-id-u32-msd-no-dense",
+                 sortForestByDepth2FirstThenIdU32MsdNoDenseWithParent,
                  SortCategory::Comparator);
 
-        // Production Default Row
-        addEntry(reg,
-                 SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32,
-                 "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32",
-                 sortForestByAdaptiveDepth2U32ChunkBitmaskLe512WithParent,
-                 SortCategory::Production);
+        // Default depth-first comparator retained for production A/B evidence.
+        addEntry(
+            reg, SortKind::Depth2FirstThenIdU32MsdBitmaskLe512,
+            "depth2-first-then-id-u32-msd-bitmask-le512",
+            sortForestByDepth2FirstThenIdU32MsdBitmaskLe512TailLinear32WithParent,
+            SortCategory::Comparator);
+        // Production global-ID-first row.
         addOptionalIdPermutationEntry(
-            reg, SortKind::AdaptiveDepth2GlobalIdRadixStableDepth,
-            "adaptive-depth2-global-id-radix-stable-depth",
-            sortForestByAdaptiveDepth2GlobalIdRadixStableDepth);
+            reg, SortKind::GlobalIdU32MsdRadixThenDepthStable,
+            "global-id-u32-msd-radix-then-depth-stable",
+            sortForestByGlobalIdU32MsdRadixThenDepthStable);
 
         // Deprecated Production Aliases (Legacy alias compatibility)
-        addAlias(reg,
-                 SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailLinear32,
-                 "adaptive-depth2-u32-chunk-msd",
-                 sortForestByAdaptiveDepth2U32ChunkBitmaskLe512WithParent);
+        addAlias(reg, SortKind::Depth2FirstThenIdU32MsdBitmaskLe512,
+                 "depth2-first-then-id-u32-msd",
+                 sortForestByDepth2FirstThenIdU32MsdWithParent);
 
         // U32 full-clear comparator
-        addEntry(reg, SortKind::AdaptiveDepth2U32ChunkMsdFullClearTailLinear32,
-                 "adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32",
-                 sortForestByAdaptiveDepth2U32ChunkFullClearWithParent,
-                 SortCategory::Comparator);
+        addEntry(
+            reg, SortKind::Depth2FirstThenIdU32MsdFullClear,
+            "depth2-first-then-id-u32-msd-full-clear",
+            sortForestByDepth2FirstThenIdU32MsdFullClearTailLinear32WithParent,
+            SortCategory::Comparator);
 
         // U8 full-clear
-        addEntry(reg, SortKind::AdaptiveDepth2U8ChunkMsdFullClearTailLinear32,
-                 "adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32",
-                 sortForestByAdaptiveDepth2U8ChunkFullClearWithParent,
-                 SortCategory::Comparator);
+        addEntry(
+            reg, SortKind::Depth2FirstThenIdU8MsdFullClear,
+            "depth2-first-then-id-u8-msd-full-clear",
+            sortForestByDepth2FirstThenIdU8MsdFullClearTailLinear32WithParent,
+            SortCategory::Comparator);
 
         // U8 bitmask-le512
-        addEntry(reg,
-                 SortKind::AdaptiveDepth2U8ChunkMsdBitmaskLe512TailLinear32,
-                 "adaptive-depth2-u8-chunk-msd-bitmask-le512-tail-linear32",
-                 sortForestByAdaptiveDepth2U8ChunkBitmaskLe512WithParent,
-                 SortCategory::Comparator);
+        addEntry(
+            reg, SortKind::Depth2FirstThenIdU8MsdBitmaskLe512,
+            "depth2-first-then-id-u8-msd-bitmask-le512",
+            sortForestByDepth2FirstThenIdU8MsdBitmaskLe512TailLinear32WithParent,
+            SortCategory::Comparator);
 
         // U16 full-clear
-        addEntry(reg, SortKind::AdaptiveDepth2U16ChunkMsdFullClearTailLinear32,
-                 "adaptive-depth2-u16-chunk-msd-full-clear-tail-linear32",
-                 sortForestByAdaptiveDepth2U16ChunkFullClearWithParent,
-                 SortCategory::Comparator);
+        addEntry(
+            reg, SortKind::Depth2FirstThenIdU16MsdFullClear,
+            "depth2-first-then-id-u16-msd-full-clear",
+            sortForestByDepth2FirstThenIdU16MsdFullClearTailLinear32WithParent,
+            SortCategory::Comparator);
 
         // U16 bitmask-le512
-        addEntry(reg,
-                 SortKind::AdaptiveDepth2U16ChunkMsdBitmaskLe512TailLinear32,
-                 "adaptive-depth2-u16-chunk-msd-bitmask-le512-tail-linear32",
-                 sortForestByAdaptiveDepth2U16ChunkBitmaskLe512WithParent,
-                 SortCategory::Comparator);
+        addEntry(
+            reg, SortKind::Depth2FirstThenIdU16MsdBitmaskLe512,
+            "depth2-first-then-id-u16-msd-bitmask-le512",
+            sortForestByDepth2FirstThenIdU16MsdBitmaskLe512TailLinear32WithParent,
+            SortCategory::Comparator);
 
         // U64 full-clear
-        addEntry(reg, SortKind::AdaptiveDepth2U64ChunkMsdFullClearTailLinear32,
-                 "adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32",
-                 sortForestByAdaptiveDepth2U64ChunkWithParent,
-                 SortCategory::Comparator);
-
-        // U64 tail-binary
-        addEntry(reg, SortKind::AdaptiveDepth2U64ChunkMsdFullClearTailBinary32,
-                 "adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32",
-                 sortForestByAdaptiveDepth2U64ChunkBinarySmallWithParent,
-                 SortCategory::Comparator);
+        addEntry(
+            reg, SortKind::Depth2FirstThenIdU64MsdFullClear,
+            "depth2-first-then-id-u64-msd-full-clear",
+            sortForestByDepth2FirstThenIdU64MsdFullClearTailLinear32WithParent,
+            SortCategory::Comparator);
 
         // Depth4 U32
-        addEntry(reg, SortKind::AdaptiveDepth4U32ChunkMsdFullClearTailLinear32,
-                 "adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32",
-                 sortForestByAdaptiveDepth4U32ChunkWithParent,
-                 SortCategory::Comparator);
-
-        // Tail Experiments
-        FS_ADD_TAIL_LINEAR(16);
-        FS_ADD_TAIL_LINEAR(48);
-        addTailExperimentEntry<
-            SortKind::AdaptiveDepth2U32ChunkMsdBitmaskLe512TailBinary32,
-            BinarySmallSorter<32>, 32>(
-            reg, "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32");
-
-        FS_ADD_TAIL_EXPONENTIAL(16);
-        FS_ADD_TAIL_EXPONENTIAL(32);
-        FS_ADD_TAIL_EXPONENTIAL(48);
-        FS_ADD_TAIL_BRANCHLESS_BITWISE(16);
-        FS_ADD_TAIL_BRANCHLESS_BITWISE(32);
-        FS_ADD_TAIL_BRANCHLESS_BITWISE(48);
+        addEntry(
+            reg, SortKind::Depth4FirstThenIdU32MsdFullClear,
+            "depth4-first-then-id-u32-msd-full-clear",
+            sortForestByDepth4FirstThenIdU32MsdFullClearTailLinear32WithParent,
+            SortCategory::Comparator);
 
         // Parameterized bitmask thresholds
         FS_ADD_BITMASK_THRESHOLD(128);
@@ -356,9 +289,6 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
         // Undefine local macros before returning
 #undef FS_ADD_RANGE_LADDER
 #undef FS_ADD_BITMASK_THRESHOLD
-#undef FS_ADD_TAIL_BRANCHLESS_BITWISE
-#undef FS_ADD_TAIL_EXPONENTIAL
-#undef FS_ADD_TAIL_LINEAR
         return reg;
     }();
     return registry;
@@ -430,7 +360,7 @@ inline void validateSortRegistry() {
         }
         if (entry.category == SortCategory::Alias) {
             ++aliasCount;
-            if (entry.name != "adaptive-depth2-u32-chunk-msd") {
+            if (entry.name != "depth2-first-then-id-u32-msd") {
                 throw std::runtime_error(
                     "unauthorized alias in sort registry: " +
                     std::string(entry.name));
@@ -441,16 +371,19 @@ inline void validateSortRegistry() {
                 "parseSortKind failed to parse registered name: " +
                 std::string(entry.name));
         }
+        if (entry.includeByDefault &&
+            entry.kind != SortKind::GlobalIdU32MsdRadixThenDepthStable &&
+            entry.kind != SortKind::Depth2FirstThenIdU32MsdBitmaskLe512 &&
+            entry.kind != SortKind::Comparison) {
+            throw std::runtime_error(
+                std::string(entry.name) +
+                " is not part of the curated default sort set");
+        }
         if (entry.category == SortCategory::CounterPolicyExperiment ||
-            entry.category == SortCategory::TailExperiment ||
             entry.category == SortCategory::RangeLadderExperiment ||
-            entry.category == SortCategory::ReuseExperiment ||
-            entry.kind ==
-                SortKind::AdaptiveDepth2U16ChunkMsdFullClearTailLinear32 ||
-            entry.kind ==
-                SortKind::AdaptiveDepth2U16ChunkMsdBitmaskLe512TailLinear32 ||
-            entry.kind ==
-                SortKind::AdaptiveDepth2U32ChunkMsdFullClearTailLinear32) {
+            entry.kind == SortKind::Depth2FirstThenIdU16MsdFullClear ||
+            entry.kind == SortKind::Depth2FirstThenIdU16MsdBitmaskLe512 ||
+            entry.kind == SortKind::Depth2FirstThenIdU32MsdFullClear) {
             if (entry.includeByDefault) {
                 throw std::runtime_error(std::string(entry.name) +
                                          " should be explicit opt-in");

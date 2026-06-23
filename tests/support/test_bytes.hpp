@@ -1,7 +1,6 @@
 #ifndef FOREST_SORTING_SUPPORT_TEST_BYTES_HPP
 #define FOREST_SORTING_SUPPORT_TEST_BYTES_HPP
 
-#include "forest_sorting/detail/hash.hpp"
 #include "forest_sorting/detail/id_chunks.hpp"
 
 #include <algorithm>
@@ -26,7 +25,7 @@ template <std::size_t ByteCount> struct TestNode {
     TestBytes<ByteCount> parentId;
 };
 
-template <std::size_t ByteCount> struct TestBytesTraits {
+template <std::size_t ByteCount> struct HashFreeTestBytesTraits {
     using Id = TestBytes<ByteCount>;
     static constexpr std::size_t id_byte_count = ByteCount;
 
@@ -39,12 +38,6 @@ template <std::size_t ByteCount> struct TestBytesTraits {
     bool is_parent_sentinel(const Id &nodeId) const noexcept {
         return std::ranges::all_of(
             nodeId.bytes, [](uint8_t byteValue) { return byteValue == 0; });
-    }
-
-    std::size_t hash(const Id &nodeId) const noexcept {
-        return forest_sorting::detail::fold_fnv1a128(
-            forest_sorting::detail::fnv1a128_hash_bytes(nodeId.bytes.data(),
-                                                        ByteCount));
     }
 
     uint8_t byte_msb_first(const Id &nodeId,

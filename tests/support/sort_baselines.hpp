@@ -182,7 +182,7 @@ inline std::vector<Node> sortForestByDenseDepth2BucketsWithParent(
 // Fixed 2-byte depth prefix limit
 // No sparse-depth MSD fallback
 // Unsafe without the validation guard for very large observed depths.
-inline std::vector<Node> sortForestByDenseDepth2BucketedLsdWithParent(
+inline std::vector<Node> sortForestByDenseDepth2BucketsThenIdLsdWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto sortBuckets = [&](std::vector<std::vector<std::size_t>> &buckets,
@@ -201,7 +201,7 @@ inline std::vector<Node> sortForestByDenseDepth2BucketedLsdWithParent(
 
 // Benchmark wrapper for Composite LSD
 // Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
-inline std::vector<Node> sortForestByCompositeDepth2LsdWithParent(
+inline std::vector<Node> sortForestByCompositeDepth2IdLsdWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     const auto depths = computeDepthsForUInt128<2>(nodes, parentIndex);
@@ -240,7 +240,7 @@ inline void radixMsdSortBucketById(
 // Fixed 2-byte depth prefix limit
 // No sparse-depth MSD fallback
 // Unsafe without the validation guard for very large observed depths.
-inline std::vector<Node> sortForestByDenseDepth2BucketedMsdWithParent(
+inline std::vector<Node> sortForestByDenseDepth2BucketsThenIdMsdWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto sortBuckets = [&](std::vector<std::vector<std::size_t>> &buckets,
@@ -660,7 +660,7 @@ inline std::vector<Node> sortForestByCompositeDepth2MsdWithParent(
 
 // Benchmark wrapper for Composite MSD with full copyback after each scatter.
 // Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
-inline std::vector<Node> sortForestByCompositeDepth2MsdCopybackWithParent(
+inline std::vector<Node> sortForestByCompositeDepth2IdMsdCopybackWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto partitioner = [](std::vector<std::size_t> &order,
@@ -678,7 +678,8 @@ inline std::vector<Node> sortForestByCompositeDepth2MsdCopybackWithParent(
 // Benchmark wrapper for the previous branchy low-copy implementation. It keeps
 // source selection inside the count/scatter loops to provide direct A/B data
 // against the copyback default and the flattened low-copy contender.
-inline std::vector<Node> sortForestByCompositeDepth2MsdLowcopyBranchyWithParent(
+inline std::vector<Node>
+sortForestByCompositeDepth2IdMsdLowcopyBranchyWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto partitioner = [](std::vector<std::size_t> &order,
@@ -696,7 +697,7 @@ inline std::vector<Node> sortForestByCompositeDepth2MsdLowcopyBranchyWithParent(
 // as a shipped candidate before copyback won the target-workload A/B run.
 // Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
 inline std::vector<Node>
-sortForestByCompositeDepth2MsdLowcopyFlattenedWithParent(
+sortForestByCompositeDepth2IdMsdLowcopyFlattenedWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto partitioner = [](std::vector<std::size_t> &order,
@@ -712,7 +713,8 @@ sortForestByCompositeDepth2MsdLowcopyFlattenedWithParent(
 
 // Benchmark wrapper for depth-limited low-copy. It keeps ownership state only
 // for large ranges and then falls back to the measured copyback default.
-inline std::vector<Node> sortForestByCompositeDepth2MsdLowcopyBatchedWithParent(
+inline std::vector<Node>
+sortForestByCompositeDepth2IdMsdLowcopyBatchedWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto partitioner = [](std::vector<std::size_t> &order,

@@ -26,20 +26,20 @@ if(NOT MSVC)
     endif()
 endif()
 
-add_test(NAME forest-sorting-bench-help COMMAND forest-sorting-bench --help)
-add_test(NAME forest-sorting-bench-csv
+add_test(NAME bench.forest.help COMMAND forest-sorting-bench --help)
+add_test(NAME bench.forest.output.csv
          COMMAND forest-sorting-bench
                  --format csv
                  --size 10000
                  --dataset random
                  --parent default
-                 --sort adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32
+                 --sort depth4-first-then-id-u32-msd-full-clear
                  --iterations 2
                  --warmup 1
-                 --baseline-parent control
+                 --baseline-parent radix
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-tsv
+add_test(NAME bench.forest.output.tsv
          COMMAND forest-sorting-bench
                  --format tsv
                  --size 10000
@@ -50,52 +50,52 @@ add_test(NAME forest-sorting-bench-tsv
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-json
+add_test(NAME bench.forest.output.json
          COMMAND forest-sorting-bench
                  --format json
                  --sample-output summary
                  --size 10000
                  --dataset same-high64
                  --parent default
-                 --sort adaptive-depth4-u32-chunk-msd-full-clear-tail-linear32
+                 --sort depth4-first-then-id-u32-msd-full-clear
                  --iterations 2
                  --warmup 1
-                 --baseline-parent control
+                 --baseline-parent radix
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234
                  --data-seed 0x5eed1235)
-set_tests_properties(forest-sorting-bench-json
-                     PROPERTIES FAIL_REGULAR_EXPRESSION "samples_ms")
-add_test(NAME forest-sorting-bench-json-raw
+set_tests_properties(bench.forest.output.json
+                      PROPERTIES FAIL_REGULAR_EXPRESSION "samples_ms")
+add_test(NAME bench.forest.output.json-raw
          COMMAND forest-sorting-bench
                  --format json
                  --sample-output raw
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
-                 --iterations 1
-                 --warmup 0
-                 --order-seed 0x5eed
-                 --data-seed 0x5eed1234)
-set_tests_properties(forest-sorting-bench-json-raw
-                     PROPERTIES PASS_REGULAR_EXPRESSION "sort_samples_ms")
-add_test(NAME forest-sorting-bench-json-none
+                  --sort depth2-first-then-id-u32-msd-bitmask-le512
+                  --iterations 1
+                  --warmup 0
+                  --order-seed 0x5eed
+                  --data-seed 0x5eed1234)
+set_tests_properties(bench.forest.output.json-raw
+                      PROPERTIES PASS_REGULAR_EXPRESSION "sort_samples_ms")
+add_test(NAME bench.forest.output.json-none
          COMMAND forest-sorting-bench
                  --format json
                  --sample-output none
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --sort depth2-first-then-id-u32-msd-bitmask-le512
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-set_tests_properties(forest-sorting-bench-json-none
-                     PROPERTIES FAIL_REGULAR_EXPRESSION
-                                "samples_ms|\"parent\": \\{")
-add_test(NAME forest-sorting-bench-default-sorts
+set_tests_properties(bench.forest.output.json-none
+                      PROPERTIES FAIL_REGULAR_EXPRESSION
+                                 "samples_ms|\"parent\": \\{")
+add_test(NAME bench.forest.defaults
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset random
@@ -103,90 +103,76 @@ add_test(NAME forest-sorting-bench-default-sorts
                  --iterations 1
                  --warmup 0
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-fixed-prefix-sorts
+add_test(NAME bench.forest.sort-family-smoke
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset random
-                 --sort depth-bucket-depth2-lsd
-                 --sort depth-bucket-depth2-chunk-msd
-                 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-linear32
-                 --sort adaptive-depth2-u8-chunk-msd-full-clear-tail-linear32
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
-                 --sort adaptive-depth2-u64-chunk-msd-full-clear-tail-binary32
+                 --sort dense-depth2-buckets-then-id-lsd
+                 --sort dense-depth2-buckets-then-id-msd
+                 --sort depth2-first-then-id-u64-msd-full-clear
+                 --sort depth2-first-then-id-u8-msd-full-clear
+                 --sort depth2-first-then-id-u32-msd-bitmask-le512
                  --iterations 2
                  --warmup 1
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-bitmask-le512-vs-full-clear
+add_test(NAME bench.forest.bitmask-le512-vs-full-clear
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset same-high64
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
-                 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32
+                 --sort depth2-first-then-id-u32-msd-full-clear
+                 --sort depth2-first-then-id-u32-msd-bitmask-le512
+                 --baseline-sort depth2-first-then-id-u32-msd-full-clear
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-range-ladder-full-clear
+add_test(NAME bench.forest.range-ladder-full-clear
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32
-                 --sort adaptive-depth2-u16-chunk-msd-full-clear-tail-linear32
-                 --sort adaptive-depth2-range-ladder-u8-le1024-u16-le16384-full-clear-tail-linear32
-                 --sort adaptive-depth2-range-ladder-u8-le2048-u16-le32768-full-clear-tail-linear32
-                 --sort adaptive-depth2-range-ladder-u8-le4096-u16-le65536-full-clear-tail-linear32
-                 --baseline-sort adaptive-depth2-u32-chunk-msd-full-clear-tail-linear32
+                 --sort depth2-first-then-id-u32-msd-full-clear
+                 --sort depth2-first-then-id-u16-msd-full-clear
+                 --sort depth2-first-then-id-range-ladder-u8-le1024-u16-le16384-full-clear
+                 --sort depth2-first-then-id-range-ladder-u8-le2048-u16-le32768-full-clear
+                 --sort depth2-first-then-id-range-ladder-u8-le4096-u16-le65536-full-clear
+                 --baseline-sort depth2-first-then-id-u32-msd-full-clear
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-range-ladder-bitmask-le512
+add_test(NAME bench.forest.range-ladder-bitmask-le512
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset random
                  --parent control
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
-                 --sort adaptive-depth2-u16-chunk-msd-bitmask-le512-tail-linear32
-                 --sort adaptive-depth2-range-ladder-u8-le1024-u16-le16384-bitmask-le512-tail-linear32
-                 --sort adaptive-depth2-range-ladder-u8-le2048-u16-le32768-bitmask-le512-tail-linear32
-                 --sort adaptive-depth2-range-ladder-u8-le4096-u16-le65536-bitmask-le512-tail-linear32
-                 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
-                 --iterations 1
-                 --warmup 0
-                 --order-seed 0x5eed
-                 --data-seed 0x5eed1234)
-add_test(NAME forest-sorting-bench-tail-default
-         COMMAND forest-sorting-bench
-                 --size 10000
-                 --dataset same-high32
-                 --parent control
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-binary32
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-exponential32
-                 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --sort depth2-first-then-id-u32-msd-bitmask-le512
+                 --sort depth2-first-then-id-u16-msd-bitmask-le512
+                 --sort depth2-first-then-id-range-ladder-u8-le1024-u16-le16384-bitmask-le512
+                 --sort depth2-first-then-id-range-ladder-u8-le2048-u16-le32768-bitmask-le512
+                 --sort depth2-first-then-id-range-ladder-u8-le4096-u16-le65536-bitmask-le512
+                 --baseline-sort depth2-first-then-id-u32-msd-bitmask-le512
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
 
-add_test(NAME forest-sorting-bench-parent-radix-chunk-vs-byte
+add_test(NAME bench.forest.parent-radix-chunk-vs-byte
          COMMAND forest-sorting-bench
                  --size 10000
                  --dataset same-high64
                  --parent radix
                  --parent radix-byte-msd
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --sort depth2-first-then-id-u32-msd-bitmask-le512
                  --baseline-parent radix-byte-msd
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
 
-add_test(NAME forest-sorting-bench-global-id-first
+add_test(NAME bench.forest.global-id-first
          COMMAND forest-sorting-bench
                  --format json
                  --sample-output raw
@@ -194,21 +180,21 @@ add_test(NAME forest-sorting-bench-global-id-first
                  --dataset random
                  --parent control
                  --parent radix
-                 --sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
-                 --sort adaptive-depth2-global-id-radix-stable-depth
+                 --sort depth2-first-then-id-u32-msd-bitmask-le512
+                 --sort global-id-u32-msd-radix-then-depth-stable
                  --baseline-parent control
-                 --baseline-sort adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32
+                 --baseline-sort depth2-first-then-id-u32-msd-bitmask-le512
                  --iterations 1
                  --warmup 0
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
 set_tests_properties(
-    forest-sorting-bench-global-id-first
+    bench.forest.global-id-first
     PROPERTIES PASS_REGULAR_EXPRESSION
                "pipeline_comparison_status.*pipeline_samples_ms")
 
-add_test(NAME forest-sorting-tail-bench-help COMMAND forest-sorting-tail-bench --help)
-add_test(NAME forest-sorting-tail-bench-smoke
+add_test(NAME bench.tail.help COMMAND forest-sorting-tail-bench --help)
+add_test(NAME bench.tail.matrix-smoke
          COMMAND forest-sorting-tail-bench
                  --iterations 2
                  --warmup 1
@@ -217,7 +203,7 @@ add_test(NAME forest-sorting-tail-bench-smoke
                  --size 8
                  --pattern random)
 
-add_test(NAME forest-sorting-tail-bench-csv
+add_test(NAME bench.tail.output.csv
          COMMAND forest-sorting-tail-bench
                  --format csv
                  --iterations 1
@@ -225,11 +211,11 @@ add_test(NAME forest-sorting-tail-bench-csv
                  --ranges 2
                  --size 4
                  --pattern random)
-set_tests_properties(forest-sorting-tail-bench-csv
+set_tests_properties(bench.tail.output.csv
                      PROPERTIES PASS_REGULAR_EXPRESSION
                                 "pattern,size,algorithm,median_ns")
 
-add_test(NAME forest-sorting-tail-bench-tsv
+add_test(NAME bench.tail.output.tsv
          COMMAND forest-sorting-tail-bench
                  --format tsv
                  --iterations 1
@@ -237,10 +223,10 @@ add_test(NAME forest-sorting-tail-bench-tsv
                  --ranges 2
                  --size 4
                  --pattern random)
-set_tests_properties(forest-sorting-tail-bench-tsv
+set_tests_properties(bench.tail.output.tsv
                      PROPERTIES PASS_REGULAR_EXPRESSION "median_ns")
 
-add_test(NAME forest-sorting-tail-bench-json
+add_test(NAME bench.tail.output.json
          COMMAND forest-sorting-tail-bench
                  --format json
                  --iterations 1
@@ -248,36 +234,63 @@ add_test(NAME forest-sorting-tail-bench-json
                  --ranges 2
                  --size 4
                  --pattern random)
-set_tests_properties(forest-sorting-tail-bench-json
+set_tests_properties(bench.tail.output.json
                      PROPERTIES PASS_REGULAR_EXPRESSION "\"results\"")
 
+add_test(NAME bench.tail.policy-smoke
+         COMMAND forest-sorting-tail-bench
+                 --sort linear
+                 --sort binary
+                 --sort exponential
+                 --sort branchless-bitwise
+                 --size 32
+                 --baseline-sort linear
+                 --iterations 1
+                 --warmup 0
+                 --ranges 2
+                 --pattern random)
+set_tests_properties(bench.tail.policy-smoke
+                      PROPERTIES PASS_REGULAR_EXPRESSION "binary")
+
 # Invalid CLI validation tests
-add_test(NAME forest-sorting-bench-invalid-size
+add_test(NAME bench.forest.invalid.size
          COMMAND forest-sorting-bench --size 0)
-set_tests_properties(forest-sorting-bench-invalid-size
+set_tests_properties(bench.forest.invalid.size
                      PROPERTIES WILL_FAIL TRUE)
 
-add_test(NAME forest-sorting-bench-invalid-iterations
+add_test(NAME bench.forest.invalid.iterations
          COMMAND forest-sorting-bench --iterations 0)
-set_tests_properties(forest-sorting-bench-invalid-iterations
+set_tests_properties(bench.forest.invalid.iterations
                      PROPERTIES WILL_FAIL TRUE)
 
-add_test(NAME forest-sorting-bench-invalid-baseline
+add_test(NAME bench.forest.invalid.baseline
          COMMAND forest-sorting-bench --baseline-sort non-existent)
-set_tests_properties(forest-sorting-bench-invalid-baseline
+set_tests_properties(bench.forest.invalid.baseline
                      PROPERTIES WILL_FAIL TRUE)
 
-add_test(NAME forest-sorting-tail-bench-invalid-size
+add_test(NAME bench.forest.invalid.sort-all
+         COMMAND forest-sorting-bench --sort all)
+set_tests_properties(bench.forest.invalid.sort-all
+                     PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME bench.forest.invalid.parent-all
+         COMMAND forest-sorting-bench --parent all)
+set_tests_properties(bench.forest.invalid.parent-all
+                     PROPERTIES WILL_FAIL TRUE)
+
+
+add_test(NAME bench.tail.invalid.size
          COMMAND forest-sorting-tail-bench --size 0)
-set_tests_properties(forest-sorting-tail-bench-invalid-size
+set_tests_properties(bench.tail.invalid.size
                      PROPERTIES WILL_FAIL TRUE)
 
-add_test(NAME forest-sorting-tail-bench-invalid-ranges
+add_test(NAME bench.tail.invalid.ranges
          COMMAND forest-sorting-tail-bench --ranges 0)
-set_tests_properties(forest-sorting-tail-bench-invalid-ranges
+set_tests_properties(bench.tail.invalid.ranges
                      PROPERTIES WILL_FAIL TRUE)
 
-add_test(NAME forest-sorting-tail-bench-invalid-baseline
+add_test(NAME bench.tail.invalid.baseline
          COMMAND forest-sorting-tail-bench --baseline-sort non-existent)
-set_tests_properties(forest-sorting-tail-bench-invalid-baseline
+set_tests_properties(bench.tail.invalid.baseline
                      PROPERTIES WILL_FAIL TRUE)
+

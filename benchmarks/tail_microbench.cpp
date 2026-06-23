@@ -5,6 +5,7 @@
 
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
+#include "uint128_fixtures.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -23,7 +24,6 @@
 #include <vector>
 
 using forest_sorting::makeId;
-using forest_sorting::makeRandomId;
 using forest_sorting::Node;
 using forest_sorting::UInt128;
 using forest_sorting::UInt128NodeTraits;

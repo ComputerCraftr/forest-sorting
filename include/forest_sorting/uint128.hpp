@@ -6,8 +6,6 @@
     "forest_sorting UInt128 support requires unsigned __int128. Include forest_sorting/algorithms.hpp and use caller-owned ID types with custom traits for portable code."
 #endif
 
-#include "forest_sorting/detail/hash.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
@@ -21,12 +19,6 @@ using UInt128 = unsigned __int128;
 
 inline UInt128 makeId(uint64_t high, uint64_t low) noexcept {
     return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
-}
-
-template <typename Rng> inline UInt128 makeRandomId(Rng &rng) {
-    const uint64_t high = static_cast<uint64_t>(rng());
-    const uint64_t low = static_cast<uint64_t>(rng());
-    return makeId(high, low);
 }
 
 inline std::string toHex(UInt128 value) {
@@ -84,15 +76,6 @@ struct UInt128Traits {
             }
             return static_cast<uint64_t>(nodeId);
         }
-    }
-
-    // Deterministic default hash for the optional UInt128 compatibility type.
-    // This hash is used only for internal parent-index placement; canonical
-    // ordering is still by depth and MSB-first ID bytes. Applications that
-    // accept adversarial IDs should provide their own traits with a keyed or
-    // otherwise hardened hash policy.
-    static std::size_t hash(UInt128 nodeId) noexcept {
-        return detail::hashUint128(nodeId);
     }
 };
 

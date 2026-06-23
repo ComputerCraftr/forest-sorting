@@ -18,7 +18,12 @@
 namespace forest_sorting::detail {
 
 inline constexpr std::size_t small_id_range_sort_threshold = 32;
+
+// Width, in bytes, of each MSD radix partition chunk. A 4-byte chunk is the
+// benchmark label's `u32` radix chunk. This is unrelated to cached comparison
+// chunks; each partition chunk is still sorted by stable LSD byte passes.
 inline constexpr std::size_t production_id_chunk_bytes = 4;
+
 inline constexpr std::size_t production_touched_count_max_range_size = 512;
 using ProductionIdCountPolicy =
     BitmaskTouchedCountsUpTo<production_touched_count_max_range_size>;
@@ -29,6 +34,8 @@ struct IdChunkRange {
     std::size_t chunkIndex;
 };
 
+// Per-entry buffer used by the ID radix sorter. `ChunkBytes` controls the
+// packed radix partition width, not the cached-ID comparison width.
 template <std::size_t ChunkBytes> struct ChunkedIndex {
     ChunkValueType<ChunkBytes> chunk;
     std::size_t index;
@@ -73,6 +80,9 @@ void stableSortIndexRangeSmallLinear(std::vector<std::size_t> &order,
         });
 }
 
+// Sorts one packed MSD chunk by running stable LSD passes over the bytes inside
+// that chunk. For example, `ChunkBytes == 4` behaves like a 32-bit radix chunk
+// but is implemented as four base-256 stable counting passes.
 template <std::size_t ChunkBytes, typename CountScratch>
 ChunkedIndex<ChunkBytes> *stableLsdSortIndexRangeByIdChunkWithCounterPreFilled(
     std::vector<std::size_t> &order, std::size_t rangeBegin,

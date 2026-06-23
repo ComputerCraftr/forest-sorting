@@ -9,6 +9,13 @@
 
 namespace forest_sorting::detail {
 
+enum class DispatchPath : std::uint8_t {
+    Trait,
+    Native,
+    CachedChunk,
+    MsbFallback
+};
+
 template <typename Traits, typename IdType>
 concept HasForestTraitsLess =
     requires(const Traits &traits, const IdType &lhs, const IdType &rhs) {
@@ -44,23 +51,80 @@ inline constexpr bool shouldCacheChunkIds =
 template <std::size_t ChunkCount, typename LhsChunkAt, typename RhsChunkAt>
 inline int compareChunkSequence(LhsChunkAt lhsChunkAt,
                                 RhsChunkAt rhsChunkAt) noexcept {
-    for (std::size_t chunkIdx = 0; chunkIdx < ChunkCount; ++chunkIdx) {
-        const uint64_t lhsChunk = lhsChunkAt(chunkIdx);
-        const uint64_t rhsChunk = rhsChunkAt(chunkIdx);
-        if (lhsChunk < rhsChunk) {
+    if constexpr (ChunkCount == 2) {
+        const uint64_t lhs0 = lhsChunkAt(0);
+        const uint64_t rhs0 = rhsChunkAt(0);
+        if (lhs0 < rhs0) {
             return -1;
         }
-        if (lhsChunk > rhsChunk) {
+        if (lhs0 > rhs0) {
             return 1;
         }
+        const uint64_t lhs1 = lhsChunkAt(1);
+        const uint64_t rhs1 = rhsChunkAt(1);
+        if (lhs1 < rhs1) {
+            return -1;
+        }
+        if (lhs1 > rhs1) {
+            return 1;
+        }
+        return 0;
+    } else if constexpr (ChunkCount == 4) {
+        const uint64_t lhs0 = lhsChunkAt(0);
+        const uint64_t rhs0 = rhsChunkAt(0);
+        if (lhs0 < rhs0) {
+            return -1;
+        }
+        if (lhs0 > rhs0) {
+            return 1;
+        }
+        const uint64_t lhs1 = lhsChunkAt(1);
+        const uint64_t rhs1 = rhsChunkAt(1);
+        if (lhs1 < rhs1) {
+            return -1;
+        }
+        if (lhs1 > rhs1) {
+            return 1;
+        }
+        const uint64_t lhs2 = lhsChunkAt(2);
+        const uint64_t rhs2 = rhsChunkAt(2);
+        if (lhs2 < rhs2) {
+            return -1;
+        }
+        if (lhs2 > rhs2) {
+            return 1;
+        }
+        const uint64_t lhs3 = lhsChunkAt(3);
+        const uint64_t rhs3 = rhsChunkAt(3);
+        if (lhs3 < rhs3) {
+            return -1;
+        }
+        if (lhs3 > rhs3) {
+            return 1;
+        }
+        return 0;
+    } else {
+        for (std::size_t chunkIdx = 0; chunkIdx < ChunkCount; ++chunkIdx) {
+            const uint64_t lhsChunk = lhsChunkAt(chunkIdx);
+            const uint64_t rhsChunk = rhsChunkAt(chunkIdx);
+            if (lhsChunk < rhsChunk) {
+                return -1;
+            }
+            if (lhsChunk > rhsChunk) {
+                return 1;
+            }
+        }
+        return 0;
     }
-    return 0;
 }
 
 template <std::size_t ChunkCount>
-inline int
-compareCachedIdChunks(const CachedChunkId<ChunkCount> &lhs,
-                      const CachedChunkId<ChunkCount> &rhs) noexcept {
+inline int compareCachedIdChunks(const CachedChunkId<ChunkCount> &lhs,
+                                 const CachedChunkId<ChunkCount> &rhs,
+                                 DispatchPath *oracle = nullptr) noexcept {
+    if (oracle) {
+        *oracle = DispatchPath::CachedChunk;
+    }
     return compareChunkSequence<ChunkCount>(
         [&](std::size_t chunkIdx) noexcept { return lhs.chunks[chunkIdx]; },
         [&](std::size_t chunkIdx) noexcept { return rhs.chunks[chunkIdx]; });
@@ -81,26 +145,74 @@ inline int compareIdsMsbFirst(const NodeId &lhs, const NodeId &rhs,
 }
 
 template <typename NodeId, typename NodeTraits>
-inline bool idLess(const NodeId &lhs, const NodeId &rhs,
-                   const NodeTraits &traits) noexcept {
+inline int compareNodeIds(const NodeId &first, const NodeId &second,
+                          const NodeTraits &traits,
+                          DispatchPath *oracle = nullptr) noexcept {
     if constexpr (HasForestTraitsLess<NodeTraits, NodeId>) {
+        if (oracle) {
+            *oracle = DispatchPath::Trait;
+        }
+        if (traits.less(first, second)) {
+            return -1;
+        }
+        if (traits.less(second, first)) {
+            return 1;
+        }
+        return 0;
+    } else if constexpr (HasNativeIdLess<NodeId>) {
+        if (oracle) {
+            *oracle = DispatchPath::Native;
+        }
+        if (first < second) {
+            return -1;
+        }
+        if (second < first) {
+            return 1;
+        }
+        return 0;
+    } else {
+        if (oracle) {
+            *oracle = DispatchPath::MsbFallback;
+        }
+        return compareIdsMsbFirst(first, second, traits);
+    }
+}
+
+template <typename NodeId, typename NodeTraits>
+inline bool idLess(const NodeId &lhs, const NodeId &rhs,
+                   const NodeTraits &traits,
+                   DispatchPath *oracle = nullptr) noexcept {
+    if constexpr (HasForestTraitsLess<NodeTraits, NodeId>) {
+        if (oracle) {
+            *oracle = DispatchPath::Trait;
+        }
         return traits.less(lhs, rhs);
     } else if constexpr (HasNativeIdLess<NodeId>) {
+        if (oracle) {
+            *oracle = DispatchPath::Native;
+        }
         return lhs < rhs;
     } else {
-        return compareIdsMsbFirst(lhs, rhs, traits) < 0;
+        return compareNodeIds(lhs, rhs, traits, oracle) < 0;
     }
 }
 
 template <typename NodeId, typename NodeTraits>
 inline bool idEqual(const NodeId &lhs, const NodeId &rhs,
-                    const NodeTraits &traits) noexcept {
+                    const NodeTraits &traits,
+                    DispatchPath *oracle = nullptr) noexcept {
     if constexpr (HasForestTraitsEqual<NodeTraits, NodeId>) {
+        if (oracle) {
+            *oracle = DispatchPath::Trait;
+        }
         return traits.equal(lhs, rhs);
     } else if constexpr (HasNativeIdEqual<NodeId>) {
+        if (oracle) {
+            *oracle = DispatchPath::Native;
+        }
         return lhs == rhs;
     } else {
-        return compareIdsMsbFirst(lhs, rhs, traits) == 0;
+        return compareNodeIds(lhs, rhs, traits, oracle) == 0;
     }
 }
 

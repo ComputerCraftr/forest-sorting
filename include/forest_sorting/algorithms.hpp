@@ -30,16 +30,14 @@ sortedOrderByDepthAndIdWithDepths(const Nodes &nodes, const Traits &traits,
     static_assert(DepthPrefixBytes >= 1 && DepthPrefixBytes <= 4,
                   "DepthPrefixBytes must be between 1 and 4");
     const std::size_t nodeCount = nodes.size();
-    if (depths.size() != nodeCount) {
-        throw std::runtime_error("depth vector size does not match nodes");
-    }
+    const uint32_t observedMaxDepth =
+        detail::validatePrecomputedDepthInput<DepthPrefixBytes>(nodeCount,
+                                                                depths);
     if (nodeCount == 0) {
         return {};
     }
 
-    const uint32_t observedMaxDepth =
-        detail::validateAndFindObservedMaxDepth<DepthPrefixBytes>(depths);
-    return detail::sortedOrderByDepthAndIdWithDepthsChecked<DepthPrefixBytes>(
+    return detail::sortedOrderByDepthAndIdWithValidatedDepths<DepthPrefixBytes>(
         nodes, traits, depths, observedMaxDepth);
 }
 
@@ -52,11 +50,11 @@ std::vector<std::size_t> sortedOrderByDepthAndId(const Nodes &nodes,
     if (nodes.size() == 0) {
         return {};
     }
-    const auto parentIndex = detail::buildParentIndex(nodes, traits);
-    auto computed =
-        detail::computeDepths<DepthPrefixBytes>(nodes, parentIndex, traits);
-    return detail::sortedOrderByDepthAndIdWithDepthsChecked<DepthPrefixBytes>(
-        nodes, traits, computed.values,
+    auto parentResult = detail::buildParentIndexRadixJoinResult(nodes, traits);
+    auto computed = detail::computeDepths<DepthPrefixBytes>(
+        nodes, parentResult.parentIndex, traits);
+    return detail::stableDepthGroupTrustedIdPermutation<DepthPrefixBytes>(
+        std::move(parentResult.idPermutation), computed.values,
         static_cast<uint32_t>(computed.observedMax));
 }
 
@@ -66,26 +64,29 @@ std::vector<std::size_t> sortedOrderByDepthAndId(const Nodes &nodes,
     if (nodes.size() == 0) {
         return {};
     }
-    const auto parentIndex = detail::buildParentIndex(nodes, traits);
-    auto computed = detail::computeDepths<4>(nodes, parentIndex, traits);
+    auto parentResult = detail::buildParentIndexRadixJoinResult(nodes, traits);
+    auto computed =
+        detail::computeDepths<4>(nodes, parentResult.parentIndex, traits);
     const uint32_t observedMaxDepth = computed.observedMax;
 
     if (observedMaxDepth <= detail::maxDepthForPrefix<1>()) {
         auto depths = detail::narrowDepths<1>(computed.values);
-        return detail::sortedOrderByDepthAndIdWithDepthsChecked<1>(
-            nodes, traits, depths, observedMaxDepth);
+        return detail::stableDepthGroupTrustedIdPermutation<1>(
+            std::move(parentResult.idPermutation), depths, observedMaxDepth);
     }
     if (observedMaxDepth <= detail::maxDepthForPrefix<2>()) {
         auto depths = detail::narrowDepths<2>(computed.values);
-        return detail::sortedOrderByDepthAndIdWithDepthsChecked<2>(
-            nodes, traits, depths, observedMaxDepth);
+        return detail::stableDepthGroupTrustedIdPermutation<2>(
+            std::move(parentResult.idPermutation), depths, observedMaxDepth);
     }
     if (observedMaxDepth <= detail::maxDepthForPrefix<3>()) {
-        return detail::sortedOrderByDepthAndIdWithDepthsChecked<3>(
-            nodes, traits, computed.values, observedMaxDepth);
+        return detail::stableDepthGroupTrustedIdPermutation<3>(
+            std::move(parentResult.idPermutation), computed.values,
+            observedMaxDepth);
     }
-    return detail::sortedOrderByDepthAndIdWithDepthsChecked<4>(
-        nodes, traits, computed.values, observedMaxDepth);
+    return detail::stableDepthGroupTrustedIdPermutation<4>(
+        std::move(parentResult.idPermutation), computed.values,
+        observedMaxDepth);
 }
 
 template <std::size_t DepthPrefixBytes, typename Nodes, typename Traits>

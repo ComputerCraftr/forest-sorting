@@ -4,8 +4,10 @@
 #include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/parent_sentinel.hpp"
+#include "forest_sorting/detail/validation.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -62,6 +64,14 @@ uint32_t validateAndFindObservedMaxDepth(const std::vector<Depth> &depths) {
     return static_cast<uint32_t>(observedMaxDepth);
 }
 
+template <std::size_t DepthPrefixBytes, std::unsigned_integral Depth>
+uint32_t validatePrecomputedDepthInput(std::size_t nodeCount,
+                                       const std::vector<Depth> &depths) {
+    requireMatchingCount(depths.size(), nodeCount,
+                         "depth vector size does not match nodes");
+    return validateAndFindObservedMaxDepth<DepthPrefixBytes>(depths);
+}
+
 template <std::size_t DepthPrefixBytes, typename Nodes, typename Traits>
 ComputedDepths<DepthValue<DepthPrefixBytes>>
 computeDepths(const Nodes &nodes, const std::vector<std::size_t> &parent,
@@ -70,6 +80,8 @@ computeDepths(const Nodes &nodes, const std::vector<std::size_t> &parent,
                   "DepthPrefixBytes must be between 1 and 4");
     using Depth = DepthValue<DepthPrefixBytes>;
     const std::size_t nodeCount = nodes.size();
+    requireMatchingCount(parent.size(), nodeCount,
+                         "parent index size does not match nodes");
     ComputedDepths<Depth> result;
     result.values.resize(nodeCount);
     std::vector<DepthVisitState> visitState(nodeCount,
@@ -110,7 +122,9 @@ computeDepths(const Nodes &nodes, const std::vector<std::size_t> &parent,
                 break;
             }
 
-            current = parent[current];
+            const std::size_t parentIndex = parent[current];
+            assert(parentIndex < nodeCount);
+            current = parentIndex;
         }
 
         while (!stack.empty()) {

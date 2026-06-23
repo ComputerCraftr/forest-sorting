@@ -6,6 +6,7 @@
 #include "forest_sorting/detail/depth.hpp"
 #include "forest_sorting/detail/id_chunks.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
+#include "forest_sorting/detail/order.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "sort_baselines.hpp"
@@ -658,7 +659,7 @@ inline void sortDepthRangesByRangeLadderChunkMsd(
 
 template <std::size_t U8MaxRangeSize, std::size_t U16MaxRangeSize,
           typename CountPolicy>
-inline std::vector<Node> sortForestByAdaptiveDepth2RangeLadderWithParent(
+inline std::vector<Node> sortForestByDepth2FirstThenIdRangeLadderWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto rangeSorter = [](std::vector<std::size_t> &order,
@@ -692,7 +693,7 @@ sortForestByAdaptiveChunkWithParent(const std::vector<Node> &nodes,
         nodes, parentIndex, allowDenseDepthGrouping, rangeSorter);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2GlobalIdRadixStableDepth(
+inline std::vector<Node> sortForestByGlobalIdU32MsdRadixThenDepthStable(
     const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
     const std::vector<std::size_t> *idPermutation) {
     if (idPermutation != nullptr && idPermutation->size() != nodes.size()) {
@@ -705,18 +706,8 @@ inline std::vector<Node> sortForestByAdaptiveDepth2GlobalIdRadixStableDepth(
     if (idPermutation != nullptr) {
         order = *idPermutation;
     } else {
-        order.resize(nodes.size());
-        std::iota(order.begin(), order.end(), 0);
-        detail::IdChunkSortWorkspace<detail::production_id_chunk_bytes,
-                                     detail::ProductionIdCountPolicy>
-            workspace;
-        auto idForIndex = [&](std::size_t nodeIndex) {
-            return UInt128NodeTraits::id(nodes[nodeIndex]);
-        };
-        detail::sortIndexRangeByIdChunks<detail::production_id_chunk_bytes,
-                                         detail::ProductionIdCountPolicy>(
-            order, idForIndex, UInt128NodeTraits{}, 0, order.size(), 0,
-            workspace);
+        order = detail::makeValidatedGlobalIdPermutation(nodes,
+                                                         UInt128NodeTraits{});
     }
     std::vector<std::size_t> scratch(order.size());
     detail::stableGroupOrderByDepth<2, detail::ProductionIdCountPolicy>(
@@ -724,7 +715,7 @@ inline std::vector<Node> sortForestByAdaptiveDepth2GlobalIdRadixStableDepth(
     return materializeOrder(nodes, order);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkNoDenseWithParent(
+inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdNoDenseWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<
@@ -735,7 +726,7 @@ inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkNoDenseWithParent(
 }
 
 inline std::vector<Node>
-sortForestByAdaptiveDepth2U32ChunkBitmaskLe512WithParent(
+sortForestByDepth2FirstThenIdU32MsdBitmaskLe512TailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<
@@ -745,21 +736,23 @@ sortForestByAdaptiveDepth2U32ChunkBitmaskLe512WithParent(
         nodes, parentIndex, true);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkWithParent(
+inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveDepth2U32ChunkBitmaskLe512WithParent(
+    return sortForestByDepth2FirstThenIdU32MsdBitmaskLe512TailLinear32WithParent(
         nodes, parentIndex);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkFullClearWithParent(
+inline std::vector<Node>
+sortForestByDepth2FirstThenIdU32MsdFullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<2, 4, detail::FullClearCounts>(
         nodes, parentIndex, true);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2U8ChunkFullClearWithParent(
+inline std::vector<Node>
+sortForestByDepth2FirstThenIdU8MsdFullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<2, 1, detail::FullClearCounts>(
@@ -767,7 +760,7 @@ inline std::vector<Node> sortForestByAdaptiveDepth2U8ChunkFullClearWithParent(
 }
 
 inline std::vector<Node>
-sortForestByAdaptiveDepth2U8ChunkBitmaskLe512WithParent(
+sortForestByDepth2FirstThenIdU8MsdBitmaskLe512TailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<
@@ -777,7 +770,8 @@ sortForestByAdaptiveDepth2U8ChunkBitmaskLe512WithParent(
         nodes, parentIndex, true);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2U16ChunkFullClearWithParent(
+inline std::vector<Node>
+sortForestByDepth2FirstThenIdU16MsdFullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<2, 2, detail::FullClearCounts>(
@@ -785,7 +779,7 @@ inline std::vector<Node> sortForestByAdaptiveDepth2U16ChunkFullClearWithParent(
 }
 
 inline std::vector<Node>
-sortForestByAdaptiveDepth2U16ChunkBitmaskLe512WithParent(
+sortForestByDepth2FirstThenIdU16MsdBitmaskLe512TailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<
@@ -795,23 +789,15 @@ sortForestByAdaptiveDepth2U16ChunkBitmaskLe512WithParent(
         nodes, parentIndex, true);
 }
 
-inline std::vector<Node> sortForestByAdaptiveDepth2U64ChunkWithParent(
+inline std::vector<Node>
+sortForestByDepth2FirstThenIdU64MsdFullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<2, 8>(nodes, parentIndex, true);
 }
 
 inline std::vector<Node>
-sortForestByAdaptiveDepth2U64ChunkBinarySmallWithParent(
-    const std::vector<Node> &nodes,
-    const std::vector<std::size_t> &parentIndex) {
-    return sortForestByAdaptiveChunkWithParent<
-        2, 8, detail::FullClearCounts, detail::small_id_range_sort_threshold,
-        BinarySmallSorter<detail::small_id_range_sort_threshold>>(
-        nodes, parentIndex, true);
-}
-
-inline std::vector<Node> sortForestByAdaptiveDepth4U32ChunkWithParent(
+sortForestByDepth4FirstThenIdU32MsdFullClearTailLinear32WithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     return sortForestByAdaptiveChunkWithParent<4, 4>(nodes, parentIndex, true);
@@ -819,7 +805,7 @@ inline std::vector<Node> sortForestByAdaptiveDepth4U32ChunkWithParent(
 
 template <typename SmallRangeSorter, std::size_t SmallThreshold,
           typename CountPolicy = detail::FullClearCounts>
-inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent(
+inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdTailTunedWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto rangeSorter = [](std::vector<std::size_t> &order,
@@ -835,7 +821,7 @@ inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkTailTunedWithParent(
 }
 
 template <std::size_t BitmaskMaxRangeSize>
-inline std::vector<Node> sortForestByAdaptiveDepth2U32ChunkBitmaskLeWithParent(
+inline std::vector<Node> sortForestByDepth2FirstThenIdU32MsdBitmaskLeWithParent(
     const std::vector<Node> &nodes,
     const std::vector<std::size_t> &parentIndex) {
     auto rangeSorter = [](std::vector<std::size_t> &order,

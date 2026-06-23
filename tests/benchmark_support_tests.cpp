@@ -5,6 +5,7 @@
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
+#include "hashed_test_bytes.hpp"
 #include "tail_benchmark_output.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"

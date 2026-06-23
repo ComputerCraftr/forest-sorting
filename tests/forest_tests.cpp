@@ -1,6 +1,6 @@
 #include "adaptive_sort_variants.hpp"
+#include "control_parent_index.hpp"
 #include "forest_sorting/algorithms.hpp"
-#include "forest_sorting/detail/hash.hpp"
 #include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
@@ -74,11 +74,43 @@ void requireUniqueDatasetParentAndSortRegistries() {
         }
     }
     const auto defParentKinds = defaultParentKinds();
-    require(std::ranges::find(defParentKinds, ParentKind::RadixByteMsd) ==
-                defParentKinds.end(),
-            "byte-MSD parent baseline must remain opt-in");
+    require(defParentKinds.size() == 1 &&
+                defParentKinds.front() == ParentKind::Radix,
+            "radix must be the sole default parent builder");
 
     validateSortRegistry();
+
+    const auto &registry = getSortRegistry();
+    const auto globalIdFirstIt =
+        std::ranges::find_if(registry, [](const SortRegistryEntry &entry) {
+            return entry.kind == SortKind::GlobalIdU32MsdRadixThenDepthStable;
+        });
+    require(globalIdFirstIt != registry.end(),
+            "global-ID-first sort is missing from the registry");
+    const auto &globalIdFirst = *globalIdFirstIt;
+    require(globalIdFirst.category == SortCategory::Production &&
+                globalIdFirst.includeByDefault,
+            "global-ID-first sorting must be the production benchmark row");
+    require(globalIdFirst.sortFunction == nullptr &&
+                globalIdFirst.optionalIdPermutationSortFunction ==
+                    sortForestByGlobalIdU32MsdRadixThenDepthStable,
+            "global-ID-first registry row is wired to the wrong pipeline");
+    const auto depthFirstIt =
+        std::ranges::find_if(registry, [](const SortRegistryEntry &entry) {
+            return entry.kind ==
+                       SortKind::Depth2FirstThenIdU32MsdBitmaskLe512 &&
+                   entry.category != SortCategory::Alias;
+        });
+    require(depthFirstIt != registry.end(),
+            "depth-first comparator is missing from the registry");
+    const auto &depthFirst = *depthFirstIt;
+    require(depthFirst.category == SortCategory::Comparator,
+            "depth-first per-range ID sorting must remain a comparator");
+    require(
+        depthFirst.sortFunction ==
+                sortForestByDepth2FirstThenIdU32MsdBitmaskLe512TailLinear32WithParent &&
+            depthFirst.optionalIdPermutationSortFunction == nullptr,
+        "depth-first comparator is wired to the wrong pipeline");
 }
 
 void requireSortIsExplicitOptIn(SortKind sortKind, std::string_view message) {
@@ -134,7 +166,15 @@ void test_removed_generation_touched_count_labels_do_not_parse() {
         "adaptive-depth2-u64-chunk-msd-touched-counts",
         "adaptive-depth2-u32-chunk-msd-touched-counts-128",
         "adaptive-depth2-u32-chunk-msd-binary-small48",
-        "adaptive-depth2-u32-chunk-msd-exponential-small48"};
+        "adaptive-depth2-u32-chunk-msd-exponential-small48",
+        "adaptive-depth2-stable-depth-reuse-id-permutation",
+        "adaptive-depth2-u32-chunk-msd-full-clear",
+        "adaptive-depth2-u32-chunk-msd-bitmask-le128",
+        "adaptive-depth2-u32-chunk-msd-binary-small32",
+        "adaptive-depth2-u32-chunk-msd-exponential-small32",
+        // NOLINTNEXTLINE(bugprone-suspicious-missing-comma): formatter split.
+        "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-chunk-"
+        "cache"};
 
     for (std::string_view removedLabel : kRemovedLabels) {
         bool rejected = false;
@@ -233,6 +273,8 @@ void test_radix_parent_artifacts_retain_sorted_node_permutations() {
 void test_global_id_first_sort_computes_or_reuses_id_permutation() {
     for (DatasetKind datasetKind : allDatasetKinds()) {
         const auto nodes = makeGeneratedForestForKind(datasetKind, 1000);
+        const auto publicProduction = forest_sorting::sortedCopyByDepthAndId<2>(
+            nodes, UInt128NodeTraits{});
         for (ParentKind parentKind : registeredParentKinds()) {
             const auto artifacts =
                 buildParentArtifactsForKind(parentKind, nodes);
@@ -240,19 +282,22 @@ void test_global_id_first_sort_computes_or_reuses_id_permutation() {
                 sortForestByComparisonWithParent(nodes, artifacts.parentIndex);
             const std::vector<std::size_t> *idPermutation =
                 artifacts.hasIdPermutation ? &artifacts.idPermutation : nullptr;
-            const auto actual = sortForestForKind(
-                SortKind::AdaptiveDepth2GlobalIdRadixStableDepth, nodes,
-                artifacts.parentIndex, idPermutation);
+            const auto actual =
+                sortForestForKind(SortKind::GlobalIdU32MsdRadixThenDepthStable,
+                                  nodes, artifacts.parentIndex, idPermutation);
             require(sameNodes(actual, expected),
                     std::string(parentName(parentKind)) +
                         " global-ID-first sort differed from comparison");
 
-            const auto computed = sortForestForKind(
-                SortKind::AdaptiveDepth2GlobalIdRadixStableDepth, nodes,
-                artifacts.parentIndex, nullptr);
+            const auto computed =
+                sortForestForKind(SortKind::GlobalIdU32MsdRadixThenDepthStable,
+                                  nodes, artifacts.parentIndex, nullptr);
             require(sameNodes(computed, actual),
                     "computed and reused ID permutations produced different "
                     "orders");
+            require(sameNodes(publicProduction, actual),
+                    "public production sort differed from global-ID-first "
+                    "benchmark path");
         }
     }
 }
@@ -281,20 +326,19 @@ void test_parent_builders_reject_duplicate_full_uint128_id() {
 }
 
 template <typename Traits>
-void requireUInt128IdentityHashProductionMatchesRadix(
+void requireUInt128IdentityHashControlMatchesRadix(
     const std::vector<Node> &nodes, const Traits &traits,
     std::string_view message) {
-    const auto productionParent = buildParentIndex(nodes, traits);
+    const auto controlParent = buildParentIndexControl(nodes, traits);
     const auto radixParent = buildParentIndexRadixJoin(nodes, traits);
-    require(productionParent == radixParent, message);
+    require(controlParent == radixParent, message);
 }
 
 void test_parent_builder_falls_back_when_insert_probe_limit_exceeded() {
     constexpr std::size_t groupSize = 8;
     const std::size_t nodeCount =
-        (forest_sorting::detail::max_probe_groups_before_fallback * groupSize) +
-        1;
-    requireUInt128IdentityHashProductionMatchesRadix(
+        (max_probe_groups_before_fallback * groupSize) + 1;
+    requireUInt128IdentityHashControlMatchesRadix(
         makeHighIdentityCollisionRoots(nodeCount),
         UInt128HighIdentityHashTraits{},
         "insert probe-limit fallback differed from radix join");
@@ -302,8 +346,7 @@ void test_parent_builder_falls_back_when_insert_probe_limit_exceeded() {
 
 void test_parent_builder_falls_back_when_lookup_probe_limit_exceeded() {
     constexpr std::size_t groupSize = 8;
-    const std::size_t nodeCount =
-        forest_sorting::detail::max_probe_groups_before_fallback * groupSize;
+    const std::size_t nodeCount = max_probe_groups_before_fallback * groupSize;
     std::vector<Node> nodes;
     nodes.reserve(nodeCount);
     const UInt128 externalParent = makeId(50000, 1);
@@ -312,7 +355,7 @@ void test_parent_builder_falls_back_when_lookup_probe_limit_exceeded() {
                              externalParent});
     }
 
-    requireUInt128IdentityHashProductionMatchesRadix(
+    requireUInt128IdentityHashControlMatchesRadix(
         nodes, UInt128LowIdentityHashTraits{},
         "lookup probe-limit fallback differed from radix join");
 }
@@ -326,11 +369,11 @@ void test_parent_builder_identity_hash_rejects_duplicate_full_id() {
 
     bool rejected = false;
     try {
-        (void)buildParentIndex(nodes, UInt128HighIdentityHashTraits{});
+        (void)buildParentIndexControl(nodes, UInt128HighIdentityHashTraits{});
     } catch (const std::runtime_error &) {
         rejected = true;
     }
-    require(rejected, "identity-hash production parent builder accepted "
+    require(rejected, "identity-hash control parent builder accepted "
                       "duplicate full id");
 }
 
@@ -540,7 +583,7 @@ void test_public_sort_matches_u32_chunk_support_path() {
 
     const auto productionSorted = sortForestByDepthAndId(nodes);
     const auto u32SupportSorted =
-        sortForestByAdaptiveDepth2U32ChunkWithParent(nodes, parentIndex);
+        sortForestByDepth2FirstThenIdU32MsdWithParent(nodes, parentIndex);
 
     require(sameNodes(productionSorted, u32SupportSorted));
     require(verifySortedByDepthAndId(productionSorted));
@@ -757,52 +800,6 @@ void test_verify_rejects_depth_over_one_byte_prefix_limit() {
     require(!verifySortedByDepthAndId<1>(nodes));
 }
 
-void test_fnv1a_128_hash() {
-    using forest_sorting::UInt128Traits;
-
-    const UInt128 val0 = 0;
-    const UInt128 val1 = 1;
-    const UInt128 val2 = 2;
-
-    const std::size_t hash0 = UInt128Traits::hash(val0);
-    const std::size_t hash1 = UInt128Traits::hash(val1);
-    const std::size_t hash2 = UInt128Traits::hash(val2);
-
-    require(hash0 != hash1, "hash collision for 0 and 1");
-    require(hash1 != hash2, "hash collision for 1 and 2");
-    require(hash0 != hash2, "hash collision for 0 and 2");
-
-    // FNV-1a is deterministic
-    require(hash0 == UInt128Traits::hash(val0), "hash not deterministic for 0");
-    require(hash1 == UInt128Traits::hash(val1), "hash not deterministic for 1");
-
-    // Test with high bits
-    const UInt128 valHigh = static_cast<UInt128>(1) << 100;
-    require(UInt128Traits::hash(valHigh) != hash0,
-            "hash collision for high bit and 0");
-}
-
-#ifdef __SIZEOF_INT128__
-void test_uint128_hash_matches_portable_word_hash() {
-    auto check = [](uint64_t high, uint64_t low) {
-        const UInt128 value =
-            (static_cast<UInt128>(high) << 64U) | static_cast<UInt128>(low);
-        const auto traitHash = UInt128Traits::hash(value);
-        const auto portable =
-            forest_sorting::detail::hashUint128Words(high, low);
-        require(traitHash == portable,
-                "UInt128 hash did not match portable word hash");
-    };
-
-    check(0, 0);
-    check(0, 1);
-    check(0xffffffffffffffffULL, 0xffffffffffffffffULL);
-    check(0x0123456789abcdefULL, 0xfedcba9876543210ULL);
-    check(0x8000000000000000ULL, 0);
-    check(0, 0x8000000000000000ULL);
-}
-#endif
-
 void test_dense_depth2_baseline_limits() {
     using namespace forest_sorting::test_support;
 
@@ -812,8 +809,8 @@ void test_dense_depth2_baseline_limits() {
         appendDeepChain(nodes, 65535, 0x111ULL);
         const auto parentIndex =
             buildParentIndexForKind(ParentKind::Control, nodes);
-        const auto sorted =
-            sortForestByDenseDepth2BucketedMsdWithParent(nodes, parentIndex);
+        const auto sorted = sortForestByDenseDepth2BucketsThenIdMsdWithParent(
+            nodes, parentIndex);
         require(verifySortedByDepthAndId(sorted));
     }
 
@@ -825,14 +822,13 @@ void test_dense_depth2_baseline_limits() {
             buildParentIndexForKind(ParentKind::Control, nodes);
         bool rejected = false;
         try {
-            (void)sortForestByDenseDepth2BucketedMsdWithParent(nodes,
-                                                               parentIndex);
+            (void)sortForestByDenseDepth2BucketsThenIdMsdWithParent(
+                nodes, parentIndex);
         } catch (const std::runtime_error &) {
             rejected = true;
         }
-        require(
-            rejected,
-            "depth-bucket-depth2 baseline unexpectedly accepted depth 65536");
+        require(rejected, "dense-depth2-buckets-then-id baseline unexpectedly "
+                          "accepted depth 65536");
     }
 }
 
@@ -1074,12 +1070,8 @@ int main() {
         runTest("sort accepts depth 1024 with two-byte prefix",
                 test_sort_accepts_depth_1024_with_two_byte_prefix);
         runGenericApiAndDepthTests();
-        runTest("fnv1a 128 hash correctness", test_fnv1a_128_hash);
-#ifdef __SIZEOF_INT128__
-        runTest("uint128 hash matches portable word hash",
-                test_uint128_hash_matches_portable_word_hash);
-#endif
-        runTest("depth-bucket-depth2 baseline limits",
+
+        runTest("dense-depth2-buckets-then-id baseline limits",
                 test_dense_depth2_baseline_limits);
 
         runTest("verify accepts sorted common forest",
