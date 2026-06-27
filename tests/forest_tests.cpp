@@ -90,8 +90,7 @@ void requireUniqueDatasetParentAndSortRegistries() {
     const auto &registry = getSortRegistry();
     const auto globalIdFirstIt =
         std::ranges::find_if(registry, [](const SortRegistryEntry &entry) {
-            return entry.kind ==
-                   SortKind::GlobalIdMsdChunk32RadixThenDepthStable;
+            return entry.kind == SortKind::GlobalIdPermutationThenDepthStable;
         });
     require(globalIdFirstIt != registry.end(),
             "global-ID-first sort is missing from the registry");
@@ -101,7 +100,7 @@ void requireUniqueDatasetParentAndSortRegistries() {
             "global-ID-first sorting must be the production benchmark row");
     require(globalIdFirst.sortFunction == nullptr &&
                 globalIdFirst.optionalIdPermutationSortFunction ==
-                    sortForestByGlobalIdMsdChunk32RadixThenDepthStable,
+                    sortForestByGlobalIdPermutationThenDepthStable,
             "global-ID-first registry row is wired to the wrong pipeline");
     const auto depthFirstIt =
         std::ranges::find_if(registry, [](const SortRegistryEntry &entry) {
@@ -164,34 +163,19 @@ void test_support_registries_are_unique() {
 }
 
 void test_removed_benchmark_labels_do_not_parse() {
-    constexpr std::string_view kRemovedLabels[] = {
-        "dense-depth2-buckets-then-id-msd", "composite-depth2-id-msd-copyback",
-        "composite-depth2-id-msd-lowcopy-branchy",
-        "composite-depth2-id-msd-lowcopy-flattened",
-        "composite-depth2-id-msd-lowcopy-batched",
+    constexpr std::string_view kRemovedLabelRepresentatives[] = {
+        "dense-depth2-buckets-then-id-msd",
+        "composite-depth2-id-msd-copyback",
         "depth2-first-then-id-u8-msd-full-clear",
-        "depth2-first-then-id-u16-msd-full-clear",
-        "depth2-first-then-id-u32-msd-full-clear",
-        "depth2-first-then-id-u64-msd-full-clear",
+        "depth2-first-then-id-u16-msd-bitmask-le512",
         "depth2-first-then-id-u32-msd-bitmask-le512",
-        "depth2-first-then-id-u32-msd",
+        "depth2-first-then-id-u64-msd-full-clear",
         "global-id-u32-msd-radix-then-depth-stable",
-        "adaptive-depth2-u8-chunk-msd-touched-counts",
-        "adaptive-depth2-u32-chunk-msd-touched-counts",
-        "adaptive-depth2-u64-chunk-msd-touched-counts",
-        "adaptive-depth2-u32-chunk-msd-touched-counts-128",
-        "adaptive-depth2-u32-chunk-msd-binary-small48",
-        "adaptive-depth2-u32-chunk-msd-exponential-small48",
-        "adaptive-depth2-stable-depth-reuse-id-permutation",
-        "adaptive-depth2-u32-chunk-msd-full-clear",
-        "adaptive-depth2-u32-chunk-msd-bitmask-le128",
-        "adaptive-depth2-u32-chunk-msd-binary-small32",
-        "adaptive-depth2-u32-chunk-msd-exponential-small32",
-        // NOLINTNEXTLINE(bugprone-suspicious-missing-comma): formatter split.
-        "adaptive-depth2-u32-chunk-msd-bitmask-le512-tail-linear32-chunk-"
-        "cache"};
+        "global-id-msd-chunk32-radix-then-depth-stable",
+        "depth2-first-then-id-range-ladder-u8-le1024-u16-le16384-full-clear",
+        "radix-join-id-byte-msd"};
 
-    for (std::string_view removedLabel : kRemovedLabels) {
+    for (std::string_view removedLabel : kRemovedLabelRepresentatives) {
         bool rejected = false;
         try {
             (void)parseSortKind(removedLabel);
@@ -248,10 +232,14 @@ void test_parent_builders_match_for_registered_datasets() {
 }
 
 void test_radix_parent_artifacts_retain_sorted_node_permutations() {
-    constexpr std::array<ParentKind, 5> kRadixKinds = {
-        ParentKind::RadixJoinIdMsdChunk8, ParentKind::RadixJoinIdMsdChunk16,
-        ParentKind::RadixJoinIdMsdChunk32, ParentKind::RadixJoinIdMsdChunk64,
-        ParentKind::RadixJoinIdMsdBytePartitionCore};
+    constexpr std::array<ParentKind, 7> kRadixKinds = {
+        ParentKind::RadixJoinIdMsdChunk8,
+        ParentKind::RadixJoinIdMsdChunk16,
+        ParentKind::RadixJoinIdMsdChunk32,
+        ParentKind::RadixJoinIdMsdChunk64,
+        ParentKind::RadixJoinIdMsdBytePartitionCore,
+        ParentKind::RadixDirectoryIdMsdChunk32Prefix8,
+        ParentKind::RadixDirectoryIdMsdChunk32Prefix16};
     const UInt128NodeTraits traits;
     auto verifyArtifacts = [&](const std::vector<Node> &nodes) {
         const auto expectedParent =
@@ -308,6 +296,78 @@ void test_radix_parent_artifacts_retain_sorted_node_permutations() {
     verifyArtifacts(sortedNodes);
 }
 
+void requireRadixDirectoryBuildersMatchChunk32(const std::vector<Node> &nodes,
+                                               std::string_view scenario) {
+    const auto expected =
+        buildParentArtifactsForKind(ParentKind::RadixJoinIdMsdChunk32, nodes);
+    for (ParentKind parentKind :
+         {ParentKind::RadixDirectoryIdMsdChunk32Prefix8,
+          ParentKind::RadixDirectoryIdMsdChunk32Prefix16}) {
+        const auto actual = buildParentArtifactsForKind(parentKind, nodes);
+        require(actual.parentIndex == expected.parentIndex,
+                std::string(parentName(parentKind)) +
+                    " directory parent index differs for " +
+                    std::string(scenario));
+        require(actual.idPermutation == expected.idPermutation,
+                std::string(parentName(parentKind)) +
+                    " directory retained permutation differs for " +
+                    std::string(scenario));
+        require(actual.hasIdPermutation,
+                std::string(parentName(parentKind)) +
+                    " did not retain an ID permutation");
+    }
+}
+
+void test_radix_directory_parent_lookup_shapes() {
+    std::vector<Node> onePrefix;
+    onePrefix.reserve(128);
+    const uint64_t sharedHigh = 0x1234567800000000ULL;
+    for (std::size_t idx = 0; idx < 128; ++idx) {
+        const UInt128 nodeId =
+            makeId(sharedHigh, static_cast<uint64_t>(idx) + 1ULL);
+        const UInt128 parent =
+            idx == 0 ? UInt128{0}
+                     : makeId(sharedHigh, static_cast<uint64_t>(idx));
+        onePrefix.push_back({nodeId, parent});
+    }
+    requireRadixDirectoryBuildersMatchChunk32(onePrefix, "one prefix bucket");
+
+    std::vector<Node> allHighBytePrefixes;
+    allHighBytePrefixes.reserve(512);
+    for (std::size_t highByte = 0; highByte < 256; ++highByte) {
+        const uint64_t high =
+            (static_cast<uint64_t>(highByte) << 56U) | 0x0001000000000000ULL;
+        const UInt128 rootId =
+            makeId(high, static_cast<uint64_t>(highByte) + 1ULL);
+        const UInt128 childId =
+            makeId(high, static_cast<uint64_t>(highByte) + 0x1000ULL);
+        allHighBytePrefixes.push_back({rootId, 0});
+        allHighBytePrefixes.push_back({childId, rootId});
+    }
+    requireRadixDirectoryBuildersMatchChunk32(allHighBytePrefixes,
+                                              "all high-byte prefixes");
+
+    std::vector<Node> sparsePrefixes = {
+        {makeId(0x0100000000000000ULL, 10), 0},
+        {makeId(0x7F00000000000000ULL, 10), 0},
+        {makeId(0xF000000000000000ULL, 10), 0},
+        {makeId(0x0100000000000000ULL, 11), makeId(0x0100000000000000ULL, 10)},
+        {makeId(0x7F00000000000000ULL, 11), makeId(0x7F00000000000000ULL, 10)},
+        {makeId(0xF000000000000000ULL, 11), makeId(0xF000000000000000ULL, 10)},
+    };
+    requireRadixDirectoryBuildersMatchChunk32(sparsePrefixes,
+                                              "sparse prefixes");
+
+    std::vector<Node> longSharedPrefix = {
+        {makeId(0xABCDEF1234567890ULL, 4), makeId(0xABCDEF1234567890ULL, 1)},
+        {makeId(0xABCDEF1234567890ULL, 1), 0},
+        {makeId(0xABCDEF1234567890ULL, 3), makeId(0xABCDEF1234567890ULL, 1)},
+        {makeId(0xABCDEF1234567890ULL, 2), makeId(0xABCDEF1234567890ULL, 1)},
+    };
+    requireRadixDirectoryBuildersMatchChunk32(longSharedPrefix,
+                                              "long shared prefix");
+}
+
 void test_global_id_first_sort_computes_or_reuses_id_permutation() {
     for (DatasetKind datasetKind : allDatasetKinds()) {
         const auto nodes = makeGeneratedForestForKind(datasetKind, 1000);
@@ -320,16 +380,16 @@ void test_global_id_first_sort_computes_or_reuses_id_permutation() {
                 sortForestByComparisonWithParent(nodes, artifacts.parentIndex);
             const std::vector<std::size_t> *idPermutation =
                 artifacts.hasIdPermutation ? &artifacts.idPermutation : nullptr;
-            const auto actual = sortForestForKind(
-                SortKind::GlobalIdMsdChunk32RadixThenDepthStable, nodes,
-                artifacts.parentIndex, idPermutation);
+            const auto actual =
+                sortForestForKind(SortKind::GlobalIdPermutationThenDepthStable,
+                                  nodes, artifacts.parentIndex, idPermutation);
             require(sameNodes(actual, expected),
                     std::string(parentName(parentKind)) +
                         " global-ID-first sort differed from comparison");
 
-            const auto computed = sortForestForKind(
-                SortKind::GlobalIdMsdChunk32RadixThenDepthStable, nodes,
-                artifacts.parentIndex, nullptr);
+            const auto computed =
+                sortForestForKind(SortKind::GlobalIdPermutationThenDepthStable,
+                                  nodes, artifacts.parentIndex, nullptr);
             require(sameNodes(computed, actual),
                     "computed and reused ID permutations produced different "
                     "orders");
@@ -570,7 +630,7 @@ void test_parent_radix_cached_path_differentiates_low64() {
     requireAllRegisteredSortsMatch(nodes, expected);
 }
 
-void test_adaptive_sort_orders_by_high64_before_low64() {
+void test_production_sort_orders_by_high64_before_low64() {
     std::vector<Node> nodes = {
         {makeId(2, 0), 0},
         {makeId(1, UINT64_MAX), 0},
@@ -591,7 +651,7 @@ void test_adaptive_sort_orders_by_high64_before_low64() {
     require(sorted[3].id == makeId(2, 0));
 }
 
-void test_adaptive_sort_uses_low64_when_high64_matches() {
+void test_production_sort_uses_low64_when_high64_matches() {
     std::vector<Node> nodes = {
         {makeId(9, 3), 0},
         {makeId(8, UINT64_MAX), 0},
@@ -613,22 +673,24 @@ void test_adaptive_sort_uses_low64_when_high64_matches() {
     require(sorted[3].id == makeId(9, 3));
 }
 
-void test_public_sort_matches_msd_chunk32_support_path() {
+void test_public_sort_matches_retained_permutation_production_path() {
     constexpr std::size_t nodeCount = 10000;
     const auto nodes = makeGeneratedForest(nodeCount, kCommonFixtureMaxDepth);
-    const auto parentIndex =
-        buildParentIndexForKind(ParentKind::Control, nodes);
+    const auto artifacts =
+        buildParentArtifactsForKind(ParentKind::RadixJoinIdMsdChunk32, nodes);
 
     const auto productionSorted = sortForestByDepthAndId(nodes);
-    const auto chunk32SupportSorted =
-        sortForestByDepth2FirstThenIdMsdChunk32BitmaskLe512TailLinear32WithParent(
-            nodes, parentIndex);
+    const auto retainedPermutationSorted =
+        sortForestForKind(SortKind::GlobalIdPermutationThenDepthStable, nodes,
+                          artifacts.parentIndex, &artifacts.idPermutation);
 
-    require(sameNodes(productionSorted, chunk32SupportSorted));
+    require(sameNodes(productionSorted, retainedPermutationSorted),
+            "public sort did not match radix-parent retained-permutation "
+            "production path");
     require(verifySortedByDepthAndId(productionSorted));
 }
 
-void test_adaptive_sort_matches_comparison_for_shuffled_input() {
+void test_production_sort_matches_comparison_for_shuffled_input() {
     std::vector<Node> nodes = {
         {makeId(0, 40), 0},
         {makeId(0, 10), 0},
@@ -652,7 +714,7 @@ void test_adaptive_sort_matches_comparison_for_shuffled_input() {
     require(verifySortedByDepthAndId(sorted));
 }
 
-void test_adaptive_sort_matches_baselines_for_100k_common_depth_forest() {
+void test_production_sort_and_registered_rows_match_100k_common_depth_forest() {
     constexpr std::size_t nodeCount = 100000;
 
     const auto nodes = makeGeneratedForest(nodeCount, kCommonFixtureMaxDepth);
@@ -682,20 +744,20 @@ void test_all_sort_methods_match_canonical_order_across_permutations() {
     };
 
     for (const auto &permutation : permutations) {
-        const auto adaptive = sortForestByDepthAndId(permutation);
+        const auto productionSorted = sortForestByDepthAndId(permutation);
 
         requireAllRegisteredSortsMatch(permutation, canonical);
-        if (!sameNodes(adaptive, canonical)) {
+        if (!sameNodes(productionSorted, canonical)) {
             throw std::runtime_error(
-                "adaptive radix sort changed across input permutations");
+                "production sort changed across input permutations");
         }
-        if (!verifySortedByDepthAndId(adaptive)) {
+        if (!verifySortedByDepthAndId(productionSorted)) {
             throw std::runtime_error("sorted output failed verification");
         }
     }
 }
 
-void test_adaptive_sort_matches_baselines_with_deep_depth_outliers() {
+void test_production_sort_and_registered_rows_match_deep_depth_outliers() {
     constexpr std::size_t nodeCount = 10000;
 
     const auto nodes =
@@ -1069,6 +1131,8 @@ int main() {
                 test_parent_builders_match_for_registered_datasets);
         runTest("radix parent artifacts retain sorted node permutations",
                 test_radix_parent_artifacts_retain_sorted_node_permutations);
+        runTest("radix directory parent lookup shapes",
+                test_radix_directory_parent_lookup_shapes);
         runTest("global-ID-first sort computes or reuses ID permutation",
                 test_global_id_first_sort_computes_or_reuses_id_permutation);
         runTest("parent builders reject duplicate full UInt128 ID",
@@ -1083,24 +1147,26 @@ int main() {
                 test_parent_builder_identity_hash_rejects_duplicate_full_id);
         runTest("sort and verify multiple roots",
                 test_sort_and_verify_multi_root);
-        runTest("adaptive sort orders high64 before low64",
-                test_adaptive_sort_orders_by_high64_before_low64);
-        runTest("adaptive sort uses low64 when high64 matches",
-                test_adaptive_sort_uses_low64_when_high64_matches);
+        runTest("production sort orders high64 before low64",
+                test_production_sort_orders_by_high64_before_low64);
+        runTest("production sort uses low64 when high64 matches",
+                test_production_sort_uses_low64_when_high64_matches);
         runTest("parent radix cached path differentiates low64",
                 test_parent_radix_cached_path_differentiates_low64);
-        runTest("public sort matches MSD chunk32 support path",
-                test_public_sort_matches_msd_chunk32_support_path);
-        runTest("adaptive sort matches comparison for shuffled input",
-                test_adaptive_sort_matches_comparison_for_shuffled_input);
+        runTest("public sort matches retained-permutation production path",
+                test_public_sort_matches_retained_permutation_production_path);
+        runTest("production sort matches comparison for shuffled input",
+                test_production_sort_matches_comparison_for_shuffled_input);
         runTest(
-            "adaptive sort matches baselines for 100k common-depth forest",
-            test_adaptive_sort_matches_baselines_for_100k_common_depth_forest);
+            "production sort and registered rows match 100k common-depth "
+            "forest",
+            test_production_sort_and_registered_rows_match_100k_common_depth_forest);
         runTest(
             "all sort methods match canonical order across permutations",
             test_all_sort_methods_match_canonical_order_across_permutations);
-        runTest("adaptive sort matches baselines with deep depth outliers",
-                test_adaptive_sort_matches_baselines_with_deep_depth_outliers);
+        runTest(
+            "production sort and registered rows match deep depth outliers",
+            test_production_sort_and_registered_rows_match_deep_depth_outliers);
         runTest("sort rejects duplicate full UInt128 ID",
                 test_sort_rejects_duplicate_full_uint128_id);
         runTest("sort rejects depth over one-byte prefix limit",

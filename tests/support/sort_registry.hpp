@@ -35,7 +35,7 @@ enum class SortKind : uint8_t {
     CompositeDepth2IdByteMsdLowcopyBatched,
     Depth2FirstThenIdMsdChunk32BitmaskLe512NoDense,
     Depth2FirstThenIdMsdChunk32BitmaskLe512,
-    GlobalIdMsdChunk32RadixThenDepthStable,
+    GlobalIdPermutationThenDepthStable,
 
     // Comparators
     Depth2FirstThenIdMsdChunk8FullClear,
@@ -77,7 +77,7 @@ struct SortRegistryEntry {
 };
 
 inline bool defaultIncludeForKind(SortKind kind) {
-    return kind == SortKind::GlobalIdMsdChunk32RadixThenDepthStable ||
+    return kind == SortKind::GlobalIdPermutationThenDepthStable ||
            kind == SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe512 ||
            kind == SortKind::Comparison;
 }
@@ -192,11 +192,14 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
             "depth2-first-then-id-msd-chunk32-bitmask-le512",
             sortForestByDepth2FirstThenIdMsdChunk32BitmaskLe512TailLinear32WithParent,
             SortCategory::Comparator);
-        // Production global-ID-first row.
+        // Production global-ID-first row. In pipeline benchmarks this reuses
+        // the parent builder's retained ID permutation, so the sort label must
+        // not claim a radix chunk width. The parent row owns the radix width
+        // being benchmarked.
         addOptionalIdPermutationEntry(
-            reg, SortKind::GlobalIdMsdChunk32RadixThenDepthStable,
-            "global-id-msd-chunk32-radix-then-depth-stable",
-            sortForestByGlobalIdMsdChunk32RadixThenDepthStable);
+            reg, SortKind::GlobalIdPermutationThenDepthStable,
+            "global-id-permutation-then-depth-stable",
+            sortForestByGlobalIdPermutationThenDepthStable);
 
         // Chunk32 full-clear comparator
         addEntry(
@@ -317,6 +320,17 @@ inline SortKind parseSortKind(std::string_view value) {
     throw std::runtime_error("unknown sort algorithm: " + std::string(value));
 }
 
+inline bool containsStaleRadixChunkLabelPattern(std::string_view name) {
+    return name.find("-u8-msd") != std::string_view::npos ||
+           name.find("-u16-msd") != std::string_view::npos ||
+           name.find("-u32-msd") != std::string_view::npos ||
+           name.find("-u64-msd") != std::string_view::npos ||
+           name.find("global-id-u32-msd") != std::string_view::npos ||
+           name.find("global-id-msd-chunk32-radix") != std::string_view::npos ||
+           name.find("range-ladder-u8-le") != std::string_view::npos ||
+           name.find("-u16-le") != std::string_view::npos;
+}
+
 inline void validateSortRegistry() {
     for (std::size_t entryIdx = 0; entryIdx < getSortRegistry().size();
          ++entryIdx) {
@@ -335,12 +349,19 @@ inline void validateSortRegistry() {
                 std::string(entry.name));
         }
         if (entry.includeByDefault &&
-            entry.kind != SortKind::GlobalIdMsdChunk32RadixThenDepthStable &&
+            entry.kind != SortKind::GlobalIdPermutationThenDepthStable &&
             entry.kind != SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe512 &&
             entry.kind != SortKind::Comparison) {
             throw std::runtime_error(
                 std::string(entry.name) +
                 " is not part of the curated default sort set");
+        }
+        // This is a broad active-registry invariant, not the authoritative
+        // exact removed-label list tested by the CLI rejection test.
+        if (containsStaleRadixChunkLabelPattern(entry.name)) {
+            throw std::runtime_error(
+                "sort registry contains stale radix chunk label: " +
+                std::string(entry.name));
         }
         if (entry.category == SortCategory::CounterPolicyExperiment ||
             entry.category == SortCategory::RangeLadderExperiment ||

@@ -139,24 +139,34 @@ and output formats.
 Parent builders are selected with `unordered`, `flat`, `control`,
 `control-finalizer-hash`, `radix-join-id-msd-chunk8`,
 `radix-join-id-msd-chunk16`, `radix-join-id-msd-chunk32`,
-`radix-join-id-msd-chunk64`, and `radix-join-id-msd-byte-partition-core`.
+`radix-join-id-msd-chunk64`, `radix-join-id-msd-byte-partition-core`,
+`radix-directory-id-msd-chunk32-prefix8`, and
+`radix-directory-id-msd-chunk32-prefix16`.
 `radix-join-id-msd-chunk32` is the production default: it sorts stationary ID
 and parent-query index permutations with the same packed 32-bit radix chunks
 used by the sorter and retains the global ID permutation for final stable depth
 grouping. `control` is the support-only bounded
 control-byte hash-table comparator; it falls back to the shipped radix join if
 probe chains become pathological. `control-finalizer-hash` is a
-diagnostic control-table hash-policy comparator. The opt-in `radix-join-id-msd-byte-partition-core` comparator
-sorts the same permutations with byte-MSD and is excluded from `--parent default`.
+diagnostic control-table hash-policy comparator. The opt-in
+`radix-join-id-msd-byte-partition-core` comparator sorts the same permutations
+with byte-MSD and is excluded from `--parent default`.
 `radix-join-id-msd-chunk8` and
 `radix-join-id-msd-byte-partition-core` produce the same byte-MSD ID ordering.
 The chunk8 row uses the unified MSD-chunk scheduler with
 `RadixChunkBytes = 1`, the production counter policy, and the linear-small32
 cutoff; the byte-partition-core row uses the generic byte-MSD partition
 implementation without that scheduler or an equivalent small-range policy.
+The radix-directory rows sort IDs once with the production chunk32 scheduler,
+build a fixed high-prefix directory over the retained ID permutation, and
+resolve parent IDs by per-parent lookup inside the matching prefix range. They
+are a separate parent-lookup family from radix join: radix join sorts IDs plus
+parent queries and merge-joins them; radix directory sorts IDs once and uses a
+prefix directory plus in-range searches; `control` and `flat` are hash-table
+lookup comparators.
 Datasets include `random`, `outliers`, `same-high64`, `same-high32`,
 `sequential`, `external-parents`, and `siblings`. By default, the benchmark
-runs the curated default sort set: `global-id-msd-chunk32-radix-then-depth-stable`,
+runs the curated default sort set: `global-id-permutation-then-depth-stable`,
 `depth2-first-then-id-msd-chunk32-bitmask-le512`, and `comparison`. `--sort default`
 selects this curated set explicitly; all other sort rows are opt-in and excluded
 from the defaults. Sort algorithms are selected with:
@@ -171,7 +181,7 @@ from the defaults. Sort algorithms are selected with:
 - `composite-depth2-id-byte-msd-lowcopy-batched`: full composite key `depth[2] || id[16]`, MSD using depth-limited batched low-copy (previously `composite-depth2-byte-msd-lowcopy-batched`)
 - `depth2-first-then-id-msd-chunk32-bitmask-le512-no-dense`: depth-MSD grouping + packed 32-bit ID radix chunks, dense shortcut disabled
 - `depth2-first-then-id-msd-chunk32-bitmask-le512`: depth-first comparator that groups by depth and runs packed 32-bit ID radix chunks independently inside each depth range
-- `global-id-msd-chunk32-radix-then-depth-stable`: production row that obtains one global chunk32 ID radix order and stably groups it by depth; radix parent builders reuse their retained ID permutation, while other benchmark parent builders compute the permutation in the sort phase
+- `global-id-permutation-then-depth-stable`: production row that consumes a retained global ID permutation when the parent builder provides one, otherwise computes one in the sort phase, then stably groups it by depth
 - `depth2-first-then-id-msd-chunk32-full-clear`: old full-clear counter comparator for the production-style 4-byte path
 - `depth2-first-then-id-msd-chunk8-full-clear`: depth-first path using packed 8-bit ID radix chunks and full-clear counters
 - `depth2-first-then-id-msd-chunk8-bitmask-le512`: depth-first path using packed 8-bit ID radix chunks and bitmask-le512 counters
@@ -185,7 +195,7 @@ from the defaults. Sort algorithms are selected with:
 Main forest benchmark labels describe full pipeline order. Tail-sort variants are measured by the tail microbench (`tail_microbench.cpp`), not registered as full forest pipeline rows, because they are local small-range policy experiments.
 
 The `depth2-first-then-id-msd-chunk32-bitmask-le512` benchmark preserves the former depth-first adaptive path as a comparator: adaptive depth grouping followed by the unified chunk scheduler with MSB-first 4-byte ID chunks, stable byte-LSD passes inside each chunk, and one shared `bitmask-le512` radix count policy for depth grouping and ID chunk partitioning.
-The production `global-id-msd-chunk32-radix-then-depth-stable` row applies that ID radix globally once, then uses stable dense/sparse depth grouping to preserve ID order within each depth.
+The production `global-id-permutation-then-depth-stable` row uses one global ID order, then stable dense/sparse depth grouping to preserve ID order within each depth. The parent benchmark row owns how that ID permutation is produced.
 The `depth2-first-then-id-msd-chunk32-full-clear` row preserves the previous full-clear counter path as an explicit comparator. The `depth2-first-then-id-msd-chunk8-full-clear` and `depth2-first-then-id-msd-chunk64-full-clear` rows use the same scheduler with 1-byte and 8-byte chunks. The `depth2-first-then-id-msd-chunk32-bitmask-le512-no-dense` variant explicitly disables the dense grouping shortcut to measure its benefit.
 The remaining `*-bitmask-le*` rows are explicit opt-in A/B variants of the same chunk scheduler. The bitmask-threshold rows replace the rejected generation-table touched-count loop with bitmask bucket tracking and only change radix counter initialization policy for ranges up to the named threshold; larger ranges still use full-clear counters. The 512-node cap is represented by the depth-first comparator label.
 The `same-high32` dataset keeps the top 32 ID bits fixed while varying lower bits, which is useful for checking whether wider small-tail thresholds regress when many IDs share the first chunk32 radix partition.
@@ -218,7 +228,7 @@ cmake --build --preset release --target forest-sorting-bench
   --size 10000 \
   --dataset random \
   --parent default \
-  --sort global-id-msd-chunk32-radix-then-depth-stable
+  --sort global-id-permutation-then-depth-stable
 
 # Run multiple sizes, datasets, and custom seeds with bootstrapped delta comparison
 ./out/build/release/benchmarks/forest-sorting-bench \
@@ -243,10 +253,24 @@ cmake --build --preset release --target forest-sorting-bench
   --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers \
   --parent control --parent radix-join-id-msd-chunk32 \
   --sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
-  --sort global-id-msd-chunk32-radix-then-depth-stable \
+  --sort global-id-permutation-then-depth-stable \
   --baseline-parent control \
   --baseline-sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
   --iterations 50 --warmup 10 --shuffle \
+  --order-seed 0x5eed \
+  --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
+
+# Compare radix-join and radix-directory parent lookup families
+./out/build/release/benchmarks/forest-sorting-bench \
+  --format json --sample-output summary \
+  --size 10000 --size 100000 --size 1000000 \
+  --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers \
+  --parent radix-join-id-msd-chunk32 \
+  --parent radix-directory-id-msd-chunk32-prefix8 \
+  --parent radix-directory-id-msd-chunk32-prefix16 \
+  --baseline-parent radix-join-id-msd-chunk32 \
+  --sort global-id-permutation-then-depth-stable \
+  --iterations 30 --warmup 3 --shuffle \
   --order-seed 0x5eed \
   --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
 

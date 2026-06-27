@@ -667,7 +667,7 @@ inline std::vector<Node> sortForestByAdaptiveIdMsdChunkWithParent(
         nodes, parentIndex, allowDenseDepthGrouping, rangeSorter);
 }
 
-inline std::vector<Node> sortForestByGlobalIdMsdChunk32RadixThenDepthStable(
+inline std::vector<Node> sortForestByGlobalIdPermutationThenDepthStable(
     const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
     const std::vector<std::size_t> *idPermutation) {
     if (idPermutation != nullptr && idPermutation->size() != nodes.size()) {

@@ -3,8 +3,13 @@
 
 #include "control_parent_index.hpp"
 #include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/id_chunks.hpp"
 #include "forest_sorting/detail/id_compare.hpp"
+#include "forest_sorting/detail/id_permutation_compare.hpp"
+#include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
+#include "forest_sorting/detail/parent_sentinel.hpp"
+#include "forest_sorting/detail/validation.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "hash_support.hpp"
@@ -12,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -36,6 +42,8 @@ enum class ParentKind : uint8_t {
     RadixJoinIdMsdChunk32,
     RadixJoinIdMsdChunk64,
     RadixJoinIdMsdBytePartitionCore,
+    RadixDirectoryIdMsdChunk32Prefix8,
+    RadixDirectoryIdMsdChunk32Prefix16,
 };
 
 using ParentBuildFunction =
@@ -247,6 +255,113 @@ buildRadixJoinIdMsdChunkParentArtifacts(const std::vector<Node> &nodes) {
             true};
 }
 
+struct PrefixDirectoryRange {
+    std::size_t begin = 0;
+    std::size_t end = 0;
+};
+
+template <std::size_t IdPrefixBytes, typename Id, typename Traits>
+std::size_t prefixDirectoryKey(const Id &nodeId, const Traits &traits) {
+    return static_cast<std::size_t>(
+        detail::chunkMsbFirst<IdPrefixBytes>(nodeId, 0, traits));
+}
+
+template <std::size_t IdPrefixBytes>
+ParentBuildArtifacts
+buildRadixDirectoryIdMsdChunk32ParentArtifacts(const std::vector<Node> &nodes) {
+    using Id = UInt128NodeTraits::Id;
+    constexpr std::size_t directorySize = std::size_t{1}
+                                          << (IdPrefixBytes * 8U);
+    const UInt128NodeTraits traits;
+
+    std::vector<Id> ids;
+    ids.reserve(nodes.size());
+    std::vector<Id> parentIds;
+    parentIds.reserve(nodes.size());
+    std::vector<std::size_t> childIndexes;
+    childIndexes.reserve(nodes.size());
+    for (std::size_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex) {
+        ids.push_back(UInt128NodeTraits::id(nodes[nodeIndex]));
+        const Id parentId = UInt128NodeTraits::parent_id(nodes[nodeIndex]);
+        if (!detail::isParentSentinel(traits, parentId)) {
+            parentIds.push_back(parentId);
+            childIndexes.push_back(nodeIndex);
+        }
+    }
+
+    std::vector<std::size_t> idPermutation(ids.size());
+    std::iota(idPermutation.begin(), idPermutation.end(), 0);
+
+    return detail::withIdPermutationComparator(
+        ids, parentIds, traits, [&](const auto &comparator) {
+            detail::IdMsdChunkSortWorkspace<
+                detail::production_id_radix_chunk_bytes,
+                detail::ProductionIdCountPolicy>
+                workspace;
+            auto idForEntryIndex =
+                [&](std::size_t entryIndex) -> decltype(auto) {
+                return comparator.leftIdForSort(entryIndex);
+            };
+            detail::sortIndexRangeByIdMsdChunks<
+                detail::production_id_radix_chunk_bytes,
+                detail::ProductionIdCountPolicy>(
+                idPermutation, idForEntryIndex, comparator.sortTraits(), 0,
+                idPermutation.size(), 0, workspace);
+
+            detail::rejectAdjacentDuplicates(
+                idPermutation,
+                [&](std::size_t lhsIndex, std::size_t rhsIndex) noexcept {
+                    return comparator.leftEqual(lhsIndex, rhsIndex);
+                },
+                "duplicate node id");
+
+            std::vector<PrefixDirectoryRange> directory(directorySize);
+            std::size_t rangeBegin = 0;
+            while (rangeBegin < idPermutation.size()) {
+                const std::size_t key = prefixDirectoryKey<IdPrefixBytes>(
+                    ids[idPermutation[rangeBegin]], traits);
+                std::size_t rangeEnd = rangeBegin + 1;
+                while (rangeEnd < idPermutation.size() &&
+                       prefixDirectoryKey<IdPrefixBytes>(
+                           ids[idPermutation[rangeEnd]], traits) == key) {
+                    ++rangeEnd;
+                }
+                directory[key] = {rangeBegin, rangeEnd};
+                rangeBegin = rangeEnd;
+            }
+
+            std::vector<std::size_t> parentIndex(nodes.size(),
+                                                 detail::no_parent);
+            for (std::size_t queryIndex = 0; queryIndex < parentIds.size();
+                 ++queryIndex) {
+                const std::size_t key = prefixDirectoryKey<IdPrefixBytes>(
+                    parentIds[queryIndex], traits);
+                const PrefixDirectoryRange range = directory[key];
+                std::size_t low = range.begin;
+                std::size_t high = range.end;
+                while (low < high) {
+                    const std::size_t mid = low + ((high - low) / 2U);
+                    const std::size_t nodeIndex = idPermutation[mid];
+                    if (comparator.compare(nodeIndex, queryIndex) < 0) {
+                        low = mid + 1;
+                    } else {
+                        high = mid;
+                    }
+                }
+                if (low < range.end) {
+                    const std::size_t nodeIndex = idPermutation[low];
+                    if (comparator.compare(nodeIndex, queryIndex) == 0 &&
+                        comparator.crossEqual(nodeIndex, queryIndex)) {
+                        parentIndex[childIndexes[queryIndex]] = nodeIndex;
+                    }
+                }
+            }
+
+            return ParentBuildArtifacts{std::move(parentIndex),
+                                        std::move(idPermutation), true};
+        });
+}
+
 inline const std::vector<ParentRegistryEntry> &getParentRegistry() {
     static const std::vector<ParentRegistryEntry> registry = {
         {ParentKind::Unordered, "unordered",
@@ -297,6 +412,12 @@ inline const std::vector<ParentRegistryEntry> &getParentRegistry() {
                                          std::move(result.idPermutation), true};
          },
          false},
+        {ParentKind::RadixDirectoryIdMsdChunk32Prefix8,
+         "radix-directory-id-msd-chunk32-prefix8",
+         buildRadixDirectoryIdMsdChunk32ParentArtifacts<1>, false},
+        {ParentKind::RadixDirectoryIdMsdChunk32Prefix16,
+         "radix-directory-id-msd-chunk32-prefix16",
+         buildRadixDirectoryIdMsdChunk32ParentArtifacts<2>, false},
     };
     return registry;
 }
