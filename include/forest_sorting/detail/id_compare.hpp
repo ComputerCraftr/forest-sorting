@@ -9,13 +9,6 @@
 
 namespace forest_sorting::detail {
 
-enum class DispatchPath : std::uint8_t {
-    Trait,
-    Native,
-    CachedChunk,
-    MsbFallback
-};
-
 template <typename Traits, typename IdType>
 concept HasForestTraitsLess =
     requires(const Traits &traits, const IdType &lhs, const IdType &rhs) {
@@ -120,12 +113,9 @@ inline int compareChunkSequence(LhsChunkAt lhsChunkAt,
 }
 
 template <std::size_t ChunkCount>
-inline int compareCachedIdChunks(const CachedChunkId<ChunkCount> &lhs,
-                                 const CachedChunkId<ChunkCount> &rhs,
-                                 DispatchPath *oracle = nullptr) noexcept {
-    if (oracle) {
-        *oracle = DispatchPath::CachedChunk;
-    }
+inline int
+compareCachedIdChunks(const CachedChunkId<ChunkCount> &lhs,
+                      const CachedChunkId<ChunkCount> &rhs) noexcept {
     return compareChunkSequence<ChunkCount>(
         [&](std::size_t chunkIdx) noexcept { return lhs.chunks[chunkIdx]; },
         [&](std::size_t chunkIdx) noexcept { return rhs.chunks[chunkIdx]; });
@@ -148,12 +138,8 @@ inline int compareIdsMsbFirst(const NodeId &lhs, const NodeId &rhs,
 
 template <typename NodeId, typename NodeTraits>
 inline int compareNodeIds(const NodeId &first, const NodeId &second,
-                          const NodeTraits &traits,
-                          DispatchPath *oracle = nullptr) noexcept {
+                          const NodeTraits &traits) noexcept {
     if constexpr (HasForestTraitsLess<NodeTraits, NodeId>) {
-        if (oracle) {
-            *oracle = DispatchPath::Trait;
-        }
         if (traits.less(first, second)) {
             return -1;
         }
@@ -162,9 +148,6 @@ inline int compareNodeIds(const NodeId &first, const NodeId &second,
         }
         return 0;
     } else if constexpr (HasNativeIdLess<NodeId>) {
-        if (oracle) {
-            *oracle = DispatchPath::Native;
-        }
         if (first < second) {
             return -1;
         }
@@ -173,48 +156,31 @@ inline int compareNodeIds(const NodeId &first, const NodeId &second,
         }
         return 0;
     } else {
-        if (oracle) {
-            *oracle = DispatchPath::MsbFallback;
-        }
         return compareIdsMsbFirst(first, second, traits);
     }
 }
 
 template <typename NodeId, typename NodeTraits>
 inline bool idLess(const NodeId &lhs, const NodeId &rhs,
-                   const NodeTraits &traits,
-                   DispatchPath *oracle = nullptr) noexcept {
+                   const NodeTraits &traits) noexcept {
     if constexpr (HasForestTraitsLess<NodeTraits, NodeId>) {
-        if (oracle) {
-            *oracle = DispatchPath::Trait;
-        }
         return traits.less(lhs, rhs);
     } else if constexpr (HasNativeIdLess<NodeId>) {
-        if (oracle) {
-            *oracle = DispatchPath::Native;
-        }
         return lhs < rhs;
     } else {
-        return compareNodeIds(lhs, rhs, traits, oracle) < 0;
+        return compareNodeIds(lhs, rhs, traits) < 0;
     }
 }
 
 template <typename NodeId, typename NodeTraits>
 inline bool idEqual(const NodeId &lhs, const NodeId &rhs,
-                    const NodeTraits &traits,
-                    DispatchPath *oracle = nullptr) noexcept {
+                    const NodeTraits &traits) noexcept {
     if constexpr (HasForestTraitsEqual<NodeTraits, NodeId>) {
-        if (oracle) {
-            *oracle = DispatchPath::Trait;
-        }
         return traits.equal(lhs, rhs);
     } else if constexpr (HasNativeIdEqual<NodeId>) {
-        if (oracle) {
-            *oracle = DispatchPath::Native;
-        }
         return lhs == rhs;
     } else {
-        return compareNodeIds(lhs, rhs, traits, oracle) == 0;
+        return compareNodeIds(lhs, rhs, traits) == 0;
     }
 }
 

@@ -16,11 +16,12 @@ jobs:
 
             - name: Install clang-tidy (Ubuntu)
               if: runner.os == 'Linux'
-              run: sudo apt-get update && sudo apt-get install -y clang clang-tidy
+              run: sudo apt-get update && sudo apt-get install -y clang clang-tidy ninja-build
 
-            - name: Install LLVM and configure path (macOS)
+            - name: Install LLVM, Ninja, and configure path (macOS)
               if: runner.os == 'macOS'
               run: |
+                  brew list ninja >/dev/null 2>&1 || brew install ninja
                   brew list llvm >/dev/null 2>&1 || brew install llvm
                   LLVM_PREFIX="$(brew --prefix llvm)"
                   echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
@@ -35,9 +36,6 @@ jobs:
               run: cmake --build --preset debug --target tidy
 
             - name: Test (Debug, sanitizers)
-              env:
-                  ASAN_OPTIONS: detect_leaks=0
-                  UBSAN_OPTIONS: print_stacktrace=1
               run: ctest --preset debug --output-on-failure
 
             - name: Configure (Release)

@@ -232,23 +232,34 @@ void test_parent_builders_match_for_registered_datasets() {
 }
 
 void test_radix_parent_artifacts_retain_sorted_node_permutations() {
-    constexpr std::array<ParentKind, 7> kRadixKinds = {
+    constexpr std::array<ParentKind, 10> kRadixKinds = {
         ParentKind::RadixJoinIdMsdChunk8,
         ParentKind::RadixJoinIdMsdChunk16,
         ParentKind::RadixJoinIdMsdChunk32,
         ParentKind::RadixJoinIdMsdChunk64,
+        ParentKind::RadixJoinIdMsdRangeLadder1024_16384,
+        ParentKind::RadixJoinIdMsdRangeLadder2048_32768,
+        ParentKind::RadixJoinIdMsdRangeLadder4096_65536,
         ParentKind::RadixJoinIdMsdBytePartitionCore,
         ParentKind::RadixDirectoryIdMsdChunk32Prefix8,
         ParentKind::RadixDirectoryIdMsdChunk32Prefix16};
+    constexpr std::array<ParentKind, 3> kRangeLadderKinds = {
+        ParentKind::RadixJoinIdMsdRangeLadder1024_16384,
+        ParentKind::RadixJoinIdMsdRangeLadder2048_32768,
+        ParentKind::RadixJoinIdMsdRangeLadder4096_65536};
     const UInt128NodeTraits traits;
     auto verifyArtifacts = [&](const std::vector<Node> &nodes) {
         const auto expectedParent =
             buildParentIndexForKind(ParentKind::Control, nodes);
+        const auto chunk32Artifacts = buildParentArtifactsForKind(
+            ParentKind::RadixJoinIdMsdChunk32, nodes);
         for (ParentKind parentKind : kRadixKinds) {
             const auto artifacts =
                 buildParentArtifactsForKind(parentKind, nodes);
             require(artifacts.parentIndex == expectedParent,
                     "radix artifact parent index differs from control");
+            require(artifacts.hasIdPermutation,
+                    "radix artifact did not retain an ID permutation");
             require(artifacts.idPermutation.size() == nodes.size(),
                     "radix artifact ID permutation has wrong size");
 
@@ -270,6 +281,18 @@ void test_radix_parent_artifacts_retain_sorted_node_permutations() {
                             "radix artifact ID permutation is not sorted");
                 }
             }
+        }
+
+        for (ParentKind parentKind : kRangeLadderKinds) {
+            const auto artifacts =
+                buildParentArtifactsForKind(parentKind, nodes);
+            require(artifacts.parentIndex == chunk32Artifacts.parentIndex,
+                    std::string(parentName(parentKind)) +
+                        " parent index differs from chunk32 radix join");
+            require(artifacts.idPermutation == chunk32Artifacts.idPermutation,
+                    std::string(parentName(parentKind)) +
+                        " retained permutation differs from chunk32 radix "
+                        "join");
         }
 
         const auto chunk8Artifacts = buildParentArtifactsForKind(

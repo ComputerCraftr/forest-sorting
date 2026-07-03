@@ -19,6 +19,7 @@
 #include "control_parent_index.hpp"
 #include "hash_support.hpp"
 #include "hashed_test_bytes.hpp"
+#include "id_dispatch_oracle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -888,161 +889,111 @@ void test_id_equal_falls_back_to_msb_chunks_without_equal_hook() {
             "idEqual treated different byte IDs as equal");
 }
 
-struct TrackedId {
-    uint64_t val = 0;
-};
-
-struct TrackedTraits {
-    using Id = TrackedId;
-    static constexpr std::size_t id_byte_count = 8;
-
-    static bool less(const TrackedId &lhs, const TrackedId &rhs) noexcept {
-        return lhs.val < rhs.val;
-    }
-
-    static bool equal(const TrackedId &lhs, const TrackedId &rhs) noexcept {
-        return lhs.val == rhs.val;
-    }
-
-    static uint8_t byte_msb_first(const TrackedId &nodeId,
-                                  std::size_t byteIndex) noexcept {
-        (void)nodeId;
-        (void)byteIndex;
-        return 0;
-    }
-};
-
-struct NativeId {
-    uint64_t val = 0;
-
-    bool operator<(const NativeId &other) const noexcept {
-        return val < other.val;
-    }
-
-    bool operator==(const NativeId &other) const noexcept {
-        return val == other.val;
-    }
-};
-
-struct NativeTraits {
-    using Id = NativeId;
-    static constexpr std::size_t id_byte_count = 8;
-    static uint8_t byte_msb_first(const NativeId &nodeId,
-                                  std::size_t byteIndex) noexcept {
-        (void)nodeId;
-        (void)byteIndex;
-        return 0;
-    }
-};
-
-struct TrackedCachedId {
-    std::array<uint8_t, 12> bytes{};
-};
-
-struct TrackedCachedTraits {
-    using Id = TrackedCachedId;
-    static constexpr std::size_t id_byte_count = 12;
-
-    inline static int byteCalls = 0;
-
-    static void reset() { byteCalls = 0; }
-
-    static uint8_t byte_msb_first(const TrackedCachedId &nodeId,
-                                  std::size_t byteIndex) noexcept {
-        ++byteCalls;
-        return nodeId.bytes[byteIndex];
-    }
-};
-
 void test_comparison_and_equality_dispatch_priority() {
-    using forest_sorting::detail::DispatchPath;
-    DispatchPath path = DispatchPath::MsbFallback;
+    // 1. Test trait preference: less and equal hooks.
+    IdDispatchCounters counters;
+    InstrumentedTraitTraits traits{&counters};
+    InstrumentedTraitId id1{10};
+    InstrumentedTraitId id2{20};
 
-    // 1. Test trait preference: less and equal hooks
-    TrackedTraits traits;
-    TrackedId id1{10};
-    TrackedId id2{20};
+    require(forest_sorting::detail::idLess(id1, id2, traits), "idLess failed");
+    requireDispatchUsed(counters, IdDispatchPath::Trait,
+                        "idLess did not use the Trait path");
+    requireDispatchUnused(counters, IdDispatchPath::ByteFallback,
+                          "trait idLess used the MSB byte fallback");
 
-    // Test that idLess uses traits.less directly
-    require(forest_sorting::detail::idLess(id1, id2, traits, &path),
-            "idLess failed");
-    require(path == DispatchPath::Trait, "idLess did not report Trait path");
-
-    // Test that idEqual uses traits.equal directly, not less
-    require(!forest_sorting::detail::idEqual(id1, id2, traits, &path),
+    counters.reset();
+    require(!forest_sorting::detail::idEqual(id1, id2, traits),
             "idEqual failed");
-    require(path == DispatchPath::Trait, "idEqual did not report Trait path");
+    requireDispatchUsed(counters, IdDispatchPath::Trait,
+                        "idEqual did not use the Trait path");
+    requireDispatchUnused(counters, IdDispatchPath::ByteFallback,
+                          "trait idEqual used the MSB byte fallback");
 
-    // Test that compareNodeIds uses traits.less directly, not equal and not MSB
-    // fallback
-    require(forest_sorting::detail::compareNodeIds(id1, id2, traits, &path) ==
-                -1,
+    counters.reset();
+    require(forest_sorting::detail::compareNodeIds(id1, id2, traits) == -1,
             "compareNodeIds failed");
-    require(path == DispatchPath::Trait,
-            "compareNodeIds did not report Trait path");
+    requireDispatchUsed(counters, IdDispatchPath::Trait,
+                        "compareNodeIds did not use the Trait path");
+    requireDispatchUnused(counters, IdDispatchPath::ByteFallback,
+                          "trait compareNodeIds used the MSB byte fallback");
 
-    // 2. Test native operator preference when traits lack hooks
-    NativeTraits nTraits;
-    NativeId nid1{10};
-    NativeId nid2{20};
+    // 2. Test native operator preference when traits lack hooks.
+    counters.reset();
+    InstrumentedNativeId::counters = &counters;
+    InstrumentedNativeTraits nTraits;
+    InstrumentedNativeId nid1{10};
+    InstrumentedNativeId nid2{20};
 
-    require(forest_sorting::detail::idLess(nid1, nid2, nTraits, &path),
+    require(forest_sorting::detail::idLess(nid1, nid2, nTraits),
             "idLess native failed");
-    require(path == DispatchPath::Native, "idLess did not report Native path");
+    requireDispatchUsed(counters, IdDispatchPath::Native,
+                        "idLess did not use the Native path");
 
-    require(!forest_sorting::detail::idEqual(nid1, nid2, nTraits, &path),
+    counters.reset();
+    require(!forest_sorting::detail::idEqual(nid1, nid2, nTraits),
             "idEqual native failed");
-    require(path == DispatchPath::Native, "idEqual did not report Native path");
+    requireDispatchUsed(counters, IdDispatchPath::Native,
+                        "idEqual did not use the Native path");
 
-    // Test that compareNodeIds uses native operator< directly, not == and not
-    // MSB fallback
-    require(forest_sorting::detail::compareNodeIds(nid1, nid2, nTraits,
-                                                   &path) == -1,
+    counters.reset();
+    require(forest_sorting::detail::compareNodeIds(nid1, nid2, nTraits) == -1,
             "compareNodeIds native failed");
-    require(path == DispatchPath::Native,
-            "compareNodeIds did not report Native path");
+    requireDispatchUsed(counters, IdDispatchPath::Native,
+                        "compareNodeIds did not use the Native path");
+    InstrumentedNativeId::counters = nullptr;
 
-    // 3. Test that fallback (MSB fallback) is used when both traits and native
-    // are absent
+    // 3. Test that MSB fallback is used when both traits and native are absent.
     {
-        using MockId = CustomMockId<12>;
-        using MockTraits = CustomMockTraits<12>;
-        MockTraits mTraits;
-        MockId mid1 = makeMockBytes<12>(1, 2);
-        MockId mid2 = makeMockBytes<12>(1, 3);
+        using MockId = InstrumentedByteId<12>;
+        const InstrumentedByteTraits<12> mTraits{&counters, true};
+        MockId mid1{};
+        MockId mid2{};
+        mid1.bytes[0] = 1;
+        mid1.bytes[11] = 2;
+        mid2.bytes[0] = 1;
+        mid2.bytes[11] = 3;
 
-        path = DispatchPath::Trait;
-        require(forest_sorting::detail::idLess(mid1, mid2, mTraits, &path),
+        counters.reset();
+        require(forest_sorting::detail::idLess(mid1, mid2, mTraits),
                 "idLess fallback failed");
-        require(path == DispatchPath::MsbFallback,
-                "idLess did not report MsbFallback path");
+        requireDispatchUsed(counters, IdDispatchPath::MsbFallback,
+                            "idLess did not use the MSB fallback path");
+        requireDispatchUsed(counters, IdDispatchPath::Chunk8,
+                            "idLess fallback did not use chunk access");
 
-        path = DispatchPath::Trait;
-        require(!forest_sorting::detail::idEqual(mid1, mid2, mTraits, &path),
+        counters.reset();
+        require(!forest_sorting::detail::idEqual(mid1, mid2, mTraits),
                 "idEqual fallback failed");
-        require(path == DispatchPath::MsbFallback,
-                "idEqual did not report MsbFallback path");
+        requireDispatchUsed(counters, IdDispatchPath::MsbFallback,
+                            "idEqual did not use the MSB fallback path");
+        requireDispatchUsed(counters, IdDispatchPath::Chunk8,
+                            "idEqual fallback did not use chunk access");
 
-        path = DispatchPath::Trait;
-        require(forest_sorting::detail::compareNodeIds(mid1, mid2, mTraits,
-                                                       &path) == -1,
+        counters.reset();
+        require(forest_sorting::detail::compareNodeIds(mid1, mid2, mTraits) ==
+                    -1,
                 "compareNodeIds fallback failed");
-        require(path == DispatchPath::MsbFallback,
-                "compareNodeIds did not report MsbFallback path");
+        requireDispatchUsed(counters, IdDispatchPath::MsbFallback,
+                            "compareNodeIds did not use the MSB fallback path");
+        requireDispatchUsed(counters, IdDispatchPath::Chunk8,
+                            "compareNodeIds fallback did not use chunk access");
     }
 
     // 4. Test that traits/native hooks suppress caching
-    static_assert(!forest_sorting::detail::shouldCacheChunkIds<TrackedTraits>);
-    static_assert(!forest_sorting::detail::shouldCacheChunkIds<NativeTraits>);
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<InstrumentedTraitTraits>);
+    static_assert(
+        !forest_sorting::detail::shouldCacheChunkIds<InstrumentedNativeTraits>);
 
     // 5. Test that caching works and cached path avoids slow MSB fallback
-    static_assert(
-        forest_sorting::detail::shouldCacheChunkIds<TrackedCachedTraits>);
+    static_assert(forest_sorting::detail::shouldCacheChunkIds<
+                  InstrumentedByteTraits<12>>);
 
-    TrackedCachedTraits::reset();
-    TrackedCachedTraits cTraits;
+    counters.reset();
+    const InstrumentedByteTraits<12> cTraits{&counters};
     std::vector<std::size_t> order = {0, 1};
-    std::vector<TrackedCachedId> nodes(2);
+    std::vector<InstrumentedByteId<12>> nodes(2);
     nodes[0].bytes[0] = 2;
     nodes[1].bytes[0] = 1;
     auto idForIndex = [&](std::size_t idx) { return nodes[idx]; };
@@ -1050,26 +1001,25 @@ void test_comparison_and_equality_dispatch_priority() {
     bool comparisonDone = false;
     forest_sorting::detail::withDynamicSmallSortAccessor(
         order, idForIndex, cTraits, 0, 2, [&](auto &accessor) {
-            // 12 bytes per ID -> 12 calls to byte_msb_first per ID during
-            // caching Since we initialized 2 IDs, total calls should be 24
-            require(TrackedCachedTraits::byteCalls == 24,
-                    "caching initialization failed to cache");
+            requireDispatchUsed(counters, IdDispatchPath::Chunk8,
+                                "caching initialization did not fill cached "
+                                "chunks");
+            requireDispatchUnused(counters, IdDispatchPath::ByteFallback,
+                                  "cached chunk initialization used the byte "
+                                  "fallback despite chunk access support");
 
-            TrackedCachedTraits::reset();
+            counters.reset();
             accessor.save(0);
             require(accessor.isLessOrEqual(1), "cached comparison failed");
             comparisonDone = true;
 
-            // Cached comparison must bypass byte_msb_first completely
-            require(TrackedCachedTraits::byteCalls == 0,
-                    "cached comparison called byte_msb_first!");
+            requireNoDispatch(counters,
+                              "cached accessor comparison called ID traits");
 
-            // Verify direct compareCachedIdChunks reports CachedChunk
-            DispatchPath cachedPath = DispatchPath::MsbFallback;
-            forest_sorting::detail::compareCachedIdChunks(
-                accessor.idChunks[0], accessor.savedId, &cachedPath);
-            require(cachedPath == DispatchPath::CachedChunk,
-                    "compareCachedIdChunks did not report CachedChunk");
+            compareCachedIdChunksWithOracle(accessor.idChunks[0],
+                                            accessor.savedId, counters);
+            requireDispatchUsed(counters, IdDispatchPath::CachedChunk,
+                                "cached chunk comparison was not observed");
         });
     require(comparisonDone, "accessor lambda did not run");
 }

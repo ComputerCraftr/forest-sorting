@@ -6,6 +6,7 @@
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
 #include "hashed_test_bytes.hpp"
+#include "id_dispatch_oracle.hpp"
 #include "tail_benchmark_output.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"
@@ -26,9 +27,7 @@ using namespace forest_sorting::test_support;
 using forest_sorting::Node;
 using forest_sorting::UInt128;
 
-struct CachedScratchTestId {
-    std::array<uint8_t, 16> bytes{};
-};
+using CachedScratchTestId = InstrumentedByteId<16>;
 
 struct CachedScratchTestNode {
     CachedScratchTestId id;
@@ -640,29 +639,91 @@ template <typename LadderPolicy>
 void requireRangeLadderBoundaries(std::size_t chunk8Max,
                                   std::size_t chunk16Max) {
     require(LadderPolicy::chunkWidthForRange(chunk8Max - 1) ==
-                AdaptiveRadixChunkWidth::Chunk8,
+                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk8,
             "range ladder left chunk8 below its threshold");
     require(LadderPolicy::chunkWidthForRange(chunk8Max) ==
-                AdaptiveRadixChunkWidth::Chunk8,
+                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk8,
             "range ladder excluded its chunk8 threshold");
     require(LadderPolicy::chunkWidthForRange(chunk8Max + 1) ==
-                AdaptiveRadixChunkWidth::Chunk16,
+                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk16,
             "range ladder did not enter chunk16 above chunk8 threshold");
     require(LadderPolicy::chunkWidthForRange(chunk16Max - 1) ==
-                AdaptiveRadixChunkWidth::Chunk16,
+                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk16,
             "range ladder left chunk16 below its threshold");
     require(LadderPolicy::chunkWidthForRange(chunk16Max) ==
-                AdaptiveRadixChunkWidth::Chunk16,
+                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk16,
             "range ladder excluded its chunk16 threshold");
     require(LadderPolicy::chunkWidthForRange(chunk16Max + 1) ==
-                AdaptiveRadixChunkWidth::Chunk32,
+                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk32,
             "range ladder did not enter chunk32 above chunk16 threshold");
 }
 
 void test_range_ladder_boundaries() {
-    requireRangeLadderBoundaries<RangeLadder<1024, 16384>>(1024, 16384);
-    requireRangeLadderBoundaries<RangeLadder<2048, 32768>>(2048, 32768);
-    requireRangeLadderBoundaries<RangeLadder<4096, 65536>>(4096, 65536);
+    requireRangeLadderBoundaries<
+        forest_sorting::detail::RangeLadder<1024, 16384>>(1024, 16384);
+    requireRangeLadderBoundaries<
+        forest_sorting::detail::RangeLadder<2048, 32768>>(2048, 32768);
+    requireRangeLadderBoundaries<
+        forest_sorting::detail::RangeLadder<4096, 65536>>(4096, 65536);
+}
+
+struct UnalignedChunkLadderPolicy {
+    static constexpr forest_sorting::detail::AdaptiveRadixChunkWidth
+    chunkWidthForRange(std::size_t rangeSize) noexcept {
+        if (rangeSize > 64) {
+            return forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk8;
+        }
+        return forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk16;
+    }
+};
+
+void test_range_ladder_sorts_unaligned_chunk_windows() {
+    constexpr std::size_t kGroupSize = 33;
+    std::vector<CachedScratchTestId> ids(kGroupSize * 2);
+    for (std::size_t idx = 0; idx < kGroupSize; ++idx) {
+        ids[idx].bytes[0] = 0;
+        ids[idx].bytes[1] = 1;
+        ids[idx].bytes[2] = static_cast<uint8_t>(kGroupSize - idx);
+
+        const std::size_t secondGroupIdx = idx + kGroupSize;
+        ids[secondGroupIdx].bytes[0] = 1;
+        ids[secondGroupIdx].bytes[1] = 1;
+        ids[secondGroupIdx].bytes[2] = static_cast<uint8_t>(kGroupSize - idx);
+    }
+
+    std::vector<std::size_t> order(ids.size());
+    std::iota(order.begin(), order.end(), 0);
+    auto idForIndex = [&](std::size_t itemIndex) -> const auto & {
+        return ids[itemIndex];
+    };
+    forest_sorting::detail::IdMsdChunkLadderSortWorkspace<
+        forest_sorting::detail::ProductionIdCountPolicy>
+        workspace;
+    IdDispatchCounters counters;
+    const InstrumentedByteTraits<16> traits{&counters};
+    forest_sorting::detail::sortIndexRangeByIdMsdChunkLadder<
+        UnalignedChunkLadderPolicy,
+        forest_sorting::detail::ProductionIdCountPolicy>(
+        order, idForIndex, traits, 0, order.size(), workspace);
+
+    requireDispatchUsed(
+        counters, IdDispatchPath::Chunk1,
+        "range ladder did not use the aligned chunk8 trait path");
+    requireDispatchUsed(counters, IdDispatchPath::ByteFallback,
+                        "range ladder did not use byte assembly for "
+                        "unaligned chunk16 windows");
+    requireDispatchUnused(counters, IdDispatchPath::Chunk2,
+                          "range ladder incorrectly used aligned chunk16 "
+                          "trait path for unaligned windows");
+
+    for (std::size_t idx = 0; idx < kGroupSize; ++idx) {
+        require(order[idx] == kGroupSize - 1 - idx,
+                "range ladder failed to sort an unaligned chunk16 window in "
+                "the first prefix range");
+        require(order[idx + kGroupSize] == (2 * kGroupSize) - 1 - idx,
+                "range ladder failed to sort an unaligned chunk16 window in "
+                "the second prefix range");
+    }
 }
 
 void runBenchmarkSupportTests() {
@@ -691,4 +752,6 @@ void runBenchmarkSupportTests() {
     runTest("same-high32 dataset shape", test_same_high32_dataset_shape);
     runTest("small sort scratch policies", test_small_sort_scratch_policies);
     runTest("range ladder boundaries", test_range_ladder_boundaries);
+    runTest("range ladder unaligned chunk windows",
+            test_range_ladder_sorts_unaligned_chunk_windows);
 }

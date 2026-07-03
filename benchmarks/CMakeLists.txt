@@ -175,6 +175,21 @@ add_test(NAME bench.forest.parent-radix-chunk-widths
                  --order-seed 0x5eed
                  --data-seed 0x5eed1234)
 
+add_test(NAME bench.forest.parent-radix-range-ladder
+         COMMAND forest-sorting-bench
+                 --size 10000
+                 --dataset same-high64
+                 --parent radix-join-id-msd-chunk32
+                 --parent radix-join-id-msd-range-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise
+                 --parent radix-join-id-msd-range-ladder-chunk8-le2048-chunk16-le32768-chunk32-otherwise
+                 --parent radix-join-id-msd-range-ladder-chunk8-le4096-chunk16-le65536-chunk32-otherwise
+                 --sort global-id-permutation-then-depth-stable
+                 --baseline-parent radix-join-id-msd-chunk32
+                 --iterations 1
+                 --warmup 0
+                 --order-seed 0x5eed
+                 --data-seed 0x5eed1234)
+
 add_test(NAME bench.forest.parent-radix-directory
          COMMAND forest-sorting-bench
                  --size 10000

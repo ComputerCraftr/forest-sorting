@@ -1,6 +1,10 @@
 #include "hash_support.hpp"
 #include "test_harness.hpp"
 
+#ifdef __SIZEOF_INT128__
+#include "forest_sorting/uint128.hpp"
+#endif
+
 #include <array>
 #include <cstddef>
 #include <cstdint>

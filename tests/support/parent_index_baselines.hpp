@@ -41,6 +41,9 @@ enum class ParentKind : uint8_t {
     RadixJoinIdMsdChunk16,
     RadixJoinIdMsdChunk32,
     RadixJoinIdMsdChunk64,
+    RadixJoinIdMsdRangeLadder1024_16384,
+    RadixJoinIdMsdRangeLadder2048_32768,
+    RadixJoinIdMsdRangeLadder4096_65536,
     RadixJoinIdMsdBytePartitionCore,
     RadixDirectoryIdMsdChunk32Prefix8,
     RadixDirectoryIdMsdChunk32Prefix16,
@@ -255,6 +258,24 @@ buildRadixJoinIdMsdChunkParentArtifacts(const std::vector<Node> &nodes) {
             true};
 }
 
+template <typename LadderPolicy>
+ParentBuildArtifacts
+buildRadixJoinIdMsdRangeLadderParentArtifacts(const std::vector<Node> &nodes) {
+    detail::IdMsdChunkLadderSortWorkspace<detail::ProductionIdCountPolicy>
+        workspace;
+    auto sortPermutation = [&](std::vector<std::size_t> &permutation,
+                               auto idForIndex, const auto &sortTraits) {
+        detail::sortIndexRangeByIdMsdChunkLadder<
+            LadderPolicy, detail::ProductionIdCountPolicy>(
+            permutation, idForIndex, sortTraits, 0, permutation.size(),
+            workspace);
+    };
+    auto result = detail::buildParentIndexRadixJoinWithPermutationSorter(
+        nodes, UInt128NodeTraits{}, sortPermutation);
+    return {std::move(result.parentIndex), std::move(result.idPermutation),
+            true};
+}
+
 struct PrefixDirectoryRange {
     std::size_t begin = 0;
     std::size_t end = 0;
@@ -403,6 +424,24 @@ inline const std::vector<ParentRegistryEntry> &getParentRegistry() {
          buildRadixJoinIdMsdChunkParentArtifacts<4>, true},
         {ParentKind::RadixJoinIdMsdChunk64, "radix-join-id-msd-chunk64",
          buildRadixJoinIdMsdChunkParentArtifacts<8>, false},
+        {ParentKind::RadixJoinIdMsdRangeLadder1024_16384,
+         "radix-join-id-msd-range-ladder-chunk8-le1024-chunk16-le16384-chunk32-"
+         "otherwise",
+         buildRadixJoinIdMsdRangeLadderParentArtifacts<
+             detail::RangeLadder<1024, 16384>>,
+         false},
+        {ParentKind::RadixJoinIdMsdRangeLadder2048_32768,
+         "radix-join-id-msd-range-ladder-chunk8-le2048-chunk16-le32768-chunk32-"
+         "otherwise",
+         buildRadixJoinIdMsdRangeLadderParentArtifacts<
+             detail::RangeLadder<2048, 32768>>,
+         false},
+        {ParentKind::RadixJoinIdMsdRangeLadder4096_65536,
+         "radix-join-id-msd-range-ladder-chunk8-le4096-chunk16-le65536-chunk32-"
+         "otherwise",
+         buildRadixJoinIdMsdRangeLadderParentArtifacts<
+             detail::RangeLadder<4096, 65536>>,
+         false},
         {ParentKind::RadixJoinIdMsdBytePartitionCore,
          "radix-join-id-msd-byte-partition-core",
          [](const std::vector<Node> &nodes) {

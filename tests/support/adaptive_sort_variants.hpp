@@ -550,28 +550,6 @@ struct BranchlessBitwiseSmallSorterDynamic {
     }
 };
 
-enum class AdaptiveRadixChunkWidth : uint8_t {
-    Chunk8 = 1,
-    Chunk16 = 2,
-    Chunk32 = 4,
-};
-
-template <std::size_t Chunk8MaxRangeSize, std::size_t Chunk16MaxRangeSize>
-struct RangeLadder {
-    static_assert(Chunk8MaxRangeSize < Chunk16MaxRangeSize);
-
-    static constexpr AdaptiveRadixChunkWidth
-    chunkWidthForRange(std::size_t rangeSize) noexcept {
-        if (rangeSize <= Chunk8MaxRangeSize) {
-            return AdaptiveRadixChunkWidth::Chunk8;
-        }
-        if (rangeSize <= Chunk16MaxRangeSize) {
-            return AdaptiveRadixChunkWidth::Chunk16;
-        }
-        return AdaptiveRadixChunkWidth::Chunk32;
-    }
-};
-
 template <typename LadderPolicy, typename CountPolicy, typename Depth>
 inline void sortDepthRangesByIdMsdChunkLadder(
     std::vector<std::size_t> &order, const std::vector<Node> &nodes,
@@ -585,13 +563,13 @@ inline void sortDepthRangesByIdMsdChunkLadder(
             continue;
         }
         switch (LadderPolicy::chunkWidthForRange(rangeSize)) {
-        case AdaptiveRadixChunkWidth::Chunk8:
+        case detail::AdaptiveRadixChunkWidth::Chunk8:
             maxChunk8RangeSize = std::max(maxChunk8RangeSize, rangeSize);
             break;
-        case AdaptiveRadixChunkWidth::Chunk16:
+        case detail::AdaptiveRadixChunkWidth::Chunk16:
             maxChunk16RangeSize = std::max(maxChunk16RangeSize, rangeSize);
             break;
-        case AdaptiveRadixChunkWidth::Chunk32:
+        case detail::AdaptiveRadixChunkWidth::Chunk32:
             maxChunk32RangeSize = std::max(maxChunk32RangeSize, rangeSize);
             break;
         }
@@ -619,13 +597,13 @@ inline void sortDepthRangesByIdMsdChunkLadder(
     for (const detail::DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeSize = range.end - range.begin;
         switch (LadderPolicy::chunkWidthForRange(rangeSize)) {
-        case AdaptiveRadixChunkWidth::Chunk8:
+        case detail::AdaptiveRadixChunkWidth::Chunk8:
             sortRange(range, chunk8Workspace);
             break;
-        case AdaptiveRadixChunkWidth::Chunk16:
+        case detail::AdaptiveRadixChunkWidth::Chunk16:
             sortRange(range, chunk16Workspace);
             break;
-        case AdaptiveRadixChunkWidth::Chunk32:
+        case detail::AdaptiveRadixChunkWidth::Chunk32:
             sortRange(range, chunk32Workspace);
             break;
         }
@@ -641,8 +619,8 @@ inline std::vector<Node> sortForestByDepth2FirstThenIdRangeLadderWithParent(
                           const std::vector<Node> &sortNodes,
                           const auto &depthRanges) {
         sortDepthRangesByIdMsdChunkLadder<
-            RangeLadder<Chunk8MaxRangeSize, Chunk16MaxRangeSize>, CountPolicy>(
-            order, sortNodes, depthRanges);
+            detail::RangeLadder<Chunk8MaxRangeSize, Chunk16MaxRangeSize>,
+            CountPolicy>(order, sortNodes, depthRanges);
     };
     return sortForestByAdaptiveRangeSorterWithParent<2>(nodes, parentIndex,
                                                         true, rangeSorter);

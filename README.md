@@ -79,10 +79,11 @@ optional headers on compilers that support `__SIZEOF_INT128__`:
 
 ## Building
 
-This repository uses CMake and a C++20 `clang++` available on `PATH`.
+This repository uses CMake presets, the Ninja generator, and a C++20 `clang++`
+available on `PATH`.
 
 ```bash
-cmake --preset release            # generate Release build files into out/build/release
+cmake --preset release            # generate Release Ninja files into out/build/release
 cmake --build --preset release    # compile optimized binaries
 ./out/build/release/src/forest-sorting
 ```
@@ -96,7 +97,7 @@ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 ## Tests
 
 ```bash
-cmake --preset debug              # generate Debug build files with ASan/UBSan enabled
+cmake --preset debug              # generate Debug Ninja files with ASan/UBSan enabled
 cmake --build --preset debug      # compile with sanitizers
 ctest --preset debug              # run the test suite with sanitizers active
 ```
@@ -139,7 +140,11 @@ and output formats.
 Parent builders are selected with `unordered`, `flat`, `control`,
 `control-finalizer-hash`, `radix-join-id-msd-chunk8`,
 `radix-join-id-msd-chunk16`, `radix-join-id-msd-chunk32`,
-`radix-join-id-msd-chunk64`, `radix-join-id-msd-byte-partition-core`,
+`radix-join-id-msd-chunk64`,
+`radix-join-id-msd-range-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise`,
+`radix-join-id-msd-range-ladder-chunk8-le2048-chunk16-le32768-chunk32-otherwise`,
+`radix-join-id-msd-range-ladder-chunk8-le4096-chunk16-le65536-chunk32-otherwise`,
+`radix-join-id-msd-byte-partition-core`,
 `radix-directory-id-msd-chunk32-prefix8`, and
 `radix-directory-id-msd-chunk32-prefix16`.
 `radix-join-id-msd-chunk32` is the production default: it sorts stationary ID
@@ -157,6 +162,10 @@ The chunk8 row uses the unified MSD-chunk scheduler with
 `RadixChunkBytes = 1`, the production counter policy, and the linear-small32
 cutoff; the byte-partition-core row uses the generic byte-MSD partition
 implementation without that scheduler or an equivalent small-range policy.
+The range-ladder radix-join rows use the same parent join and retained
+permutation contract as chunk32, but choose 1-byte, 2-byte, or 4-byte radix
+chunks per pending ID-prefix range before the neutral
+`global-id-permutation-then-depth-stable` sort consumes the permutation.
 The radix-directory rows sort IDs once with the production chunk32 scheduler,
 build a fixed high-prefix directory over the retained ID permutation, and
 resolve parent IDs by per-parent lookup inside the matching prefix range. They
@@ -271,6 +280,22 @@ cmake --build --preset release --target forest-sorting-bench
   --baseline-parent radix-join-id-msd-chunk32 \
   --sort global-id-permutation-then-depth-stable \
   --iterations 30 --warmup 3 --shuffle \
+  --order-seed 0x5eed \
+  --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
+
+# Compare parent radix range ladders while reusing the retained global ID permutation
+./out/build/release/benchmarks/forest-sorting-bench \
+  --format json --sample-output summary \
+  --size 10000 --size 100000 --size 1000000 \
+  --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --dataset siblings \
+  --parent radix-join-id-msd-chunk32 \
+  --parent radix-join-id-msd-range-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise \
+  --parent radix-join-id-msd-range-ladder-chunk8-le2048-chunk16-le32768-chunk32-otherwise \
+  --parent radix-join-id-msd-range-ladder-chunk8-le4096-chunk16-le65536-chunk32-otherwise \
+  --sort global-id-permutation-then-depth-stable \
+  --baseline-parent radix-join-id-msd-chunk32 \
+  --baseline-sort global-id-permutation-then-depth-stable \
+  --iterations 30 --warmup 5 --shuffle \
   --order-seed 0x5eed \
   --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
 
