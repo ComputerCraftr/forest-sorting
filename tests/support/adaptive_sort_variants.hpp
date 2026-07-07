@@ -270,8 +270,7 @@ inline void sortDepthRangesByIdMsdChunks(
         detail::sortRangeByIdMsdChunksWithSmallSorter<
             RadixChunkBytes, CountPolicy, SmallThreshold>(
             order, nodes, UInt128NodeTraits{}, rangeBegin, rangeEnd, 0,
-            workspace.pending, workspace.current.get(), workspace.next.get(),
-            workspace.touchedScratch, smallRangeSorter);
+            workspace, smallRangeSorter);
     }
 }
 
@@ -583,16 +582,15 @@ inline void sortDepthRangesByIdMsdChunkLadder(
     chunk32Workspace.allocate(maxChunk32RangeSize);
     const LinearSmallSorter<> smallRangeSorter;
 
-    auto sortRange = [&]<typename Workspace>(
-                         const detail::DepthRange<Depth> &range,
-                         Workspace &workspace) {
-        detail::sortRangeByIdMsdChunksWithSmallSorter<
-            Workspace::radix_chunk_bytes, CountPolicy,
-            detail::small_id_range_sort_threshold>(
-            order, nodes, UInt128NodeTraits{}, range.begin, range.end, 0,
-            workspace.pending, workspace.current.get(), workspace.next.get(),
-            workspace.touchedScratch, smallRangeSorter);
-    };
+    auto sortRange =
+        [&]<typename Workspace>(const detail::DepthRange<Depth> &range,
+                                Workspace &workspace) {
+            detail::sortRangeByIdMsdChunksWithSmallSorter<
+                Workspace::radix_chunk_bytes, CountPolicy,
+                detail::small_id_range_sort_threshold>(
+                order, nodes, UInt128NodeTraits{}, range.begin, range.end, 0,
+                workspace, smallRangeSorter);
+        };
 
     for (const detail::DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeSize = range.end - range.begin;

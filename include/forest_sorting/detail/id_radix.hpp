@@ -252,6 +252,73 @@ template <typename CountPolicy> struct IdMsdChunkLadderSortWorkspace {
     void reservePending() { pending.reserve(initial_range_stack_capacity); }
 };
 
+template <std::size_t RadixChunkBytes, typename CountPolicy,
+          std::size_t SmallThreshold, typename IdForIndex, typename IdTraits,
+          typename ChunkExtractor, typename PushNextRange,
+          typename SmallRangeSorter>
+void processIdMsdChunkRange(
+    std::vector<std::size_t> &order, IdForIndex idForIndex,
+    const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
+    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> &workspace,
+    ChunkExtractor chunkExtractor, bool hasNextRange,
+    PushNextRange pushNextRange, SmallRangeSorter smallRangeSorter) {
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+
+    if (rangeSize <= SmallThreshold) {
+        smallRangeSorter(order, idForIndex, traits, rangeBegin, rangeEnd);
+        return;
+    }
+
+    workspace.allocate(rangeSize);
+    ChunkValueType<RadixChunkBytes> firstChunk = 0;
+    ChunkValueType<RadixChunkBytes> differingBits = 0;
+    for (std::size_t offset = 0; offset < rangeSize; ++offset) {
+        const std::size_t itemIndex = order[rangeBegin + offset];
+        const ChunkValueType<RadixChunkBytes> currentChunk =
+            chunkExtractor(itemIndex);
+        workspace.current[offset] = {currentChunk, itemIndex};
+        if (offset == 0) {
+            firstChunk = currentChunk;
+        } else {
+            differingBits |= currentChunk ^ firstChunk;
+        }
+    }
+
+    if (differingBits == 0) {
+        if (hasNextRange) {
+            pushNextRange(rangeBegin, rangeEnd);
+        }
+        return;
+    }
+
+    IdMsdChunkEntry<RadixChunkBytes> *sortedChunks =
+        dispatchLsdIndexMsdChunkSortPreFilled<RadixChunkBytes, CountPolicy>(
+            order, rangeBegin, rangeEnd, workspace.current.get(),
+            workspace.next.get(), workspace.touchedScratch);
+
+    if (!hasNextRange) {
+        return;
+    }
+
+    std::size_t equalChunkBegin = rangeBegin;
+    ChunkValueType<RadixChunkBytes> previousChunk = sortedChunks->chunk;
+    for (std::size_t offset = 1; offset < rangeSize; ++offset) {
+        const ChunkValueType<RadixChunkBytes> currentChunk =
+            sortedChunks[offset].chunk;
+        if (currentChunk != previousChunk) {
+            const std::size_t splitOffset = rangeBegin + offset;
+            pushNextRange(equalChunkBegin, splitOffset);
+            equalChunkBegin = splitOffset;
+            previousChunk = currentChunk;
+        }
+    }
+
+    pushNextRange(equalChunkBegin, rangeEnd);
+}
+
 template <std::size_t RadixChunkBytes, typename CountPolicy = FullClearCounts,
           std::size_t SmallThreshold = small_id_range_sort_threshold,
           typename IdForIndex, typename IdTraits>
@@ -270,9 +337,8 @@ void sortIndexRangeByIdMsdChunks(
         };
     sortIndexRangeByIdMsdChunksWithSmallSorter<RadixChunkBytes, CountPolicy,
                                                SmallThreshold>(
-        order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex,
-        workspace.pending, workspace.current.get(), workspace.next.get(),
-        workspace.touchedScratch, linearSmallRangeSorter);
+        order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex, workspace,
+        linearSmallRangeSorter);
 }
 
 template <std::size_t MaxRangeSize = small_id_range_sort_threshold,
@@ -289,14 +355,12 @@ void stableSortRangeSmallLinear(std::vector<std::size_t> &order,
 
 template <std::size_t RadixChunkBytes, typename CountPolicy = FullClearCounts,
           std::size_t SmallThreshold = small_id_range_sort_threshold,
-          typename IdForIndex, typename IdTraits, typename SmallRangeSorter,
-          typename Scratch = BitmaskTouchedCountScratch>
+          typename IdForIndex, typename IdTraits, typename SmallRangeSorter>
 void sortIndexRangeByIdMsdChunksWithSmallSorter(
     std::vector<std::size_t> &order, IdForIndex idForIndex,
     const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
-    std::size_t chunkIndex, std::vector<IdMsdChunkRange> &pending,
-    IdMsdChunkEntry<RadixChunkBytes> *chunkBufferCurrent,
-    IdMsdChunkEntry<RadixChunkBytes> *chunkBufferNext, Scratch &touchedScratch,
+    std::size_t chunkIndex,
+    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> &workspace,
     SmallRangeSorter smallRangeSorter) {
     const std::size_t initialRangeSize = rangeEnd - rangeBegin;
     if (initialRangeSize <= 1) {
@@ -308,14 +372,15 @@ void sortIndexRangeByIdMsdChunksWithSmallSorter(
         return;
     }
 
-    pending.clear();
-    pending.push_back(IdMsdChunkRange{rangeBegin, rangeEnd, chunkIndex});
+    workspace.pending.clear();
+    workspace.pending.push_back(
+        IdMsdChunkRange{rangeBegin, rangeEnd, chunkIndex});
     constexpr std::size_t chunkCount =
         (IdTraits::id_byte_count + RadixChunkBytes - 1) / RadixChunkBytes;
 
-    while (!pending.empty()) {
-        const IdMsdChunkRange currentRange = pending.back();
-        pending.pop_back();
+    while (!workspace.pending.empty()) {
+        const IdMsdChunkRange currentRange = workspace.pending.back();
+        workspace.pending.pop_back();
         const std::size_t currentBegin = currentRange.begin;
         const std::size_t currentEnd = currentRange.end;
         const std::size_t currentChunkIndex = currentRange.chunkIndex;
@@ -324,73 +389,30 @@ void sortIndexRangeByIdMsdChunksWithSmallSorter(
             continue;
         }
 
-        if (rangeSize <= SmallThreshold) {
-            smallRangeSorter(order, idForIndex, traits, currentBegin,
-                             currentEnd);
-            continue;
-        }
-
-        const ChunkValueType<RadixChunkBytes> firstChunk =
-            chunkMsbFirst<RadixChunkBytes>(idForIndex(order[currentBegin]),
-                                           currentChunkIndex, traits);
-        ChunkValueType<RadixChunkBytes> differingBits = 0;
-        for (std::size_t offset = 0; offset < rangeSize; ++offset) {
-            const std::size_t itemIndex = order[currentBegin + offset];
-            const ChunkValueType<RadixChunkBytes> currentChunk =
-                chunkMsbFirst<RadixChunkBytes>(idForIndex(itemIndex),
-                                               currentChunkIndex, traits);
-            chunkBufferCurrent[offset] = {currentChunk, itemIndex};
-            differingBits |= currentChunk ^ firstChunk;
-        }
-
-        if (differingBits == 0) {
-            const std::size_t nextChunkIndex = currentChunkIndex + 1;
-            if (nextChunkIndex < chunkCount) {
-                pending.push_back(
-                    IdMsdChunkRange{currentBegin, currentEnd, nextChunkIndex});
-            }
-            continue;
-        }
-
-        IdMsdChunkEntry<RadixChunkBytes> *sortedChunks =
-            dispatchLsdIndexMsdChunkSortPreFilled<RadixChunkBytes, CountPolicy>(
-                order, currentBegin, currentEnd, chunkBufferCurrent,
-                chunkBufferNext, touchedScratch);
-
         const std::size_t nextChunkIndex = currentChunkIndex + 1;
-        if (nextChunkIndex >= chunkCount) {
-            continue;
-        }
-
-        std::size_t equalChunkBegin = currentBegin;
-        ChunkValueType<RadixChunkBytes> previousChunk = sortedChunks->chunk;
-        for (std::size_t offset = 1; offset < rangeSize; ++offset) {
-            const ChunkValueType<RadixChunkBytes> currentChunk =
-                sortedChunks[offset].chunk;
-            if (currentChunk != previousChunk) {
-                const std::size_t splitOffset = currentBegin + offset;
-                pending.push_back(IdMsdChunkRange{equalChunkBegin, splitOffset,
-                                                  nextChunkIndex});
-                equalChunkBegin = splitOffset;
-                previousChunk = currentChunk;
-            }
-        }
-
-        pending.push_back(
-            IdMsdChunkRange{equalChunkBegin, currentEnd, nextChunkIndex});
+        const bool hasNextRange = nextChunkIndex < chunkCount;
+        auto chunkExtractor = [&](std::size_t itemIndex) {
+            return static_cast<ChunkValueType<RadixChunkBytes>>(
+                chunkMsbFirst<RadixChunkBytes>(idForIndex(itemIndex),
+                                               currentChunkIndex, traits));
+        };
+        auto pushNextRange = [&](std::size_t childBegin, std::size_t childEnd) {
+            workspace.pending.push_back(
+                IdMsdChunkRange{childBegin, childEnd, nextChunkIndex});
+        };
+        processIdMsdChunkRange<RadixChunkBytes, CountPolicy, SmallThreshold>(
+            order, idForIndex, traits, currentBegin, currentEnd, workspace,
+            chunkExtractor, hasNextRange, pushNextRange, smallRangeSorter);
     }
 }
 
 template <std::size_t RadixChunkBytes, typename CountPolicy = FullClearCounts,
           std::size_t SmallThreshold = small_id_range_sort_threshold,
-          typename Nodes, typename IdTraits, typename SmallRangeSorter,
-          typename Scratch = BitmaskTouchedCountScratch>
+          typename Nodes, typename IdTraits, typename SmallRangeSorter>
 void sortRangeByIdMsdChunksWithSmallSorter(
     std::vector<std::size_t> &order, const Nodes &nodes, const IdTraits &traits,
     std::size_t rangeBegin, std::size_t rangeEnd, std::size_t chunkIndex,
-    std::vector<IdMsdChunkRange> &pending,
-    IdMsdChunkEntry<RadixChunkBytes> *chunkBufferCurrent,
-    IdMsdChunkEntry<RadixChunkBytes> *chunkBufferNext, Scratch &touchedScratch,
+    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> &workspace,
     SmallRangeSorter smallRangeSorter) {
     auto idForIndex = [&](std::size_t itemIndex) {
         return traits.id(nodes[itemIndex]);
@@ -403,8 +425,7 @@ void sortRangeByIdMsdChunksWithSmallSorter(
     };
     sortIndexRangeByIdMsdChunksWithSmallSorter<RadixChunkBytes, CountPolicy,
                                                SmallThreshold>(
-        order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex, pending,
-        chunkBufferCurrent, chunkBufferNext, touchedScratch,
+        order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex, workspace,
         adaptedSmallRangeSorter);
 }
 
@@ -422,76 +443,43 @@ void sortIndexRangeByIdMsdChunkLadder(
                             IdMsdByteOffsetRange range,
                             IdMsdChunkSortWorkspace<
                                 RadixChunkBytes, CountPolicy> &chunkWorkspace) {
-        const std::size_t rangeSize = range.end - range.begin;
-        if (rangeSize <= small_id_range_sort_threshold) {
-            stableSortIndexRangeSmallLinear(order, idForIndex, traits,
-                                            range.begin, range.end);
-            return;
-        }
+        const std::size_t nextByteOffset = range.byteOffset + RadixChunkBytes;
+        const bool hasNextRange = nextByteOffset < IdTraits::id_byte_count;
+        auto pushNextRange = [&](std::size_t childBegin, std::size_t childEnd) {
+            workspace.pending.push_back(
+                IdMsdByteOffsetRange{childBegin, childEnd, nextByteOffset});
+        };
+        auto linearSmallRangeSorter =
+            [](std::vector<std::size_t> &sortOrder, auto sortIdForIndex,
+               const IdTraits &sortTraits, std::size_t sortBegin,
+               std::size_t sortEnd) {
+                stableSortIndexRangeSmallLinear(sortOrder, sortIdForIndex,
+                                                sortTraits, sortBegin, sortEnd);
+            };
+        auto processWithExtractor = [&](auto chunkExtractor) {
+            processIdMsdChunkRange<RadixChunkBytes, CountPolicy,
+                                   small_id_range_sort_threshold>(
+                order, idForIndex, traits, range.begin, range.end,
+                chunkWorkspace, chunkExtractor, hasNextRange, pushNextRange,
+                linearSmallRangeSorter);
+        };
 
-        chunkWorkspace.allocate(rangeSize);
-        ChunkValueType<RadixChunkBytes> differingBits = 0;
         if (range.byteOffset % RadixChunkBytes == 0) {
             const std::size_t chunkIndex = range.byteOffset / RadixChunkBytes;
-            const ChunkValueType<RadixChunkBytes> firstChunk =
-                chunkMsbFirst<RadixChunkBytes>(idForIndex(order[range.begin]),
-                                               chunkIndex, traits);
-            for (std::size_t offset = 0; offset < rangeSize; ++offset) {
-                const std::size_t itemIndex = order[range.begin + offset];
-                const ChunkValueType<RadixChunkBytes> currentChunk =
+            auto alignedChunkExtractor = [&](std::size_t itemIndex) {
+                return static_cast<ChunkValueType<RadixChunkBytes>>(
                     chunkMsbFirst<RadixChunkBytes>(idForIndex(itemIndex),
-                                                   chunkIndex, traits);
-                chunkWorkspace.current[offset] = {currentChunk, itemIndex};
-                differingBits |= currentChunk ^ firstChunk;
-            }
+                                                   chunkIndex, traits));
+            };
+            processWithExtractor(alignedChunkExtractor);
         } else {
-            const ChunkValueType<RadixChunkBytes> firstChunk =
-                chunkMsbFirstAtUnalignedByteOffset<RadixChunkBytes>(
-                    idForIndex(order[range.begin]), range.byteOffset, traits);
-            for (std::size_t offset = 0; offset < rangeSize; ++offset) {
-                const std::size_t itemIndex = order[range.begin + offset];
-                const ChunkValueType<RadixChunkBytes> currentChunk =
+            auto unalignedChunkExtractor = [&](std::size_t itemIndex) {
+                return static_cast<ChunkValueType<RadixChunkBytes>>(
                     chunkMsbFirstAtUnalignedByteOffset<RadixChunkBytes>(
-                        idForIndex(itemIndex), range.byteOffset, traits);
-                chunkWorkspace.current[offset] = {currentChunk, itemIndex};
-                differingBits |= currentChunk ^ firstChunk;
-            }
+                        idForIndex(itemIndex), range.byteOffset, traits));
+            };
+            processWithExtractor(unalignedChunkExtractor);
         }
-
-        const std::size_t nextByteOffset = range.byteOffset + RadixChunkBytes;
-        if (differingBits == 0) {
-            if (nextByteOffset < IdTraits::id_byte_count) {
-                workspace.pending.push_back(IdMsdByteOffsetRange{
-                    range.begin, range.end, nextByteOffset});
-            }
-            return;
-        }
-
-        IdMsdChunkEntry<RadixChunkBytes> *sortedChunks =
-            dispatchLsdIndexMsdChunkSortPreFilled<RadixChunkBytes, CountPolicy>(
-                order, range.begin, range.end, chunkWorkspace.current.get(),
-                chunkWorkspace.next.get(), chunkWorkspace.touchedScratch);
-
-        if (nextByteOffset >= IdTraits::id_byte_count) {
-            return;
-        }
-
-        std::size_t equalChunkBegin = range.begin;
-        ChunkValueType<RadixChunkBytes> previousChunk = sortedChunks->chunk;
-        for (std::size_t offset = 1; offset < rangeSize; ++offset) {
-            const ChunkValueType<RadixChunkBytes> currentChunk =
-                sortedChunks[offset].chunk;
-            if (currentChunk != previousChunk) {
-                const std::size_t splitOffset = range.begin + offset;
-                workspace.pending.push_back(IdMsdByteOffsetRange{
-                    equalChunkBegin, splitOffset, nextByteOffset});
-                equalChunkBegin = splitOffset;
-                previousChunk = currentChunk;
-            }
-        }
-
-        workspace.pending.push_back(
-            IdMsdByteOffsetRange{equalChunkBegin, range.end, nextByteOffset});
     };
 
     while (!workspace.pending.empty()) {
