@@ -232,7 +232,7 @@ void test_parent_builders_match_for_registered_datasets() {
 }
 
 void test_radix_parent_artifacts_retain_sorted_node_permutations() {
-    constexpr std::array<ParentKind, 10> kRadixKinds = {
+    constexpr std::array<ParentKind, 13> kRadixKinds = {
         ParentKind::RadixJoinIdMsdChunk8,
         ParentKind::RadixJoinIdMsdChunk16,
         ParentKind::RadixJoinIdMsdChunk32,
@@ -240,13 +240,19 @@ void test_radix_parent_artifacts_retain_sorted_node_permutations() {
         ParentKind::RadixJoinIdMsdRangeLadder1024_16384,
         ParentKind::RadixJoinIdMsdRangeLadder2048_32768,
         ParentKind::RadixJoinIdMsdRangeLadder4096_65536,
+        ParentKind::RadixJoinIdMsdSizeLadder10000,
+        ParentKind::RadixJoinIdMsdSizeLadder16384,
+        ParentKind::RadixJoinIdMsdSizeLadder32768,
         ParentKind::RadixJoinIdMsdBytePartitionCore,
         ParentKind::RadixDirectoryIdMsdChunk32Prefix8,
         ParentKind::RadixDirectoryIdMsdChunk32Prefix16};
-    constexpr std::array<ParentKind, 3> kRangeLadderKinds = {
+    constexpr std::array<ParentKind, 6> kChunk32EquivalentKinds = {
         ParentKind::RadixJoinIdMsdRangeLadder1024_16384,
         ParentKind::RadixJoinIdMsdRangeLadder2048_32768,
-        ParentKind::RadixJoinIdMsdRangeLadder4096_65536};
+        ParentKind::RadixJoinIdMsdRangeLadder4096_65536,
+        ParentKind::RadixJoinIdMsdSizeLadder10000,
+        ParentKind::RadixJoinIdMsdSizeLadder16384,
+        ParentKind::RadixJoinIdMsdSizeLadder32768};
     const UInt128NodeTraits traits;
     auto verifyArtifacts = [&](const std::vector<Node> &nodes) {
         const auto expectedParent =
@@ -283,7 +289,7 @@ void test_radix_parent_artifacts_retain_sorted_node_permutations() {
             }
         }
 
-        for (ParentKind parentKind : kRangeLadderKinds) {
+        for (ParentKind parentKind : kChunk32EquivalentKinds) {
             const auto artifacts =
                 buildParentArtifactsForKind(parentKind, nodes);
             require(artifacts.parentIndex == chunk32Artifacts.parentIndex,

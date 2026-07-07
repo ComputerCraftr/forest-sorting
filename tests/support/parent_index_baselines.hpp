@@ -44,6 +44,9 @@ enum class ParentKind : uint8_t {
     RadixJoinIdMsdRangeLadder1024_16384,
     RadixJoinIdMsdRangeLadder2048_32768,
     RadixJoinIdMsdRangeLadder4096_65536,
+    RadixJoinIdMsdSizeLadder10000,
+    RadixJoinIdMsdSizeLadder16384,
+    RadixJoinIdMsdSizeLadder32768,
     RadixJoinIdMsdBytePartitionCore,
     RadixDirectoryIdMsdChunk32Prefix8,
     RadixDirectoryIdMsdChunk32Prefix16,
@@ -276,6 +279,38 @@ buildRadixJoinIdMsdRangeLadderParentArtifacts(const std::vector<Node> &nodes) {
             true};
 }
 
+template <std::size_t Threshold>
+ParentBuildArtifacts
+buildRadixJoinIdMsdSizeLadderParentArtifacts(const std::vector<Node> &nodes) {
+    auto sortPermutation = [&](std::vector<std::size_t> &permutation,
+                               auto idForIndex, const auto &sortTraits) {
+        if (permutation.size() <= Threshold) {
+            detail::IdMsdChunkSortWorkspace<2, detail::ProductionIdCountPolicy>
+                workspace;
+            workspace.allocate(permutation.size());
+            detail::sortIndexRangeByIdMsdChunks<
+                2, detail::ProductionIdCountPolicy>(
+                permutation, idForIndex, sortTraits, 0, permutation.size(), 0,
+                workspace);
+        } else {
+            detail::IdMsdChunkSortWorkspace<
+                detail::production_id_radix_chunk_bytes,
+                detail::ProductionIdCountPolicy>
+                workspace;
+            workspace.allocate(permutation.size());
+            detail::sortIndexRangeByIdMsdChunks<
+                detail::production_id_radix_chunk_bytes,
+                detail::ProductionIdCountPolicy>(
+                permutation, idForIndex, sortTraits, 0, permutation.size(), 0,
+                workspace);
+        }
+    };
+    auto result = detail::buildParentIndexRadixJoinWithPermutationSorter(
+        nodes, UInt128NodeTraits{}, sortPermutation);
+    return {std::move(result.parentIndex), std::move(result.idPermutation),
+            true};
+}
+
 struct PrefixDirectoryRange {
     std::size_t begin = 0;
     std::size_t end = 0;
@@ -442,6 +477,15 @@ inline const std::vector<ParentRegistryEntry> &getParentRegistry() {
          buildRadixJoinIdMsdRangeLadderParentArtifacts<
              detail::RangeLadder<4096, 65536>>,
          false},
+        {ParentKind::RadixJoinIdMsdSizeLadder10000,
+         "radix-join-id-msd-size-ladder-chunk16-le10000-chunk32-otherwise",
+         buildRadixJoinIdMsdSizeLadderParentArtifacts<10000>, false},
+        {ParentKind::RadixJoinIdMsdSizeLadder16384,
+         "radix-join-id-msd-size-ladder-chunk16-le16384-chunk32-otherwise",
+         buildRadixJoinIdMsdSizeLadderParentArtifacts<16384>, false},
+        {ParentKind::RadixJoinIdMsdSizeLadder32768,
+         "radix-join-id-msd-size-ladder-chunk16-le32768-chunk32-otherwise",
+         buildRadixJoinIdMsdSizeLadderParentArtifacts<32768>, false},
         {ParentKind::RadixJoinIdMsdBytePartitionCore,
          "radix-join-id-msd-byte-partition-core",
          [](const std::vector<Node> &nodes) {
