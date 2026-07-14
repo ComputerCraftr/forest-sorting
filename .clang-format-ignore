@@ -1,0 +1,3 @@
+# CMake sources are formatted by cmake-format.
+**/CMakeLists.txt
+**/*.cmake

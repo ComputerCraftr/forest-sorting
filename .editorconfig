@@ -1,20 +1,33 @@
-# .editorconfig — consistent formatting for scripts, configs, Dockerfiles, systemd units, etc.
-# top-most EditorConfig file
+# Editor configuration, see https://editorconfig.org
 root = true
 
-# -------------------------------------------------------------------
-# 1. Default settings for all files
-# -------------------------------------------------------------------
 [*]
-charset = utf-8
+indent_style = space
+indent_size = 4
 end_of_line = lf
-insert_final_newline = true
+charset = utf-8
 trim_trailing_whitespace = true
+insert_final_newline = true
 
-# Use spaces by default, 4 spaces per indent
+[*.{yml,yaml}]
+indent_size = 2
+
+[.clang-tidy]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+[*.m4]
+indent_style = tab
+
+[*.md]
+trim_trailing_whitespace = false
+
+[CMakeLists.txt]
 indent_style = space
 indent_size = 4
 
-[*.{c,cc,cpp,h,hpp}]
+[*.cmake]
 indent_style = space
 indent_size = 4

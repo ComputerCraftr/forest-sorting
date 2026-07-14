@@ -30,9 +30,6 @@ enum class SortKind : uint8_t {
     CompositeDepth2IdLsd,
     DenseDepth2BucketsThenIdMsdChunk64FullClear,
     CompositeDepth2IdByteMsdCopyback,
-    CompositeDepth2IdByteMsdLowcopyBranchy,
-    CompositeDepth2IdByteMsdLowcopyFlattened,
-    CompositeDepth2IdByteMsdLowcopyBatched,
     Depth2FirstThenIdMsdChunk32BitmaskLe512NoDense,
     Depth2FirstThenIdMsdChunk32BitmaskLe512,
     GlobalIdPermutationThenDepthStable,
@@ -166,19 +163,6 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
                  "composite-depth2-id-byte-msd-copyback",
                  sortForestByCompositeDepth2IdByteMsdCopybackWithParent,
                  SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeDepth2IdByteMsdLowcopyBranchy,
-                 "composite-depth2-id-byte-msd-lowcopy-branchy",
-                 sortForestByCompositeDepth2IdByteMsdLowcopyBranchyWithParent,
-                 SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeDepth2IdByteMsdLowcopyFlattened,
-                 "composite-depth2-id-byte-msd-lowcopy-flattened",
-                 sortForestByCompositeDepth2IdByteMsdLowcopyFlattenedWithParent,
-                 SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeDepth2IdByteMsdLowcopyBatched,
-                 "composite-depth2-id-byte-msd-lowcopy-batched",
-                 sortForestByCompositeDepth2IdByteMsdLowcopyBatchedWithParent,
-                 SortCategory::Baseline);
-
         // Comparators
         addEntry(
             reg, SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe512NoDense,
@@ -361,6 +345,11 @@ inline void validateSortRegistry() {
         if (containsStaleRadixChunkLabelPattern(entry.name)) {
             throw std::runtime_error(
                 "sort registry contains stale radix chunk label: " +
+                std::string(entry.name));
+        }
+        if (entry.name.find("lowcopy") != std::string_view::npos) {
+            throw std::runtime_error(
+                "sort registry contains a removed low-copy experiment: " +
                 std::string(entry.name));
         }
         if (entry.category == SortCategory::CounterPolicyExperiment ||

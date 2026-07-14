@@ -173,6 +173,7 @@ void test_removed_benchmark_labels_do_not_parse() {
         "global-id-u32-msd-radix-then-depth-stable",
         "global-id-msd-chunk32-radix-then-depth-stable",
         "depth2-first-then-id-range-ladder-u8-le1024-u16-le16384-full-clear",
+        "composite-depth2-id-byte-msd-lowcopy-branchy",
         "radix-join-id-byte-msd"};
 
     for (std::string_view removedLabel : kRemovedLabelRepresentatives) {
@@ -237,28 +238,19 @@ void test_radix_parent_artifacts_retain_sorted_node_permutations() {
         ParentKind::RadixJoinIdMsdChunk16,
         ParentKind::RadixJoinIdMsdChunk32,
         ParentKind::RadixJoinIdMsdChunk64,
-        ParentKind::RadixJoinIdMsdRangeLadder1024_16384,
-        ParentKind::RadixJoinIdMsdRangeLadder2048_32768,
-        ParentKind::RadixJoinIdMsdRangeLadder4096_65536,
-        ParentKind::RadixJoinIdMsdSizeLadder10000,
-        ParentKind::RadixJoinIdMsdSizeLadder16384,
-        ParentKind::RadixJoinIdMsdSizeLadder32768,
+        ParentKind::RadixJoinIdMsdSizeLadderChunk8Le1024Chunk16Le16384,
+        ParentKind::RadixJoinIdMsdSizeLadderChunk8Le2048Chunk16Le32768,
+        ParentKind::RadixJoinIdMsdSizeLadderChunk8Le4096Chunk16Le65536,
+        ParentKind::RadixJoinIdMsdSizeLadderChunk16Le10000,
+        ParentKind::RadixJoinIdMsdSizeLadderChunk16Le16384,
+        ParentKind::RadixJoinIdMsdSizeLadderChunk16Le32768,
         ParentKind::RadixJoinIdMsdBytePartitionCore,
         ParentKind::RadixDirectoryIdMsdChunk32Prefix8,
         ParentKind::RadixDirectoryIdMsdChunk32Prefix16};
-    constexpr std::array<ParentKind, 6> kChunk32EquivalentKinds = {
-        ParentKind::RadixJoinIdMsdRangeLadder1024_16384,
-        ParentKind::RadixJoinIdMsdRangeLadder2048_32768,
-        ParentKind::RadixJoinIdMsdRangeLadder4096_65536,
-        ParentKind::RadixJoinIdMsdSizeLadder10000,
-        ParentKind::RadixJoinIdMsdSizeLadder16384,
-        ParentKind::RadixJoinIdMsdSizeLadder32768};
     const UInt128NodeTraits traits;
     auto verifyArtifacts = [&](const std::vector<Node> &nodes) {
         const auto expectedParent =
             buildParentIndexForKind(ParentKind::Control, nodes);
-        const auto chunk32Artifacts = buildParentArtifactsForKind(
-            ParentKind::RadixJoinIdMsdChunk32, nodes);
         for (ParentKind parentKind : kRadixKinds) {
             const auto artifacts =
                 buildParentArtifactsForKind(parentKind, nodes);
@@ -287,18 +279,6 @@ void test_radix_parent_artifacts_retain_sorted_node_permutations() {
                             "radix artifact ID permutation is not sorted");
                 }
             }
-        }
-
-        for (ParentKind parentKind : kChunk32EquivalentKinds) {
-            const auto artifacts =
-                buildParentArtifactsForKind(parentKind, nodes);
-            require(artifacts.parentIndex == chunk32Artifacts.parentIndex,
-                    std::string(parentName(parentKind)) +
-                        " parent index differs from chunk32 radix join");
-            require(artifacts.idPermutation == chunk32Artifacts.idPermutation,
-                    std::string(parentName(parentKind)) +
-                        " retained permutation differs from chunk32 radix "
-                        "join");
         }
 
         const auto chunk8Artifacts = buildParentArtifactsForKind(

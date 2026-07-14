@@ -153,11 +153,11 @@ Parent-builder families:
 
 - Production radix join: fixed chunk rows such as
   `radix-join-id-msd-chunk16` and `radix-join-id-msd-chunk32`.
-- Size-ladder radix join: opt-in rows that choose chunk16 or chunk32 once per
-  parent build, for example
-  `radix-join-id-msd-size-ladder-chunk16-le10000-chunk32-otherwise`.
-- Range-ladder radix join: opt-in rows that choose chunk8/chunk16/chunk32 per
-  pending ID-prefix range.
+- Size-ladder radix join: opt-in rows choose chunk8/chunk16/chunk32 or
+  chunk16/chunk32 once per ID permutation, then run the corresponding
+  fixed-width kernel unchanged. For example,
+  `radix-join-id-msd-size-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise`
+  and `radix-join-id-msd-size-ladder-chunk16-le10000-chunk32-otherwise`.
 - Radix directory: `radix-directory-id-msd-chunk32-prefix8` and
   `radix-directory-id-msd-chunk32-prefix16`.
 - Hash-table support comparators: `control`, `control-finalizer-hash`,
@@ -172,6 +172,8 @@ Sort-family examples:
 - `comparison`: direct `std::sort` over `depth || id`.
 - `dense-*`, `composite-*`, `*-full-clear`, `*-bitmask-le*`, and
   `*-range-ladder-*` rows are opt-in algorithm experiments.
+  Sort range ladders select one width per equal-depth ID range and then run the
+  corresponding fixed-width kernel unchanged.
 
 Datasets:
 
@@ -259,9 +261,8 @@ cmake --build --preset release --target forest-sorting-bench
   --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --dataset siblings \
   --parent radix-join-id-msd-chunk16 \
   --parent radix-join-id-msd-chunk32 \
+  --parent radix-join-id-msd-size-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise \
   --parent radix-join-id-msd-size-ladder-chunk16-le10000-chunk32-otherwise \
-  --parent radix-join-id-msd-size-ladder-chunk16-le16384-chunk32-otherwise \
-  --parent radix-join-id-msd-size-ladder-chunk16-le32768-chunk32-otherwise \
   --parent radix-directory-id-msd-chunk32-prefix16 \
   --sort global-id-permutation-then-depth-stable \
   --baseline-parent radix-join-id-msd-chunk32 \
@@ -280,15 +281,14 @@ cmake --build --preset release --target forest-sorting-bench
   --sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
   --sort depth2-first-then-id-msd-chunk64-full-clear
 
-# Compare composite depth-MSD partition and low-copy variants
+# Compare composite byte-MSD with the production and depth-first families
 ./out/build/release/benchmarks/forest-sorting-bench \
   --size 100000 \
   --dataset random \
   --parent control \
   --sort composite-depth2-id-byte-msd-copyback \
-  --sort composite-depth2-id-byte-msd-lowcopy-branchy \
-  --sort composite-depth2-id-byte-msd-lowcopy-flattened \
-  --sort composite-depth2-id-byte-msd-lowcopy-batched \
+  --sort global-id-permutation-then-depth-stable \
+  --sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
   --baseline-sort composite-depth2-id-byte-msd-copyback \
   --iterations 30 --warmup 3 --shuffle \
   --order-seed 0x5eed \

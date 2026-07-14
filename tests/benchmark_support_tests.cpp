@@ -667,7 +667,7 @@ void test_range_ladder_boundaries() {
         forest_sorting::detail::RangeLadder<4096, 65536>>(4096, 65536);
 }
 
-struct UnalignedChunkLadderPolicy {
+struct SingleDispatchChunkLadderPolicy {
     static constexpr forest_sorting::detail::AdaptiveRadixChunkWidth
     chunkWidthForRange(std::size_t rangeSize) noexcept {
         if (rangeSize > 64) {
@@ -677,7 +677,7 @@ struct UnalignedChunkLadderPolicy {
     }
 };
 
-void test_range_ladder_sorts_unaligned_chunk_windows() {
+void test_range_ladder_uses_one_aligned_chunk_kernel() {
     constexpr std::size_t kGroupSize = 33;
     std::vector<CachedScratchTestId> ids(kGroupSize * 2);
     for (std::size_t idx = 0; idx < kGroupSize; ++idx) {
@@ -702,26 +702,26 @@ void test_range_ladder_sorts_unaligned_chunk_windows() {
     IdDispatchCounters counters;
     const InstrumentedByteTraits<16> traits{&counters};
     forest_sorting::detail::sortIndexRangeByIdMsdChunkLadder<
-        UnalignedChunkLadderPolicy,
+        SingleDispatchChunkLadderPolicy,
         forest_sorting::detail::ProductionIdCountPolicy>(
         order, idForIndex, traits, 0, order.size(), workspace);
 
     requireDispatchUsed(
         counters, IdDispatchPath::Chunk1,
         "range ladder did not use the aligned chunk8 trait path");
-    requireDispatchUsed(counters, IdDispatchPath::ByteFallback,
-                        "range ladder did not use byte assembly for "
-                        "unaligned chunk16 windows");
+    requireDispatchUnused(counters, IdDispatchPath::ByteFallback,
+                          "range ladder assembled an unaligned chunk instead "
+                          "of staying on its selected fixed-width kernel");
     requireDispatchUnused(counters, IdDispatchPath::Chunk2,
-                          "range ladder incorrectly used aligned chunk16 "
-                          "trait path for unaligned windows");
+                          "range ladder re-selected chunk16 inside a chunk8 "
+                          "sort");
 
     for (std::size_t idx = 0; idx < kGroupSize; ++idx) {
         require(order[idx] == kGroupSize - 1 - idx,
-                "range ladder failed to sort an unaligned chunk16 window in "
+                "range ladder failed to sort the selected chunk8 kernel in "
                 "the first prefix range");
         require(order[idx + kGroupSize] == (2 * kGroupSize) - 1 - idx,
-                "range ladder failed to sort an unaligned chunk16 window in "
+                "range ladder failed to sort the selected chunk8 kernel in "
                 "the second prefix range");
     }
 }
@@ -752,6 +752,6 @@ void runBenchmarkSupportTests() {
     runTest("same-high32 dataset shape", test_same_high32_dataset_shape);
     runTest("small sort scratch policies", test_small_sort_scratch_policies);
     runTest("range ladder boundaries", test_range_ladder_boundaries);
-    runTest("range ladder unaligned chunk windows",
-            test_range_ladder_sorts_unaligned_chunk_windows);
+    runTest("range ladder uses one aligned chunk kernel",
+            test_range_ladder_uses_one_aligned_chunk_kernel);
 }

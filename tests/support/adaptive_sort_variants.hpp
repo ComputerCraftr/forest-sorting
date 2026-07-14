@@ -408,7 +408,7 @@ void stableSortRangeSmallBranchlessBitwiseWithScratch(
                 const std::size_t startingBitOffset =
                     7 - (current.bitIndex % 8);
                 const uint8_t unprocessedMask = static_cast<uint8_t>(
-                    (uint16_t{1} << (startingBitOffset + 1U)) - 1U);
+                    (uint32_t{1} << (startingBitOffset + 1U)) - uint32_t{1});
                 diffByte &= unprocessedMask;
             }
 
@@ -553,58 +553,15 @@ template <typename LadderPolicy, typename CountPolicy, typename Depth>
 inline void sortDepthRangesByIdMsdChunkLadder(
     std::vector<std::size_t> &order, const std::vector<Node> &nodes,
     const std::vector<detail::DepthRange<Depth>> &depthRanges) {
-    std::size_t maxChunk8RangeSize = 0;
-    std::size_t maxChunk16RangeSize = 0;
-    std::size_t maxChunk32RangeSize = 0;
-    for (const detail::DepthRange<Depth> &range : depthRanges) {
-        const std::size_t rangeSize = range.end - range.begin;
-        if (rangeSize <= detail::small_id_range_sort_threshold) {
-            continue;
-        }
-        switch (LadderPolicy::chunkWidthForRange(rangeSize)) {
-        case detail::AdaptiveRadixChunkWidth::Chunk8:
-            maxChunk8RangeSize = std::max(maxChunk8RangeSize, rangeSize);
-            break;
-        case detail::AdaptiveRadixChunkWidth::Chunk16:
-            maxChunk16RangeSize = std::max(maxChunk16RangeSize, rangeSize);
-            break;
-        case detail::AdaptiveRadixChunkWidth::Chunk32:
-            maxChunk32RangeSize = std::max(maxChunk32RangeSize, rangeSize);
-            break;
-        }
-    }
-
-    detail::IdMsdChunkSortWorkspace<1, CountPolicy> chunk8Workspace;
-    detail::IdMsdChunkSortWorkspace<2, CountPolicy> chunk16Workspace;
-    detail::IdMsdChunkSortWorkspace<4, CountPolicy> chunk32Workspace;
-    chunk8Workspace.allocate(maxChunk8RangeSize);
-    chunk16Workspace.allocate(maxChunk16RangeSize);
-    chunk32Workspace.allocate(maxChunk32RangeSize);
-    const LinearSmallSorter<> smallRangeSorter;
-
-    auto sortRange =
-        [&]<typename Workspace>(const detail::DepthRange<Depth> &range,
-                                Workspace &workspace) {
-            detail::sortRangeByIdMsdChunksWithSmallSorter<
-                Workspace::radix_chunk_bytes, CountPolicy,
-                detail::small_id_range_sort_threshold>(
-                order, nodes, UInt128NodeTraits{}, range.begin, range.end, 0,
-                workspace, smallRangeSorter);
-        };
+    detail::IdMsdChunkLadderSortWorkspace<CountPolicy> workspace;
+    const UInt128NodeTraits traits;
+    auto idForIndex = [&](std::size_t itemIndex) {
+        return UInt128NodeTraits::id(nodes[itemIndex]);
+    };
 
     for (const detail::DepthRange<Depth> &range : depthRanges) {
-        const std::size_t rangeSize = range.end - range.begin;
-        switch (LadderPolicy::chunkWidthForRange(rangeSize)) {
-        case detail::AdaptiveRadixChunkWidth::Chunk8:
-            sortRange(range, chunk8Workspace);
-            break;
-        case detail::AdaptiveRadixChunkWidth::Chunk16:
-            sortRange(range, chunk16Workspace);
-            break;
-        case detail::AdaptiveRadixChunkWidth::Chunk32:
-            sortRange(range, chunk32Workspace);
-            break;
-        }
+        detail::sortIndexRangeByIdMsdChunkLadder<LadderPolicy, CountPolicy>(
+            order, idForIndex, traits, range.begin, range.end, workspace);
     }
 }
 

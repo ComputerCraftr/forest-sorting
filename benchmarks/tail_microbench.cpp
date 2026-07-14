@@ -208,8 +208,9 @@ std::vector<double> sampleSorter(const Sorter &sorter,
         }
     }
 
-    std::vector<double> samples(iterations);
-    for (int iter = 0; iter < iterations; ++iter) {
+    const std::size_t sampleCount = static_cast<std::size_t>(iterations);
+    std::vector<double> samples(sampleCount);
+    for (std::size_t iter = 0; iter < sampleCount; ++iter) {
         std::iota(order.begin(), order.end(), std::size_t{0});
         const auto startClock = std::chrono::high_resolution_clock::now();
         for (std::size_t start = 0; start < nodes.size(); start += rangeSize) {
