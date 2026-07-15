@@ -1,13 +1,13 @@
-#include "adaptive_sort_variants.hpp"
-#include "benchmark_output.hpp"
-#include "benchmark_stats.hpp"
-#include "forest_benchmark_output.hpp"
+#include "common/benchmark_cli.hpp"
+#include "common/benchmark_output.hpp"
+#include "common/benchmark_stats.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
+#include "full/adaptive_sort_variants.hpp"
+#include "full/forest_benchmark_output.hpp"
 #include "hashed_test_bytes.hpp"
-#include "id_dispatch_oracle.hpp"
-#include "tail_benchmark_output.hpp"
+#include "small_sort_test_types.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"
 #include "uint128_fixtures.hpp"
@@ -16,6 +16,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -26,26 +28,6 @@
 using namespace forest_sorting::test_support;
 using forest_sorting::Node;
 using forest_sorting::UInt128;
-
-using CachedScratchTestId = InstrumentedByteId<16>;
-
-struct CachedScratchTestNode {
-    CachedScratchTestId id;
-};
-
-struct CachedScratchTestTraits {
-    using Id = CachedScratchTestId;
-    static constexpr std::size_t id_byte_count = 16;
-
-    static const Id &id(const CachedScratchTestNode &node) noexcept {
-        return node.id;
-    }
-
-    static uint8_t byte_msb_first(const Id &nodeId,
-                                  std::size_t byteIndex) noexcept {
-        return nodeId.bytes[byteIndex];
-    }
-};
 
 void test_benchmark_stats_median_and_stddev() {
     const auto oddStats = computeSampleStats({3.0, 1.0, 2.0});
@@ -62,6 +44,71 @@ void test_benchmark_stats_median_and_stddev() {
     const auto singleStats = computeSampleStats({7.0});
     requireNear(singleStats.stddev, 0.0, 0.0000001,
                 "single-sample stddev should be zero");
+}
+
+void test_benchmark_cli_selection_helpers() {
+    std::vector<int> values;
+    appendUniqueSelection(values, 1);
+    appendUniqueSelection(values, 1);
+    require((values == std::vector<int>{1}),
+            "benchmark CLI retained a duplicate selection");
+    require(!hasSelectionOtherThan(values, 1),
+            "single baseline selection reported a candidate");
+    appendUniqueSelection(values, 2);
+    require(hasSelectionOtherThan(values, 1),
+            "alternate benchmark selection was not detected");
+}
+
+void test_benchmark_cli_numeric_parsing() {
+    require(parsePositiveSizeOption("42", "--size") == 42,
+            "decimal benchmark size parsed incorrectly");
+    require(parseSeedOption("0x2a", "--data-seed") == 42U,
+            "hexadecimal benchmark seed parsed incorrectly");
+    require(parseNonNegativeIntOption("0", "--warmup") == 0,
+            "zero benchmark warmup was rejected");
+
+    auto requireRejected = [](auto parse, std::string_view value,
+                              std::string_view message) {
+        bool rejected = false;
+        try {
+            parse(value);
+        } catch (const std::exception &) {
+            rejected = true;
+        }
+        require(rejected, message);
+    };
+    requireRejected(
+        [](std::string_view value) {
+            return parsePositiveSizeOption(value, "--size");
+        },
+        "12nodes", "numeric parser accepted trailing characters");
+    requireRejected(
+        [](std::string_view value) {
+            return parseNonNegativeIntOption(value, "--warmup");
+        },
+        "99999999999999999999", "numeric parser accepted an overflow");
+    requireRejected(
+        [](std::string_view value) {
+            return parsePositiveIntOption(value, "--iterations");
+        },
+        "0", "positive numeric parser accepted zero");
+    requireRejected(
+        [](std::string_view) {
+            return checkedSizeProduct(std::numeric_limits<std::size_t>::max(),
+                                      2, "test product");
+        },
+        "ignored", "checked size product accepted an overflow");
+}
+
+void test_benchmark_comparison_eligibility() {
+    require(comparisonEligibility(true, true) == ComparisonEligibility::Ok,
+            "valid A/B rows were rejected");
+    require(comparisonEligibility(false, true) ==
+                ComparisonEligibility::InvalidCandidate,
+            "invalid candidate was eligible for A/B reporting");
+    require(comparisonEligibility(true, false) ==
+                ComparisonEligibility::InvalidBaseline,
+            "invalid baseline was eligible for A/B reporting");
 }
 
 void test_benchmark_bootstrap_ci_is_deterministic() {
@@ -150,114 +197,6 @@ void test_shared_benchmark_stat_schema() {
                     static_cast<double>(fieldIdx + 1), 0.0000001,
                     "shared stat schema returned the wrong value");
     }
-}
-
-void test_tail_micro_output_schema_and_escaping() {
-    constexpr std::array<std::string_view, 15> kExpectedNames = {
-        "pattern",
-        "size",
-        "algorithm",
-        "median_ns",
-        "mean_ns",
-        "min_ns",
-        "stddev_ns",
-        "max_ns",
-        "ci95_low_ns",
-        "ci95_high_ns",
-        "delta_pct",
-        "delta_ci95_low_pct",
-        "delta_ci95_high_pct",
-        "winner",
-        "status"};
-    std::vector<std::string> actualNames;
-    actualNames.reserve(micro_output_field_count);
-    visitMicroOutputSchema(
-        [&](const MicroFieldDescriptor &field) {
-            actualNames.emplace_back(field.name);
-        },
-        [&](const StatFieldDescriptor &field) {
-            actualNames.push_back(statFieldName(field, "ns"));
-        });
-    require(actualNames.size() == kExpectedNames.size(),
-            "tail micro output schema has the wrong field count");
-    for (std::size_t fieldIdx = 0; fieldIdx < kExpectedNames.size();
-         ++fieldIdx) {
-        require(actualNames[fieldIdx] == kExpectedNames[fieldIdx],
-                "tail micro output schema field order changed");
-        for (std::size_t otherIdx = fieldIdx + 1;
-             otherIdx < kExpectedNames.size(); ++otherIdx) {
-            require(actualNames[fieldIdx] != actualNames[otherIdx],
-                    "tail micro output schema contains duplicate fields");
-        }
-    }
-
-    require(csvEscape("plain") == "plain", "plain CSV text was changed");
-    require(csvEscape("a,b") == "\"a,b\"", "CSV comma was not escaped");
-    require(csvEscape("a\"b") == "\"a\"\"b\"", "CSV quote was not escaped");
-    require(csvEscape("a\nb") == "\"a\nb\"", "CSV newline was not escaped");
-    require(csvEscape("a\rb") == "\"a\rb\"",
-            "CSV carriage return was not escaped");
-    require(jsonEscape("a\"b\\c\nd\re\tf") == "a\\\"b\\\\c\\nd\\re\\tf",
-            "JSON string escaping was incorrect");
-}
-
-void test_tail_micro_output_renderers_share_normalized_schema() {
-    struct TestMicroResult {
-        std::string pattern;
-        std::size_t rangeSize;
-        std::string algorithm;
-        SampleStats stats;
-        double deltaMedianPct;
-        ConfidenceInterval deltaPctCi95;
-        std::string winner;
-        std::string status;
-    };
-
-    TestMicroResult baseline{"a,b",        8,           "linear", {}, 12.0,
-                             {10.0, 14.0}, "candidate", "ok"};
-    baseline.stats = computeSampleStats({10.0, 12.0, 14.0});
-    TestMicroResult failed{"failed", 8,  "binary", {},
-                           0.0,      {}, "none",   "sort failed"};
-    const std::vector<MicroOutputRow> rows = {
-        makeMicroOutputRow(baseline, "linear"),
-        makeMicroOutputRow(failed, "linear")};
-
-    require(rows[0].deltaPct == 0.0 && rows[0].winner == "baseline",
-            "baseline row was not normalized to zero delta");
-    require(!rows[1].stats && !rows[1].winner,
-            "failed row retained unavailable metrics");
-
-    std::ostringstream csv;
-    printMicroDelimited(csv, rows, ',');
-    require(csv.str().find("\"a,b\",8,linear") != std::string::npos,
-            "tail CSV did not escape string fields");
-    require(csv.str().find(",0.0,0.0,0.0,baseline,ok") != std::string::npos,
-            "tail CSV changed baseline delta formatting");
-    const std::size_t failedRowBegin = csv.str().find("failed,8,binary");
-    require(failedRowBegin != std::string::npos,
-            "tail CSV omitted the failed row");
-    const std::size_t failedRowEnd = csv.str().find('\n', failedRowBegin);
-    const std::string failedRow =
-        csv.str().substr(failedRowBegin, failedRowEnd - failedRowBegin);
-    require(static_cast<std::size_t>(
-                std::count(failedRow.begin(), failedRow.end(), ',')) ==
-                micro_output_field_count - 1,
-            "failed tail CSV row has the wrong field count");
-
-    std::ostringstream json;
-    printMicroJsonRows(json, rows);
-    const std::size_t failedJsonBegin = json.str().find("\"failed\"");
-    require(failedJsonBegin != std::string::npos,
-            "tail JSON omitted the failed row");
-    require(json.str().find("\"median_ns\"", failedJsonBegin) ==
-                std::string::npos,
-            "tail JSON emitted unavailable failed-row metrics");
-
-    std::ostringstream table;
-    printMicroTable(table, rows);
-    require(table.str().find("timing_ci95_ns") != std::string::npos &&
-                table.str().find("n/a") != std::string::npos,
-            "compact tail table projection changed");
 }
 
 void test_full_benchmark_output_schema() {
@@ -635,98 +574,13 @@ void test_small_sort_scratch_policies() {
             "capacity");
 }
 
-template <typename LadderPolicy>
-void requireRangeLadderBoundaries(std::size_t chunk8Max,
-                                  std::size_t chunk16Max) {
-    require(LadderPolicy::chunkWidthForRange(chunk8Max - 1) ==
-                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk8,
-            "range ladder left chunk8 below its threshold");
-    require(LadderPolicy::chunkWidthForRange(chunk8Max) ==
-                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk8,
-            "range ladder excluded its chunk8 threshold");
-    require(LadderPolicy::chunkWidthForRange(chunk8Max + 1) ==
-                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk16,
-            "range ladder did not enter chunk16 above chunk8 threshold");
-    require(LadderPolicy::chunkWidthForRange(chunk16Max - 1) ==
-                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk16,
-            "range ladder left chunk16 below its threshold");
-    require(LadderPolicy::chunkWidthForRange(chunk16Max) ==
-                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk16,
-            "range ladder excluded its chunk16 threshold");
-    require(LadderPolicy::chunkWidthForRange(chunk16Max + 1) ==
-                forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk32,
-            "range ladder did not enter chunk32 above chunk16 threshold");
-}
-
-void test_range_ladder_boundaries() {
-    requireRangeLadderBoundaries<
-        forest_sorting::detail::RangeLadder<1024, 16384>>(1024, 16384);
-    requireRangeLadderBoundaries<
-        forest_sorting::detail::RangeLadder<2048, 32768>>(2048, 32768);
-    requireRangeLadderBoundaries<
-        forest_sorting::detail::RangeLadder<4096, 65536>>(4096, 65536);
-}
-
-struct SingleDispatchChunkLadderPolicy {
-    static constexpr forest_sorting::detail::AdaptiveRadixChunkWidth
-    chunkWidthForRange(std::size_t rangeSize) noexcept {
-        if (rangeSize > 64) {
-            return forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk8;
-        }
-        return forest_sorting::detail::AdaptiveRadixChunkWidth::Chunk16;
-    }
-};
-
-void test_range_ladder_uses_one_aligned_chunk_kernel() {
-    constexpr std::size_t kGroupSize = 33;
-    std::vector<CachedScratchTestId> ids(kGroupSize * 2);
-    for (std::size_t idx = 0; idx < kGroupSize; ++idx) {
-        ids[idx].bytes[0] = 0;
-        ids[idx].bytes[1] = 1;
-        ids[idx].bytes[2] = static_cast<uint8_t>(kGroupSize - idx);
-
-        const std::size_t secondGroupIdx = idx + kGroupSize;
-        ids[secondGroupIdx].bytes[0] = 1;
-        ids[secondGroupIdx].bytes[1] = 1;
-        ids[secondGroupIdx].bytes[2] = static_cast<uint8_t>(kGroupSize - idx);
-    }
-
-    std::vector<std::size_t> order(ids.size());
-    std::iota(order.begin(), order.end(), 0);
-    auto idForIndex = [&](std::size_t itemIndex) -> const auto & {
-        return ids[itemIndex];
-    };
-    forest_sorting::detail::IdMsdChunkLadderSortWorkspace<
-        forest_sorting::detail::ProductionIdCountPolicy>
-        workspace;
-    IdDispatchCounters counters;
-    const InstrumentedByteTraits<16> traits{&counters};
-    forest_sorting::detail::sortIndexRangeByIdMsdChunkLadder<
-        SingleDispatchChunkLadderPolicy,
-        forest_sorting::detail::ProductionIdCountPolicy>(
-        order, idForIndex, traits, 0, order.size(), workspace);
-
-    requireDispatchUsed(
-        counters, IdDispatchPath::Chunk1,
-        "range ladder did not use the aligned chunk8 trait path");
-    requireDispatchUnused(counters, IdDispatchPath::ByteFallback,
-                          "range ladder assembled an unaligned chunk instead "
-                          "of staying on its selected fixed-width kernel");
-    requireDispatchUnused(counters, IdDispatchPath::Chunk2,
-                          "range ladder re-selected chunk16 inside a chunk8 "
-                          "sort");
-
-    for (std::size_t idx = 0; idx < kGroupSize; ++idx) {
-        require(order[idx] == kGroupSize - 1 - idx,
-                "range ladder failed to sort the selected chunk8 kernel in "
-                "the first prefix range");
-        require(order[idx + kGroupSize] == (2 * kGroupSize) - 1 - idx,
-                "range ladder failed to sort the selected chunk8 kernel in "
-                "the second prefix range");
-    }
-}
-
 void runBenchmarkSupportTests() {
+    runTest("benchmark CLI selection helpers",
+            test_benchmark_cli_selection_helpers);
+    runTest("benchmark CLI numeric parsing",
+            test_benchmark_cli_numeric_parsing);
+    runTest("benchmark comparison eligibility",
+            test_benchmark_comparison_eligibility);
     runTest("benchmark stats median and stddev",
             test_benchmark_stats_median_and_stddev);
     runTest("benchmark bootstrap CI is deterministic",
@@ -736,10 +590,6 @@ void runBenchmarkSupportTests() {
     runTest("benchmark pipeline samples preserve pairing",
             test_benchmark_pipeline_samples_preserve_pairing);
     runTest("shared benchmark stat schema", test_shared_benchmark_stat_schema);
-    runTest("tail micro output schema and escaping",
-            test_tail_micro_output_schema_and_escaping);
-    runTest("tail micro output renderers share normalized schema",
-            test_tail_micro_output_renderers_share_normalized_schema);
     runTest("full benchmark output schema", test_full_benchmark_output_schema);
     runTest("full benchmark output renderers",
             test_full_benchmark_output_renderers);
@@ -751,7 +601,4 @@ void runBenchmarkSupportTests() {
             test_benchmark_data_seed_controls_generated_data);
     runTest("same-high32 dataset shape", test_same_high32_dataset_shape);
     runTest("small sort scratch policies", test_small_sort_scratch_policies);
-    runTest("range ladder boundaries", test_range_ladder_boundaries);
-    runTest("range ladder uses one aligned chunk kernel",
-            test_range_ladder_uses_one_aligned_chunk_kernel);
 }

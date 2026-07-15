@@ -51,6 +51,23 @@ struct SampleStats {
     ConfidenceInterval ci95;
 };
 
+enum class ComparisonEligibility : uint8_t {
+    Ok,
+    InvalidCandidate,
+    InvalidBaseline,
+};
+
+inline ComparisonEligibility comparisonEligibility(bool candidateValid,
+                                                   bool baselineValid) {
+    if (!candidateValid) {
+        return ComparisonEligibility::InvalidCandidate;
+    }
+    if (!baselineValid) {
+        return ComparisonEligibility::InvalidBaseline;
+    }
+    return ComparisonEligibility::Ok;
+}
+
 inline constexpr std::size_t kBootstrapResamples = 1000;
 inline constexpr uint32_t kBootstrapSeed = 0x51a751c5U;
 

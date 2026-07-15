@@ -7,10 +7,12 @@
 #include "forest_sorting/detail/parent_sentinel.hpp"
 
 #include <bit>
+#include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -18,6 +20,21 @@ namespace forest_sorting::test_support {
 
 inline constexpr uint8_t empty_control_byte = 0x80;
 inline constexpr std::size_t max_probe_groups_before_fallback = 32;
+inline constexpr std::size_t control_group_width = sizeof(uint64_t);
+
+inline std::size_t parentIndexTableCapacity(std::size_t itemCount) {
+    constexpr std::size_t highestPowerOfTwo =
+        std::size_t{1} << (std::numeric_limits<std::size_t>::digits - 1U);
+    if (itemCount > (highestPowerOfTwo - 1U) / 2U) {
+        throw std::length_error("parent index table is too large");
+    }
+    const std::size_t requested = (itemCount * 2U) + 1U;
+    std::size_t capacity = 1;
+    while (capacity < requested) {
+        capacity <<= 1U;
+    }
+    return capacity;
+}
 
 template <typename Traits, typename Id>
 concept HasTraitsHash = requires(const Traits &traits, const Id &nodeId) {
@@ -37,14 +54,14 @@ struct ControlFindResult {
 };
 
 template <typename Id, typename Traits>
-    requires HasTraitsHash<Traits, Id>
+    requires HasTraitsHash<Traits, Id> && std::copyable<Id> &&
+             std::default_initializable<Id>
 class ControlIdIndexTable {
   public:
     ControlIdIndexTable(std::size_t itemCount, const Traits &traits)
-        : traits_(traits),
-          mask_(detail::nextPowerOfTwo((itemCount * 2) + 1) - 1),
-          control_(mask_ + 1 + 8, empty_control_byte), ids_(mask_ + 1),
-          nodeIndexes_(mask_ + 1, detail::no_parent) {}
+        : traits_(traits), mask_(parentIndexTableCapacity(itemCount) - 1U),
+          control_(mask_ + 1 + control_group_width, empty_control_byte),
+          ids_(mask_ + 1), nodeIndexes_(mask_ + 1, detail::no_parent) {}
 
     ControlInsertResult insertBounded(const Id &nodeId, std::size_t nodeIndex,
                                       std::size_t maxProbeGroups) {
@@ -58,8 +75,7 @@ class ControlIdIndexTable {
 
         for (std::size_t groupIndex = 0; groupIndex < maxProbeGroups;
              ++groupIndex) {
-            uint64_t group = 0;
-            std::memcpy(&group, &control_[slotIndex], sizeof(group));
+            const uint64_t group = controlGroupAt(slotIndex);
             uint64_t match = group ^ fingerprintMask;
             uint64_t matchBits = (match - 0x0101010101010101ULL) & ~match &
                                  0x8080808080808080ULL;
@@ -81,20 +97,20 @@ class ControlIdIndexTable {
                 const std::size_t fullIndex =
                     (slotIndex + static_cast<std::size_t>(emptyIndex)) & mask_;
                 control_[fullIndex] = fingerprint;
-                if (fullIndex < 8) {
+                if (fullIndex < control_group_width) {
                     control_[mask_ + 1 + fullIndex] = fingerprint;
                 }
                 ids_[fullIndex] = nodeId;
                 nodeIndexes_[fullIndex] = nodeIndex;
                 return ControlInsertResult::Inserted;
             }
-            slotIndex = (slotIndex + 8) & mask_;
+            slotIndex = (slotIndex + control_group_width) & mask_;
         }
         return ControlInsertResult::ProbeLimitExceeded;
     }
 
     ControlFindResult findBounded(const Id &nodeId,
-                                  std::size_t maxProbeGroups) const noexcept {
+                                  std::size_t maxProbeGroups) const {
         const std::size_t hashValue = traits_.hash(nodeId);
         const uint8_t fingerprint = fingerprintForHash(hashValue);
         std::size_t slotIndex = hashValue & mask_;
@@ -105,8 +121,7 @@ class ControlIdIndexTable {
 
         for (std::size_t groupIndex = 0; groupIndex < maxProbeGroups;
              ++groupIndex) {
-            uint64_t group = 0;
-            std::memcpy(&group, &control_[slotIndex], sizeof(group));
+            const uint64_t group = controlGroupAt(slotIndex);
             uint64_t match = group ^ fingerprintMask;
             uint64_t matchBits = (match - 0x0101010101010101ULL) & ~match &
                                  0x8080808080808080ULL;
@@ -125,12 +140,20 @@ class ControlIdIndexTable {
             if (emptyBits != 0) {
                 return {detail::no_parent, false, false};
             }
-            slotIndex = (slotIndex + 8) & mask_;
+            slotIndex = (slotIndex + control_group_width) & mask_;
         }
         return {detail::no_parent, false, true};
     }
 
   private:
+    uint64_t controlGroupAt(std::size_t slotIndex) const noexcept {
+        assert(slotIndex <= mask_);
+        assert(slotIndex + control_group_width <= control_.size());
+        uint64_t group = 0;
+        std::memcpy(&group, &control_[slotIndex], sizeof(group));
+        return group;
+    }
+
     static uint8_t fingerprintForHash(std::size_t hashValue) noexcept {
         return static_cast<uint8_t>(hashValue & 0x7FU);
     }
@@ -143,7 +166,9 @@ class ControlIdIndexTable {
 };
 
 template <typename Nodes, typename Traits>
-    requires HasTraitsHash<Traits, typename Traits::Id>
+    requires HasTraitsHash<Traits, typename Traits::Id> &&
+             std::copyable<typename Traits::Id> &&
+             std::default_initializable<typename Traits::Id>
 std::vector<std::size_t> buildParentIndexControl(const Nodes &nodes,
                                                  const Traits &traits) {
     using Id = Traits::Id;

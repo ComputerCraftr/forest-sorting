@@ -12,8 +12,7 @@ concept HasForestTraitsParentSentinel =
     };
 
 template <typename Traits, typename IdType>
-inline bool isParentSentinel(const Traits &traits,
-                             const IdType &parentId) noexcept {
+inline bool isParentSentinel(const Traits &traits, const IdType &parentId) {
     if constexpr (HasForestTraitsParentSentinel<Traits, IdType>) {
         return traits.is_parent_sentinel(parentId);
     } else {

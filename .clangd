@@ -1,3 +1,0 @@
-CompileFlags:
-  CompilationDatabase: out/build/debug
-  Add: [-Isrc]

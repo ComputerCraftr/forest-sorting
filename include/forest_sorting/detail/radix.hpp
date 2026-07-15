@@ -5,6 +5,7 @@
 #include "forest_sorting/detail/radix_counts.hpp"
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -191,6 +192,10 @@ void radixMsdPartitionRanges(std::vector<std::size_t> &order,
                              std::size_t begin, std::size_t end,
                              std::size_t firstDigit, std::size_t digitCount,
                              DigitForIndex digitForIndex, RangeDone rangeDone) {
+    assert(begin <= end);
+    assert(end <= order.size());
+    assert(end <= scratch.size());
+    assert(firstDigit <= digitCount);
     auto digitForOffset = [&](std::size_t offset, std::size_t digitIndex) {
         return digitForIndex(order[offset], digitIndex);
     };

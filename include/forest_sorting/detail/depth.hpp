@@ -11,8 +11,10 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace forest_sorting::detail {
@@ -178,10 +180,10 @@ bool verifyWithParentIndex(const Nodes &nodes,
     std::vector<bool> depthReady(nodeCount, false);
 
     Depth previousDepth = 0;
-    typename Traits::Id previousId{};
+    std::optional<typename Traits::Id> previousId;
 
     for (std::size_t nodeIdx = 0; nodeIdx < nodeCount; ++nodeIdx) {
-        const typename Traits::Id currentId = traits.id(nodes[nodeIdx]);
+        typename Traits::Id currentId = traits.id(nodes[nodeIdx]);
 
         Depth currentDepth = 0;
         if (!isParentSentinel(traits, traits.parent_id(nodes[nodeIdx])) &&
@@ -199,16 +201,16 @@ bool verifyWithParentIndex(const Nodes &nodes,
                 static_cast<Depth>(verifiedDepth[parentNodeIndex] + 1);
         }
 
-        if (nodeIdx > 0 && (currentDepth < previousDepth ||
-                            (currentDepth == previousDepth &&
-                             idLess(currentId, previousId, traits)))) {
+        if (previousId && (currentDepth < previousDepth ||
+                           (currentDepth == previousDepth &&
+                            idLess(currentId, *previousId, traits)))) {
             return false;
         }
 
         verifiedDepth[nodeIdx] = currentDepth;
         depthReady[nodeIdx] = true;
         previousDepth = currentDepth;
-        previousId = currentId;
+        previousId.emplace(std::move(currentId));
     }
 
     return true;

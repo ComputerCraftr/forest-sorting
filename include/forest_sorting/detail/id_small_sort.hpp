@@ -5,6 +5,7 @@
 #include "forest_sorting/detail/id_compare.hpp"
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <stdexcept>
 #include <type_traits>
@@ -54,7 +55,14 @@ template <typename IdForIndex, typename IdTraits> struct DirectKeyAccessor {
 
     using IdType = std::decay_t<decltype(std::declval<IdForIndex &>()(
         std::declval<std::size_t>()))>;
-    IdType savedId{};
+    IdType savedId;
+
+    DirectKeyAccessor(const std::vector<std::size_t> &sortOrder,
+                      IdForIndex sortIdForIndex, const IdTraits &sortTraits,
+                      std::size_t sortRangeBegin)
+        : order(sortOrder), idForIndex(std::move(sortIdForIndex)),
+          traits(sortTraits), rangeBegin(sortRangeBegin),
+          savedId(idForIndex(order[rangeBegin])) {}
 
     void initialize([[maybe_unused]] std::size_t keyCount) noexcept {}
 
@@ -62,7 +70,7 @@ template <typename IdForIndex, typename IdTraits> struct DirectKeyAccessor {
         savedId = idForIndex(order[rangeBegin + localIdx]);
     }
 
-    bool isLessOrEqual(std::size_t otherLocalIdx) const noexcept {
+    bool isLessOrEqual(std::size_t otherLocalIdx) const {
         return !idLess(savedId, idForIndex(order[rangeBegin + otherLocalIdx]),
                        traits);
     }
@@ -87,6 +95,8 @@ void withFixedSmallSortAccessor(const std::vector<std::size_t> &order,
                                 IdForIndex idForIndex, const IdTraits &traits,
                                 std::size_t rangeBegin, std::size_t rangeEnd,
                                 Algorithm algorithm) {
+    assert(rangeBegin <= rangeEnd);
+    assert(rangeEnd <= order.size());
     const std::size_t rangeSize = rangeEnd - rangeBegin;
     if (rangeSize <= 1) {
         return;
@@ -95,38 +105,9 @@ void withFixedSmallSortAccessor(const std::vector<std::size_t> &order,
     if constexpr (shouldCacheChunkIds<IdTraits>) {
         requireFixedSmallSortCapacity<MaxRangeSize>(rangeSize);
         constexpr std::size_t chunkCount =
-            (IdTraits::id_byte_count + cached_comparison_chunk_bytes - 1) /
-            cached_comparison_chunk_bytes;
+            idChunkCount<cached_comparison_chunk_bytes, IdTraits>;
         using CachedId = CachedChunkId<chunkCount>;
         std::array<CachedId, MaxRangeSize> idChunks;
-        CachedKeyAccessor<IdForIndex, IdTraits, decltype(idChunks)> accessor{
-            order, idForIndex, traits, rangeBegin, idChunks};
-        accessor.initialize(rangeSize);
-        algorithm(accessor);
-    } else {
-        DirectKeyAccessor<IdForIndex, IdTraits> accessor{order, idForIndex,
-                                                         traits, rangeBegin};
-        accessor.initialize(rangeSize);
-        algorithm(accessor);
-    }
-}
-
-template <typename IdForIndex, typename IdTraits, typename Algorithm>
-void withDynamicSmallSortAccessor(const std::vector<std::size_t> &order,
-                                  IdForIndex idForIndex, const IdTraits &traits,
-                                  std::size_t rangeBegin, std::size_t rangeEnd,
-                                  Algorithm algorithm) {
-    const std::size_t rangeSize = rangeEnd - rangeBegin;
-    if (rangeSize <= 1) {
-        return;
-    }
-
-    if constexpr (shouldCacheChunkIds<IdTraits>) {
-        constexpr std::size_t chunkCount =
-            (IdTraits::id_byte_count + cached_comparison_chunk_bytes - 1) /
-            cached_comparison_chunk_bytes;
-        using CachedId = CachedChunkId<chunkCount>;
-        std::vector<CachedId> idChunks(rangeSize);
         CachedKeyAccessor<IdForIndex, IdTraits, decltype(idChunks)> accessor{
             order, idForIndex, traits, rangeBegin, idChunks};
         accessor.initialize(rangeSize);

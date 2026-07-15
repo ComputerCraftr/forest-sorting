@@ -1,8 +1,8 @@
 #ifndef FOREST_SORTING_SUPPORT_TAIL_BENCHMARK_OUTPUT_HPP
 #define FOREST_SORTING_SUPPORT_TAIL_BENCHMARK_OUTPUT_HPP
 
-#include "benchmark_output.hpp"
-#include "benchmark_stats.hpp"
+#include "common/benchmark_output.hpp"
+#include "common/benchmark_stats.hpp"
 
 #include <array>
 #include <cstddef>
@@ -20,8 +20,13 @@
 namespace forest_sorting::test_support {
 
 struct MicroOutputRow {
+    std::string workload;
     std::string pattern;
-    std::size_t rangeSize = 0;
+    std::optional<std::size_t> sourceSize;
+    std::optional<std::size_t> rangeSize;
+    std::size_t minTailSize = 0;
+    std::size_t maxTailSize = 0;
+    std::size_t rangeCount = 0;
     std::string algorithm;
     std::optional<SampleStats> stats;
     std::optional<double> deltaPct;
@@ -33,8 +38,13 @@ struct MicroOutputRow {
 };
 
 enum class MicroFieldId : std::uint8_t {
+    Workload,
     Pattern,
+    SourceSize,
     Size,
+    MinTailSize,
+    MaxTailSize,
+    Ranges,
     Algorithm,
     DeltaPct,
     DeltaCi95LowPct,
@@ -48,16 +58,22 @@ struct MicroFieldDescriptor {
     std::string_view name;
 };
 
-inline constexpr std::array<MicroFieldDescriptor, 8> kMicroRootOutputSchema = {{
-    {MicroFieldId::Pattern, "pattern"},
-    {MicroFieldId::Size, "size"},
-    {MicroFieldId::Algorithm, "algorithm"},
-    {MicroFieldId::DeltaPct, "delta_pct"},
-    {MicroFieldId::DeltaCi95LowPct, "delta_ci95_low_pct"},
-    {MicroFieldId::DeltaCi95HighPct, "delta_ci95_high_pct"},
-    {MicroFieldId::Winner, "winner"},
-    {MicroFieldId::Status, "status"},
-}};
+inline constexpr std::array<MicroFieldDescriptor, 13> kMicroRootOutputSchema = {
+    {
+        {MicroFieldId::Workload, "workload"},
+        {MicroFieldId::Pattern, "pattern"},
+        {MicroFieldId::SourceSize, "source_size"},
+        {MicroFieldId::Size, "size"},
+        {MicroFieldId::MinTailSize, "min_tail_size"},
+        {MicroFieldId::MaxTailSize, "max_tail_size"},
+        {MicroFieldId::Ranges, "ranges"},
+        {MicroFieldId::Algorithm, "algorithm"},
+        {MicroFieldId::DeltaPct, "delta_pct"},
+        {MicroFieldId::DeltaCi95LowPct, "delta_ci95_low_pct"},
+        {MicroFieldId::DeltaCi95HighPct, "delta_ci95_high_pct"},
+        {MicroFieldId::Winner, "winner"},
+        {MicroFieldId::Status, "status"},
+    }};
 
 inline constexpr std::array kMicroStatFieldOrder = {
     StatFieldId::Median,   StatFieldId::Mean, StatFieldId::Min,
@@ -70,7 +86,7 @@ inline constexpr std::size_t micro_output_field_count =
 
 template <typename RootVisitor, typename StatVisitor>
 void visitMicroOutputSchema(RootVisitor rootVisitor, StatVisitor statVisitor) {
-    constexpr std::size_t leadingRootFieldCount = 3;
+    constexpr std::size_t leadingRootFieldCount = 8;
     for (std::size_t fieldIdx = 0; fieldIdx < leadingRootFieldCount;
          ++fieldIdx) {
         rootVisitor(kMicroRootOutputSchema[fieldIdx]);
@@ -89,10 +105,22 @@ using MicroFieldValue = BenchmarkScalarValue;
 inline MicroFieldValue microFieldValue(const MicroOutputRow &row,
                                        MicroFieldId fieldId) {
     switch (fieldId) {
+    case MicroFieldId::Workload:
+        return std::string_view(row.workload);
     case MicroFieldId::Pattern:
         return std::string_view(row.pattern);
+    case MicroFieldId::SourceSize:
+        return row.sourceSize ? MicroFieldValue(*row.sourceSize)
+                              : MicroFieldValue{};
     case MicroFieldId::Size:
-        return row.rangeSize;
+        return row.rangeSize ? MicroFieldValue(*row.rangeSize)
+                             : MicroFieldValue{};
+    case MicroFieldId::MinTailSize:
+        return row.minTailSize;
+    case MicroFieldId::MaxTailSize:
+        return row.maxTailSize;
+    case MicroFieldId::Ranges:
+        return row.rangeCount;
     case MicroFieldId::Algorithm:
         return std::string_view(row.algorithm);
     case MicroFieldId::DeltaPct:
@@ -125,8 +153,13 @@ template <typename Result>
 MicroOutputRow makeMicroOutputRow(const Result &result,
                                   std::string_view baselineSort) {
     MicroOutputRow row;
+    row.workload = result.workload;
     row.pattern = result.pattern;
+    row.sourceSize = result.sourceSize;
     row.rangeSize = result.rangeSize;
+    row.minTailSize = result.minTailSize;
+    row.maxTailSize = result.maxTailSize;
+    row.rangeCount = result.rangeCount;
     row.algorithm = result.algorithm;
     row.status = result.status;
     if (result.status != "ok") {
@@ -208,9 +241,11 @@ inline std::string formatMicroDouble(double value, int precision) {
 
 inline void printMicroTable(std::ostream &output,
                             const std::vector<MicroOutputRow> &rows) {
-    output << std::left << std::setw(24) << "pattern" << std::right << "  "
-           << std::setw(6) << "size"
-           << "  " << std::left << std::setw(22) << "algorithm"
+    output << std::left << std::setw(24) << "workload" << "  " << std::setw(18)
+           << "pattern" << std::right << "  " << std::setw(8) << "source"
+           << "  " << std::setw(6) << "size"
+           << "  " << std::setw(7) << "tails" << "  " << std::left
+           << std::setw(22) << "algorithm"
            << "  " << std::right << std::setw(12) << "median_ns"
            << "  " << std::setw(22) << "timing_ci95_ns"
            << "  " << std::setw(12) << "delta_%"
@@ -219,8 +254,14 @@ inline void printMicroTable(std::ostream &output,
            << "  status\n";
 
     for (const MicroOutputRow &row : rows) {
-        output << std::left << std::setw(24) << row.pattern << std::right
-               << "  " << std::setw(6) << row.rangeSize << "  " << std::left
+        const std::string source =
+            row.sourceSize ? std::to_string(*row.sourceSize) : "-";
+        const std::string size =
+            row.rangeSize ? std::to_string(*row.rangeSize) : "mixed";
+        output << std::left << std::setw(24) << row.workload << "  "
+               << std::setw(18) << row.pattern << std::right << "  "
+               << std::setw(8) << source << "  " << std::setw(6) << size << "  "
+               << std::setw(7) << row.rangeCount << "  " << std::left
                << std::setw(22) << row.algorithm << std::right << std::fixed
                << std::setprecision(1);
         if (row.stats.has_value()) {

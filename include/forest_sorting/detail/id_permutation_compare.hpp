@@ -27,17 +27,16 @@ template <typename Id, typename Traits> class DirectIdPermutationComparator {
 
     const Traits &sortTraits() const noexcept { return traits_; }
 
-    int compare(std::size_t leftIndex, std::size_t rightIndex) const noexcept {
+    int compare(std::size_t leftIndex, std::size_t rightIndex) const {
         return compareNodeIds(leftIds_[leftIndex], rightIds_[rightIndex],
                               traits_);
     }
 
-    bool crossEqual(std::size_t leftIndex,
-                    std::size_t rightIndex) const noexcept {
+    bool crossEqual(std::size_t leftIndex, std::size_t rightIndex) const {
         return idEqual(leftIds_[leftIndex], rightIds_[rightIndex], traits_);
     }
 
-    bool leftEqual(std::size_t lhsIndex, std::size_t rhsIndex) const noexcept {
+    bool leftEqual(std::size_t lhsIndex, std::size_t rhsIndex) const {
         return idEqual(leftIds_[lhsIndex], leftIds_[rhsIndex], traits_);
     }
 
@@ -82,12 +81,11 @@ class CachedIdPermutationComparator {
                                      cachedRightIds_[rightIndex]);
     }
 
-    bool crossEqual(std::size_t leftIndex,
-                    std::size_t rightIndex) const noexcept {
+    bool crossEqual(std::size_t leftIndex, std::size_t rightIndex) const {
         return idEqual(leftIds_[leftIndex], rightIds_[rightIndex], traits_);
     }
 
-    bool leftEqual(std::size_t lhsIndex, std::size_t rhsIndex) const noexcept {
+    bool leftEqual(std::size_t lhsIndex, std::size_t rhsIndex) const {
         return compareCachedIdChunks(cachedLeftIds_[lhsIndex],
                                      cachedLeftIds_[rhsIndex]) == 0 &&
                idEqual(leftIds_[lhsIndex], leftIds_[rhsIndex], traits_);
@@ -109,8 +107,7 @@ decltype(auto) withIdPermutationComparator(const std::vector<Id> &leftIds,
                                            Callback callback) {
     if constexpr (shouldCacheChunkIds<Traits>) {
         constexpr std::size_t chunkCount =
-            (Traits::id_byte_count + cached_comparison_chunk_bytes - 1) /
-            cached_comparison_chunk_bytes;
+            idChunkCount<cached_comparison_chunk_bytes, Traits>;
         CachedIdPermutationComparator<Id, Traits, chunkCount> comparator(
             leftIds, rightIds, traits);
         return std::forward<Callback>(callback)(comparator);

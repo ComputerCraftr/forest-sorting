@@ -86,7 +86,7 @@ available on `PATH`.
 
 ```bash
 cmake --preset release            # generate Release Ninja files into out/build/release
-cmake --build --preset release    # compile optimized binaries
+cmake --build --preset build-release # compile optimized binaries
 ./out/build/release/src/forest-sorting
 ```
 
@@ -100,15 +100,25 @@ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 
 ```bash
 cmake --preset debug              # generate Debug Ninja files with ASan/UBSan enabled
-cmake --build --preset debug      # compile with sanitizers
-ctest --preset debug              # run the test suite with sanitizers active
+cmake --build --preset build-debug # compile with sanitizers
+ctest --preset test-debug          # run the test suite with sanitizers active
 ```
+
+Every configure and normal build updates the ignored root
+`compile_commands.json` symlink used by clangd and other editor tooling. It
+points at the compile database for whichever Debug or Release build was run
+most recently.
 
 The regression tests check deterministic ordering across multiple input
 permutations, verify the production global-ID-first sort against comparison,
 LSD, byte-MSD, and chunk-MSD baselines, compare parent-index builders, compile
 the portable algorithm header without UInt128 compatibility headers, and cover
 duplicate full-ID rejection.
+
+CTest also enforces a 1,000-line hard limit for project-owned C/C++ headers,
+sources, and CMake files. Benchmark infrastructure is organized under
+`benchmarks/support`; independent fixtures, hash/control comparators, and
+oracles remain under `tests/support`.
 
 ## Linting
 
@@ -118,7 +128,7 @@ message explaining how to set `FOREST_CLANG_TIDY`.
 
 ```bash
 cmake --preset debug
-cmake --build --preset debug --target tidy
+cmake --build --preset build-debug --target tidy
 ```
 
 The tidy target runs against the shipped headers, test support headers, tests,
@@ -153,13 +163,12 @@ Parent-builder families:
 
 - Production radix join: fixed chunk rows such as
   `radix-join-id-msd-chunk16` and `radix-join-id-msd-chunk32`.
-- Size-ladder radix join: opt-in rows choose chunk8/chunk16/chunk32 or
-  chunk16/chunk32 once per ID permutation, then run the corresponding
-  fixed-width kernel unchanged. For example,
-  `radix-join-id-msd-size-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise`
-  and `radix-join-id-msd-size-ladder-chunk16-le10000-chunk32-otherwise`.
 - Radix directory: `radix-directory-id-msd-chunk32-prefix8` and
   `radix-directory-id-msd-chunk32-prefix16`.
+- Opt-in radix size ladders select a fixed chunk8, chunk16, or chunk32 kernel
+  once per submitted permutation. The three-way policies use thresholds
+  `1024/16384`, `2048/32768`, and `4096/65536`; chunk16/chunk32 policies use
+  `10000`, `16384`, and `32768`.
 - Hash-table support comparators: `control`, `control-finalizer-hash`,
   `flat`, and `unordered`.
 
@@ -170,10 +179,12 @@ Sort-family examples:
 - `depth2-first-then-id-msd-chunk32-bitmask-le512`: depth-first comparator with
   packed 32-bit ID radix chunks inside each depth range.
 - `comparison`: direct `std::sort` over `depth || id`.
-- `dense-*`, `composite-*`, `*-full-clear`, `*-bitmask-le*`, and
-  `*-range-ladder-*` rows are opt-in algorithm experiments.
-  Sort range ladders select one width per equal-depth ID range and then run the
-  corresponding fixed-width kernel unchanged.
+- `dense-*`, `composite-*`, `*-full-clear`, and `*-bitmask-le*` rows are
+  explicit support baselines or counter-policy experiments.
+- `depth2-first-then-id-range-ladder-*` rows are opt-in full-sort diagnostics.
+  They dispatch once at each equal-depth range boundary and then execute the
+  selected compile-time fixed-width kernel; they do not switch widths during
+  recursive prefix processing.
 
 Datasets:
 
@@ -193,11 +204,13 @@ Result interpretation:
 - `--baseline-parent` and `--baseline-sort` produce paired deltas.
 - Supplying both baselines also reports paired pipeline deltas:
   `pipeline_ms = parent_ms + sort_ms`.
+- Explicit baseline runs are rejected before dataset generation unless the
+  selected matrix contains a non-baseline sort, parent, or pipeline job.
 - Winner fields are confidence-interval aware; overlapping intervals report
   `tie`.
 
 ```bash
-cmake --build --preset release --target forest-sorting-bench
+cmake --build --preset build-release --target forest-sorting-bench
 
 # Run default suite (uses default options)
 ./out/build/release/benchmarks/forest-sorting-bench
@@ -254,23 +267,6 @@ cmake --build --preset release --target forest-sorting-bench
   --order-seed 0x5eed \
   --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
 
-# Compare parent size-ladder rows while reusing the retained global ID permutation
-./out/build/release/benchmarks/forest-sorting-bench \
-  --format json --sample-output summary \
-  --size 10000 --size 100000 --size 1000000 \
-  --dataset random --dataset same-high32 --dataset same-high64 --dataset outliers --dataset siblings \
-  --parent radix-join-id-msd-chunk16 \
-  --parent radix-join-id-msd-chunk32 \
-  --parent radix-join-id-msd-size-ladder-chunk8-le1024-chunk16-le16384-chunk32-otherwise \
-  --parent radix-join-id-msd-size-ladder-chunk16-le10000-chunk32-otherwise \
-  --parent radix-directory-id-msd-chunk32-prefix16 \
-  --sort global-id-permutation-then-depth-stable \
-  --baseline-parent radix-join-id-msd-chunk32 \
-  --baseline-sort global-id-permutation-then-depth-stable \
-  --iterations 30 --warmup 5 --shuffle \
-  --order-seed 0x5eed \
-  --data-seed 1 --data-seed 2 --data-seed 3 --data-seed 4 --data-seed 5
-
 # Compare representative sort families
 ./out/build/release/benchmarks/forest-sorting-bench \
   --size 10000 \
@@ -281,27 +277,30 @@ cmake --build --preset release --target forest-sorting-bench
   --sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
   --sort depth2-first-then-id-msd-chunk64-full-clear
 
-# Compare composite byte-MSD with the production and depth-first families
+# Compare the composite byte-partition core with production and depth-first
 ./out/build/release/benchmarks/forest-sorting-bench \
   --size 100000 \
   --dataset random \
   --parent control \
-  --sort composite-depth2-id-byte-msd-copyback \
+  --sort composite-depth2-id-byte-msd-partition-core \
   --sort global-id-permutation-then-depth-stable \
   --sort depth2-first-then-id-msd-chunk32-bitmask-le512 \
-  --baseline-sort composite-depth2-id-byte-msd-copyback \
+  --baseline-sort composite-depth2-id-byte-msd-partition-core \
   --iterations 30 --warmup 3 --shuffle \
   --order-seed 0x5eed \
   --data-seed 1 --data-seed 2 --data-seed 3 \
   --format json --sample-output summary
 
-# Compare different tail options (linear vs binary)
+# Compare insertion and Shell gap tails on fixed synthetic ranges
 ./out/build/release/benchmarks/forest-sorting-tail-bench \
   --format json --baseline-sort linear \
   --sort linear \
-  --sort binary \
+  --sort shell-gap-10-4-1 \
+  --sort shell-gap-3-2-1 \
+  --sort shell-gap-16-7-3-1 \
   --size 32 \
-  --iterations 50 --warmup 10 \
+  --iterations 100 --warmup 10 --shuffle \
+  --order-seed 0x5eed --data-seed 1 \
   --ranges 1000 \
   --pattern random --pattern same-high32 --pattern same-high64 \
   | jq > test_tail_matrix.json
@@ -314,23 +313,39 @@ parent setup, depth grouping, or radix partition noise.
 
 Defaults and options:
 
+- default workload: fixed-size `synthetic` ranges; use `--workload all` to add
+  captured node-ID and parent-query tails
 - default sizes: `4`, `8`, `16`, `24`, `32`
 - unit: nanoseconds per range
 - patterns include `random`, `same-high32`, and `same-high64`
-- algorithms: `linear`, `binary`, `exponential`, `branchless-bitwise`
+- algorithms include `linear`, `binary`, `exponential`,
+  `branchless-bitwise`, and the benchmark-only Shell sequences `10,4,1`,
+  `3,2,1`, and `16,7,3,1`
+
+The captured workloads run the production chunk32 MSD scheduler once outside
+the timed section and retain the exact ranges of size 2 through 32 handed to
+its small-range callback. Node-ID and parent-query corpora are separate because
+their prefix and duplicate distributions differ. Some source datasets produce
+no such tails; the benchmark reports that fact instead of manufacturing work.
 
 Example:
 
 ```bash
-cmake --build --preset release --target forest-sorting-tail-bench
+cmake --build --preset build-release --target forest-sorting-tail-bench
 ./out/build/release/benchmarks/forest-sorting-tail-bench \
-  --iterations 100 \
-  --warmup 10 \
+  --workload all \
+  --dataset random --dataset same-high32 --dataset same-high64 \
+  --dataset outliers --source-size 1000000 \
+  --sort linear --sort shell-gap-10-4-1 --sort shell-gap-3-2-1 \
+  --sort shell-gap-16-7-3-1 --baseline-sort linear \
+  --iterations 100 --warmup 10 --shuffle \
+  --order-seed 0x5eed --data-seed 1 \
   --ranges 1000 \
-  --size 16 \
-  --pattern random \
-  --format table
+  --format json
 ```
+
+Repeat the confirmatory run with data seeds `1` through `5`. A microbenchmark
+winner remains experimental until the full parent/sort pipeline also improves.
 
 ## CI
 

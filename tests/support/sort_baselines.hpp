@@ -245,10 +245,10 @@ sortForestByDenseDepth2BucketsThenIdMsdChunk64FullClearWithParent(
                                                     sortBuckets);
 }
 
-template <typename Partitioner>
-inline std::vector<Node> sortForestByCompositeDepth2MsdWithParent(
-    const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
-    Partitioner partitioner) {
+inline std::vector<Node>
+sortForestByCompositeDepth2IdByteMsdPartitionCoreWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
     const std::size_t nodeCount = nodes.size();
     if (nodeCount == 0) {
         return {};
@@ -264,26 +264,12 @@ inline std::vector<Node> sortForestByCompositeDepth2MsdWithParent(
     auto digitForIndex = [&](std::size_t nodeIndex, std::size_t digitIndex) {
         return key.byte_msb_first(nodeIndex, digitIndex);
     };
-    partitioner(order, scratch, digitForIndex);
+    auto recordCompletedRange = [](std::size_t, std::size_t) {};
+    detail::radixMsdPartitionRanges(order, scratch, 0, order.size(), 0,
+                                    CompositeDepth2UInt128Key::byte_count,
+                                    digitForIndex, recordCompletedRange);
 
     return materializeOrder(nodes, order);
-}
-
-// Benchmark wrapper for Composite MSD with full copyback after each scatter.
-// Locked to 2-byte depth prefix for apples-to-apples benchmark comparison.
-inline std::vector<Node> sortForestByCompositeDepth2IdByteMsdCopybackWithParent(
-    const std::vector<Node> &nodes,
-    const std::vector<std::size_t> &parentIndex) {
-    auto partitioner = [](std::vector<std::size_t> &order,
-                          std::vector<std::size_t> &scratch,
-                          const auto &digitForIndex) {
-        auto recordCompletedRange = [](std::size_t, std::size_t) {};
-        detail::radixMsdPartitionRanges(order, scratch, 0, order.size(), 0,
-                                        CompositeDepth2UInt128Key::byte_count,
-                                        digitForIndex, recordCompletedRange);
-    };
-    return sortForestByCompositeDepth2MsdWithParent(nodes, parentIndex,
-                                                    partitioner);
 }
 
 } // namespace forest_sorting::test_support

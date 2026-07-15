@@ -36,21 +36,21 @@
     ],
     "buildPresets": [
         {
-            "name": "debug",
+            "name": "build-debug",
             "configurePreset": "debug"
         },
         {
-            "name": "release",
+            "name": "build-release",
             "configurePreset": "release"
         }
     ],
     "testPresets": [
         {
-            "name": "debug",
+            "name": "test-debug",
             "configurePreset": "debug"
         },
         {
-            "name": "release",
+            "name": "test-release",
             "configurePreset": "release"
         }
     ]

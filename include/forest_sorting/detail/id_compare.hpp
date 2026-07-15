@@ -38,13 +38,11 @@ concept HasNativeIdEqual = requires(const IdType &lhs, const IdType &rhs) {
 
 template <typename Traits>
 inline constexpr bool shouldCacheChunkIds =
-    ((Traits::id_byte_count + cached_comparison_chunk_bytes - 1) /
-     cached_comparison_chunk_bytes) > 1 &&
+    idChunkCount<cached_comparison_chunk_bytes, Traits> > 1 &&
     !HasCheapForestTraitsIdOrder<Traits>;
 
 template <std::size_t ChunkCount, typename LhsChunkAt, typename RhsChunkAt>
-inline int compareChunkSequence(LhsChunkAt lhsChunkAt,
-                                RhsChunkAt rhsChunkAt) noexcept {
+inline int compareChunkSequence(LhsChunkAt lhsChunkAt, RhsChunkAt rhsChunkAt) {
     if constexpr (ChunkCount == 2) {
         const uint64_t lhs0 = lhsChunkAt(0);
         const uint64_t rhs0 = rhsChunkAt(0);
@@ -123,22 +121,21 @@ compareCachedIdChunks(const CachedChunkId<ChunkCount> &lhs,
 
 template <typename NodeId, typename NodeTraits>
 inline int compareIdsMsbFirst(const NodeId &lhs, const NodeId &rhs,
-                              const NodeTraits &traits) noexcept {
+                              const NodeTraits &traits) {
     constexpr std::size_t chunkCount =
-        (NodeTraits::id_byte_count + cached_comparison_chunk_bytes - 1) /
-        cached_comparison_chunk_bytes;
+        idChunkCount<cached_comparison_chunk_bytes, NodeTraits>;
     return compareChunkSequence<chunkCount>(
-        [&](std::size_t chunkIdx) noexcept {
+        [&](std::size_t chunkIdx) {
             return chunkMsbFirst(lhs, chunkIdx, traits);
         },
-        [&](std::size_t chunkIdx) noexcept {
+        [&](std::size_t chunkIdx) {
             return chunkMsbFirst(rhs, chunkIdx, traits);
         });
 }
 
 template <typename NodeId, typename NodeTraits>
 inline int compareNodeIds(const NodeId &first, const NodeId &second,
-                          const NodeTraits &traits) noexcept {
+                          const NodeTraits &traits) {
     if constexpr (HasForestTraitsLess<NodeTraits, NodeId>) {
         if (traits.less(first, second)) {
             return -1;
@@ -162,7 +159,7 @@ inline int compareNodeIds(const NodeId &first, const NodeId &second,
 
 template <typename NodeId, typename NodeTraits>
 inline bool idLess(const NodeId &lhs, const NodeId &rhs,
-                   const NodeTraits &traits) noexcept {
+                   const NodeTraits &traits) {
     if constexpr (HasForestTraitsLess<NodeTraits, NodeId>) {
         return traits.less(lhs, rhs);
     } else if constexpr (HasNativeIdLess<NodeId>) {
@@ -174,7 +171,7 @@ inline bool idLess(const NodeId &lhs, const NodeId &rhs,
 
 template <typename NodeId, typename NodeTraits>
 inline bool idEqual(const NodeId &lhs, const NodeId &rhs,
-                    const NodeTraits &traits) noexcept {
+                    const NodeTraits &traits) {
     if constexpr (HasForestTraitsEqual<NodeTraits, NodeId>) {
         return traits.equal(lhs, rhs);
     } else if constexpr (HasNativeIdEqual<NodeId>) {

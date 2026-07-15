@@ -4,10 +4,14 @@
 #include "forest_sorting/detail/adaptive_sort.hpp"
 #include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/depth.hpp"
+#include "forest_sorting/detail/id_chunks.hpp"
+#include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
+#include "forest_sorting/detail/id_small_sort.hpp"
 #include "forest_sorting/detail/order.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128_forest.hpp"
+#include "full/radix_ladder_variants.hpp"
 #include "sort_baselines.hpp"
 
 #include <algorithm>
@@ -43,8 +47,27 @@ void withDynamicNodeSmallSortAccessor(const std::vector<std::size_t> &order,
     auto idForIndex = [&](std::size_t itemIndex) {
         return traits.id(nodes[itemIndex]);
     };
-    detail::withDynamicSmallSortAccessor(order, idForIndex, traits, rangeBegin,
-                                         rangeEnd, algorithm);
+    const std::size_t rangeSize = rangeEnd - rangeBegin;
+    if (rangeSize <= 1) {
+        return;
+    }
+    if constexpr (detail::shouldCacheChunkIds<IdTraits>) {
+        constexpr std::size_t chunkCount =
+            detail::idChunkCount<detail::cached_comparison_chunk_bytes,
+                                 IdTraits>;
+        using CachedId = detail::CachedChunkId<chunkCount>;
+        std::vector<CachedId> idChunks(rangeSize);
+        detail::CachedKeyAccessor<decltype(idForIndex), IdTraits,
+                                  decltype(idChunks)>
+            accessor{order, idForIndex, traits, rangeBegin, idChunks};
+        accessor.initialize(rangeSize);
+        algorithm(accessor);
+    } else {
+        detail::DirectKeyAccessor<decltype(idForIndex), IdTraits> accessor{
+            order, idForIndex, traits, rangeBegin};
+        accessor.initialize(rangeSize);
+        algorithm(accessor);
+    }
 }
 
 struct PendingBitRange {
@@ -267,11 +290,50 @@ inline void sortDepthRangesByIdMsdChunks(
     for (const detail::DepthRange<Depth> &range : depthRanges) {
         const std::size_t rangeBegin = range.begin;
         const std::size_t rangeEnd = range.end;
-        detail::sortRangeByIdMsdChunksWithSmallSorter<
+        auto idForIndex = [&](std::size_t itemIndex) {
+            return UInt128NodeTraits::id(nodes[itemIndex]);
+        };
+        auto adaptedSmallRangeSorter = [&](std::vector<std::size_t> &sortOrder,
+                                           auto, const auto &sortTraits,
+                                           std::size_t sortBegin,
+                                           std::size_t sortEnd) {
+            smallRangeSorter(sortOrder, nodes, sortTraits, sortBegin, sortEnd);
+        };
+        detail::sortIndexRangeByIdMsdChunksWithSmallSorter<
             RadixChunkBytes, CountPolicy, SmallThreshold>(
-            order, nodes, UInt128NodeTraits{}, rangeBegin, rangeEnd, 0,
-            workspace, smallRangeSorter);
+            order, idForIndex, UInt128NodeTraits{}, rangeBegin, rangeEnd, 0,
+            workspace, adaptedSmallRangeSorter);
     }
+}
+
+template <typename LadderPolicy, typename CountPolicy, typename Depth>
+inline void sortDepthRangesByIdMsdLadder(
+    std::vector<std::size_t> &order, const std::vector<Node> &nodes,
+    const std::vector<detail::DepthRange<Depth>> &depthRanges) {
+    IdMsdLadderWorkspace<CountPolicy> workspace;
+    auto idForIndex = [&](std::size_t itemIndex) {
+        return UInt128NodeTraits::id(nodes[itemIndex]);
+    };
+    for (const detail::DepthRange<Depth> &range : depthRanges) {
+        sortIndexRangeByIdMsdLadder<LadderPolicy, CountPolicy>(
+            order, idForIndex, UInt128NodeTraits{}, range.begin, range.end,
+            workspace);
+    }
+}
+
+template <std::size_t Chunk8Max, std::size_t Chunk16Max, typename CountPolicy>
+inline std::vector<Node> sortForestByDepth2FirstThenIdMsdLadderWithParent(
+    const std::vector<Node> &nodes,
+    const std::vector<std::size_t> &parentIndex) {
+    using Ladder = Chunk8Chunk16Chunk32Ladder<Chunk8Max, Chunk16Max>;
+    auto rangeSorter = [](std::vector<std::size_t> &order,
+                          const std::vector<Node> &sortNodes,
+                          const auto &depthRanges) {
+        sortDepthRangesByIdMsdLadder<Ladder, CountPolicy>(order, sortNodes,
+                                                          depthRanges);
+    };
+    return sortForestByAdaptiveRangeSorterWithParent<2, CountPolicy>(
+        nodes, parentIndex, true, rangeSorter);
 }
 
 template <typename Nodes, typename IdTraits>
@@ -549,38 +611,6 @@ struct BranchlessBitwiseSmallSorterDynamic {
     }
 };
 
-template <typename LadderPolicy, typename CountPolicy, typename Depth>
-inline void sortDepthRangesByIdMsdChunkLadder(
-    std::vector<std::size_t> &order, const std::vector<Node> &nodes,
-    const std::vector<detail::DepthRange<Depth>> &depthRanges) {
-    detail::IdMsdChunkLadderSortWorkspace<CountPolicy> workspace;
-    const UInt128NodeTraits traits;
-    auto idForIndex = [&](std::size_t itemIndex) {
-        return UInt128NodeTraits::id(nodes[itemIndex]);
-    };
-
-    for (const detail::DepthRange<Depth> &range : depthRanges) {
-        detail::sortIndexRangeByIdMsdChunkLadder<LadderPolicy, CountPolicy>(
-            order, idForIndex, traits, range.begin, range.end, workspace);
-    }
-}
-
-template <std::size_t Chunk8MaxRangeSize, std::size_t Chunk16MaxRangeSize,
-          typename CountPolicy>
-inline std::vector<Node> sortForestByDepth2FirstThenIdRangeLadderWithParent(
-    const std::vector<Node> &nodes,
-    const std::vector<std::size_t> &parentIndex) {
-    auto rangeSorter = [](std::vector<std::size_t> &order,
-                          const std::vector<Node> &sortNodes,
-                          const auto &depthRanges) {
-        sortDepthRangesByIdMsdChunkLadder<
-            detail::RangeLadder<Chunk8MaxRangeSize, Chunk16MaxRangeSize>,
-            CountPolicy>(order, sortNodes, depthRanges);
-    };
-    return sortForestByAdaptiveRangeSorterWithParent<2>(nodes, parentIndex,
-                                                        true, rangeSorter);
-}
-
 template <std::size_t DepthPrefixBytes, std::size_t RadixChunkBytes,
           typename CountPolicy = detail::FullClearCounts,
           std::size_t SmallThreshold = detail::small_id_range_sort_threshold,
@@ -600,13 +630,32 @@ inline std::vector<Node> sortForestByAdaptiveIdMsdChunkWithParent(
         nodes, parentIndex, allowDenseDepthGrouping, rangeSorter);
 }
 
-inline std::vector<Node> sortForestByGlobalIdPermutationThenDepthStable(
-    const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
-    const std::vector<std::size_t> *idPermutation) {
-    if (idPermutation != nullptr && idPermutation->size() != nodes.size()) {
+inline void validateIdPermutation(const std::vector<Node> &nodes,
+                                  const std::vector<std::size_t> &permutation) {
+    if (permutation.size() != nodes.size()) {
         throw std::runtime_error("ID permutation size must match node count");
     }
+    std::vector<bool> seen(nodes.size(), false);
+    const UInt128NodeTraits traits;
+    for (std::size_t offset = 0; offset < permutation.size(); ++offset) {
+        const std::size_t nodeIndex = permutation[offset];
+        if (nodeIndex >= nodes.size() || seen[nodeIndex]) {
+            throw std::runtime_error("invalid ID permutation");
+        }
+        seen[nodeIndex] = true;
+        if (offset != 0) {
+            const std::size_t previousIndex = permutation[offset - 1];
+            if (!detail::idLess(nodes[previousIndex].id, nodes[nodeIndex].id,
+                                traits)) {
+                throw std::runtime_error("ID permutation is not canonical");
+            }
+        }
+    }
+}
 
+inline std::vector<Node> sortForestByTrustedGlobalIdPermutationThenDepthStable(
+    const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
+    const std::vector<std::size_t> *idPermutation) {
     auto computed =
         detail::computeDepths<2>(nodes, parentIndex, UInt128NodeTraits{});
     std::vector<std::size_t> order;
@@ -620,6 +669,16 @@ inline std::vector<Node> sortForestByGlobalIdPermutationThenDepthStable(
     detail::stableGroupOrderByDepth<2, detail::ProductionIdCountPolicy>(
         order, scratch, computed.values, computed.observedMax);
     return materializeOrder(nodes, order);
+}
+
+inline std::vector<Node> sortForestByGlobalIdPermutationThenDepthStable(
+    const std::vector<Node> &nodes, const std::vector<std::size_t> &parentIndex,
+    const std::vector<std::size_t> *idPermutation) {
+    if (idPermutation != nullptr) {
+        validateIdPermutation(nodes, *idPermutation);
+    }
+    return sortForestByTrustedGlobalIdPermutationThenDepthStable(
+        nodes, parentIndex, idPermutation);
 }
 
 inline std::vector<Node>

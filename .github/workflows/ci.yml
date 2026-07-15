@@ -30,22 +30,22 @@ jobs:
               run: cmake --preset debug
 
             - name: Build (Debug, sanitizers)
-              run: cmake --build --preset debug
+              run: cmake --build --preset build-debug
 
             - name: Lint (clang-tidy)
-              run: cmake --build --preset debug --target tidy
+              run: cmake --build --preset build-debug --target tidy
 
             - name: Test (Debug, sanitizers)
-              run: ctest --preset debug --output-on-failure
+              run: ctest --preset test-debug --output-on-failure
 
             - name: Configure (Release)
               run: cmake --preset release
 
             - name: Build (Release)
-              run: cmake --build --preset release
+              run: cmake --build --preset build-release
 
             - name: Benchmark smoke test (Release)
               run: ./out/build/release/benchmarks/forest-sorting-bench
 
             - name: Test (Release)
-              run: ctest --preset release --output-on-failure
+              run: ctest --preset test-release --output-on-failure

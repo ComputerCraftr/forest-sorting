@@ -14,14 +14,6 @@ inline constexpr std::size_t no_parent =
 // inputs.
 inline constexpr std::size_t initial_range_stack_capacity = 128;
 
-inline std::size_t nextPowerOfTwo(std::size_t value) noexcept {
-    std::size_t capacity = 1;
-    while (capacity < value) {
-        capacity <<= 1;
-    }
-    return capacity;
-}
-
 } // namespace forest_sorting::detail
 
 #endif // FOREST_SORTING_DETAIL_CONSTANTS_HPP

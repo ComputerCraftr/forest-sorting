@@ -11,6 +11,13 @@ namespace forest_sorting::detail {
 
 inline constexpr std::size_t cached_comparison_chunk_bytes = 8;
 
+template <std::size_t ChunkBytes, typename Traits>
+inline constexpr std::size_t idChunkCount = [] {
+    static_assert(ChunkBytes > 0, "ID chunk width must be positive");
+    return (Traits::id_byte_count / ChunkBytes) +
+           ((Traits::id_byte_count % ChunkBytes) != 0 ? 1U : 0U);
+}();
+
 template <typename NodeTraits, typename NodeId>
 concept HasChunkMsbFirst = requires(
     const NodeTraits &traits, const NodeId &nodeId, std::size_t chunkIndex) {
@@ -37,9 +44,9 @@ template <std::size_t SorterChunkBytes>
 using ChunkValueType = ChunkValue<SorterChunkBytes>::Type;
 
 template <std::size_t SorterChunkBytes, typename NodeId, typename NodeTraits>
-ChunkValueType<SorterChunkBytes>
-buildChunkFromBytes(const NodeId &nodeId, std::size_t chunkIndex,
-                    const NodeTraits &traits) noexcept {
+ChunkValueType<SorterChunkBytes> buildChunkFromBytes(const NodeId &nodeId,
+                                                     std::size_t chunkIndex,
+                                                     const NodeTraits &traits) {
     uint64_t value = 0;
     const std::size_t firstByte = chunkIndex * SorterChunkBytes;
     for (std::size_t offset = 0; offset < SorterChunkBytes; ++offset) {
@@ -62,9 +69,9 @@ concept HasTemplatedChunkMsbFirst = requires(
 
 template <std::size_t SorterChunkBytes = cached_comparison_chunk_bytes,
           typename NodeId, typename NodeTraits>
-ChunkValueType<SorterChunkBytes>
-chunkMsbFirst(const NodeId &nodeId, std::size_t chunkIndex,
-              const NodeTraits &traits) noexcept {
+ChunkValueType<SorterChunkBytes> chunkMsbFirst(const NodeId &nodeId,
+                                               std::size_t chunkIndex,
+                                               const NodeTraits &traits) {
     if constexpr (HasTemplatedChunkMsbFirst<NodeTraits, NodeId,
                                             SorterChunkBytes>) {
         return static_cast<ChunkValueType<SorterChunkBytes>>(
@@ -129,8 +136,7 @@ struct CachedChunkIdTraits {
 
 template <typename NodeId, typename NodeTraits, std::size_t ChunkCount>
 void fillCachedChunkId(CachedChunkId<ChunkCount> &cachedId,
-                       const NodeId &nodeId,
-                       const NodeTraits &traits) noexcept {
+                       const NodeId &nodeId, const NodeTraits &traits) {
     for (std::size_t chunkIdx = 0; chunkIdx < ChunkCount; ++chunkIdx) {
         cachedId.chunks[chunkIdx] =
             chunkMsbFirst<cached_comparison_chunk_bytes>(nodeId, chunkIdx,

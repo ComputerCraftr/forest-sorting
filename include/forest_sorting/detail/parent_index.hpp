@@ -55,9 +55,9 @@ RadixParentIndexResult buildParentIndexRadixJoinWithPermutationSorter(
 
     for (std::size_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex) {
         ids.push_back(traits.id(nodes[nodeIndex]));
-        const Id parentId = traits.parent_id(nodes[nodeIndex]);
+        Id parentId = traits.parent_id(nodes[nodeIndex]);
         if (!isParentSentinel(traits, parentId)) {
-            parentIds.push_back(parentId);
+            parentIds.push_back(std::move(parentId));
             childIndexes.push_back(nodeIndex);
         }
     }
@@ -85,18 +85,16 @@ RadixParentIndexResult buildParentIndexRadixJoinWithPermutationSorter(
 
             rejectAdjacentDuplicates(
                 idPermutation,
-                [&](std::size_t lhsIndex, std::size_t rhsIndex) noexcept {
+                [&](std::size_t lhsIndex, std::size_t rhsIndex) {
                     return comparator.leftEqual(lhsIndex, rhsIndex);
                 },
                 "duplicate node id");
 
             std::vector<std::size_t> parentIndex(nodes.size(), no_parent);
-            auto compare = [&](std::size_t idIndex,
-                               std::size_t queryIndex) noexcept {
+            auto compare = [&](std::size_t idIndex, std::size_t queryIndex) {
                 return comparator.compare(idIndex, queryIndex);
             };
-            auto equal = [&](std::size_t idIndex,
-                             std::size_t queryIndex) noexcept {
+            auto equal = [&](std::size_t idIndex, std::size_t queryIndex) {
                 return comparator.crossEqual(idIndex, queryIndex);
             };
             auto setParent = [&](std::size_t queryIndex,

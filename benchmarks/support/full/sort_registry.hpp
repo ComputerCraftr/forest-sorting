@@ -1,10 +1,10 @@
 #ifndef FOREST_SORTING_SUPPORT_SORT_REGISTRY_HPP
 #define FOREST_SORTING_SUPPORT_SORT_REGISTRY_HPP
 
-#include "adaptive_sort_variants.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128_forest.hpp"
+#include "full/adaptive_sort_variants.hpp"
 #include "sort_baselines.hpp"
 
 #include <cstddef>
@@ -29,7 +29,7 @@ enum class SortKind : uint8_t {
     DenseDepth2BucketsThenIdLsd,
     CompositeDepth2IdLsd,
     DenseDepth2BucketsThenIdMsdChunk64FullClear,
-    CompositeDepth2IdByteMsdCopyback,
+    CompositeDepth2IdByteMsdPartitionCore,
     Depth2FirstThenIdMsdChunk32BitmaskLe512NoDense,
     Depth2FirstThenIdMsdChunk32BitmaskLe512,
     GlobalIdPermutationThenDepthStable,
@@ -49,7 +49,6 @@ enum class SortKind : uint8_t {
     Depth2FirstThenIdMsdChunk32BitmaskLe1024,
     Depth2FirstThenIdMsdChunk32BitmaskLe4096,
 
-    // Range Ladder Experiments
     Depth2FirstThenIdRangeLadderChunk8Le1024Chunk16Le16384FullClear,
     Depth2FirstThenIdRangeLadderChunk8Le2048Chunk16Le32768FullClear,
     Depth2FirstThenIdRangeLadderChunk8Le4096Chunk16Le65536FullClear,
@@ -102,46 +101,26 @@ void addBitmaskThresholdEntry(std::vector<SortRegistryEntry> &registry,
     addEntry(registry, Kind, name, func, SortCategory::CounterPolicyExperiment);
 }
 
-template <SortKind FullClearKind, SortKind BitmaskLe512Kind,
-          std::size_t Chunk8Max, std::size_t Chunk16Max>
+template <SortKind FullClearKind, SortKind BitmaskKind, std::size_t Chunk8Max,
+          std::size_t Chunk16Max>
 void addRangeLadderEntries(std::vector<SortRegistryEntry> &registry,
                            std::string_view fullClearName,
-                           std::string_view bitmaskLe512Name) {
-    const auto fcFunc = sortForestByDepth2FirstThenIdRangeLadderWithParent<
-        Chunk8Max, Chunk16Max, detail::FullClearCounts>;
-    const auto bmFunc = sortForestByDepth2FirstThenIdRangeLadderWithParent<
-        Chunk8Max, Chunk16Max,
-        detail::BitmaskTouchedCountsUpTo<
-            detail::production_touched_count_max_range_size>>;
-
-    addEntry(registry, FullClearKind, fullClearName, fcFunc,
+                           std::string_view bitmaskName) {
+    addEntry(registry, FullClearKind, fullClearName,
+             sortForestByDepth2FirstThenIdMsdLadderWithParent<
+                 Chunk8Max, Chunk16Max, detail::FullClearCounts>,
              SortCategory::RangeLadderExperiment);
-    addEntry(registry, BitmaskLe512Kind, bitmaskLe512Name, bmFunc,
+    addEntry(registry, BitmaskKind, bitmaskName,
+             sortForestByDepth2FirstThenIdMsdLadderWithParent<
+                 Chunk8Max, Chunk16Max,
+                 detail::BitmaskTouchedCountsUpTo<
+                     detail::production_touched_count_max_range_size>>,
              SortCategory::RangeLadderExperiment);
 }
 
 inline const std::vector<SortRegistryEntry> &getSortRegistry() {
     static const std::vector<SortRegistryEntry> registry = []() {
         std::vector<SortRegistryEntry> reg;
-
-        // Local X-style macros for repetitive registry rows
-#define FS_ADD_BITMASK_THRESHOLD(Threshold)                                    \
-    addBitmaskThresholdEntry<                                                  \
-        SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe##Threshold, Threshold>( \
-        reg, "depth2-first-then-id-msd-chunk32-bitmask-le" #Threshold)
-
-#define FS_ADD_RANGE_LADDER(Chunk8Max, Chunk16Max)                                                \
-    addRangeLadderEntries<                                                                        \
-        SortKind::                                                                                \
-            Depth2FirstThenIdRangeLadderChunk8Le##Chunk8Max##Chunk16Le##Chunk16Max##FullClear,    \
-        SortKind::                                                                                \
-            Depth2FirstThenIdRangeLadderChunk8Le##Chunk8Max##Chunk16Le##Chunk16Max##BitmaskLe512, \
-        Chunk8Max, Chunk16Max>(                                                                   \
-        reg,                                                                                      \
-        "depth2-first-then-id-range-ladder-chunk8-le" #Chunk8Max                                  \
-        "-chunk16-le" #Chunk16Max "-chunk32-otherwise-full-clear",                                \
-        "depth2-first-then-id-range-ladder-chunk8-le" #Chunk8Max                                  \
-        "-chunk16-le" #Chunk16Max "-chunk32-otherwise-bitmask-le512")
 
         // Support baselines and implementation comparators. These are explicit
         // opt-in rows unless defaultIncludeForKind names them directly.
@@ -159,9 +138,9 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
             "dense-depth2-buckets-then-id-msd-chunk64-full-clear",
             sortForestByDenseDepth2BucketsThenIdMsdChunk64FullClearWithParent,
             SortCategory::Baseline);
-        addEntry(reg, SortKind::CompositeDepth2IdByteMsdCopyback,
-                 "composite-depth2-id-byte-msd-copyback",
-                 sortForestByCompositeDepth2IdByteMsdCopybackWithParent,
+        addEntry(reg, SortKind::CompositeDepth2IdByteMsdPartitionCore,
+                 "composite-depth2-id-byte-msd-partition-core",
+                 sortForestByCompositeDepth2IdByteMsdPartitionCoreWithParent,
                  SortCategory::Baseline);
         // Comparators
         addEntry(
@@ -183,7 +162,7 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
         addOptionalIdPermutationEntry(
             reg, SortKind::GlobalIdPermutationThenDepthStable,
             "global-id-permutation-then-depth-stable",
-            sortForestByGlobalIdPermutationThenDepthStable);
+            sortForestByTrustedGlobalIdPermutationThenDepthStable);
 
         // Chunk32 full-clear comparator
         addEntry(
@@ -234,20 +213,51 @@ inline const std::vector<SortRegistryEntry> &getSortRegistry() {
             sortForestByDepth4FirstThenIdMsdChunk32FullClearTailLinear32WithParent,
             SortCategory::Comparator);
 
-        // Parameterized bitmask thresholds
-        FS_ADD_BITMASK_THRESHOLD(128);
-        FS_ADD_BITMASK_THRESHOLD(256);
-        FS_ADD_BITMASK_THRESHOLD(1024);
-        FS_ADD_BITMASK_THRESHOLD(4096);
-
-        // Parameterized range ladders
-        FS_ADD_RANGE_LADDER(1024, 16384);
-        FS_ADD_RANGE_LADDER(2048, 32768);
-        FS_ADD_RANGE_LADDER(4096, 65536);
-
-        // Undefine local macros before returning
-#undef FS_ADD_RANGE_LADDER
-#undef FS_ADD_BITMASK_THRESHOLD
+        addBitmaskThresholdEntry<
+            SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe128, 128>(
+            reg, "depth2-first-then-id-msd-chunk32-bitmask-le128");
+        addBitmaskThresholdEntry<
+            SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe256, 256>(
+            reg, "depth2-first-then-id-msd-chunk32-bitmask-le256");
+        addBitmaskThresholdEntry<
+            SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe1024, 1024>(
+            reg, "depth2-first-then-id-msd-chunk32-bitmask-le1024");
+        addBitmaskThresholdEntry<
+            SortKind::Depth2FirstThenIdMsdChunk32BitmaskLe4096, 4096>(
+            reg, "depth2-first-then-id-msd-chunk32-bitmask-le4096");
+        addRangeLadderEntries<
+            SortKind::
+                Depth2FirstThenIdRangeLadderChunk8Le1024Chunk16Le16384FullClear,
+            SortKind::
+                Depth2FirstThenIdRangeLadderChunk8Le1024Chunk16Le16384BitmaskLe512,
+            1024, 16384>(
+            reg,
+            "depth2-first-then-id-range-ladder-chunk8-le1024-chunk16-le16384-"
+            "chunk32-otherwise-full-clear",
+            "depth2-first-then-id-range-ladder-chunk8-le1024-chunk16-le16384-"
+            "chunk32-otherwise-bitmask-le512");
+        addRangeLadderEntries<
+            SortKind::
+                Depth2FirstThenIdRangeLadderChunk8Le2048Chunk16Le32768FullClear,
+            SortKind::
+                Depth2FirstThenIdRangeLadderChunk8Le2048Chunk16Le32768BitmaskLe512,
+            2048, 32768>(
+            reg,
+            "depth2-first-then-id-range-ladder-chunk8-le2048-chunk16-le32768-"
+            "chunk32-otherwise-full-clear",
+            "depth2-first-then-id-range-ladder-chunk8-le2048-chunk16-le32768-"
+            "chunk32-otherwise-bitmask-le512");
+        addRangeLadderEntries<
+            SortKind::
+                Depth2FirstThenIdRangeLadderChunk8Le4096Chunk16Le65536FullClear,
+            SortKind::
+                Depth2FirstThenIdRangeLadderChunk8Le4096Chunk16Le65536BitmaskLe512,
+            4096, 65536>(
+            reg,
+            "depth2-first-then-id-range-ladder-chunk8-le4096-chunk16-le65536-"
+            "chunk32-otherwise-full-clear",
+            "depth2-first-then-id-range-ladder-chunk8-le4096-chunk16-le65536-"
+            "chunk32-otherwise-bitmask-le512");
         return reg;
     }();
     return registry;

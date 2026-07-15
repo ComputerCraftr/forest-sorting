@@ -1,8 +1,8 @@
 #ifndef FOREST_SORTING_SUPPORT_FOREST_BENCHMARK_OUTPUT_HPP
 #define FOREST_SORTING_SUPPORT_FOREST_BENCHMARK_OUTPUT_HPP
 
-#include "benchmark_output.hpp"
-#include "benchmark_stats.hpp"
+#include "common/benchmark_output.hpp"
+#include "common/benchmark_stats.hpp"
 
 #include <array>
 #include <cstddef>

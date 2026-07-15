@@ -10,6 +10,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(_forest_compile_commands_sync_script
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SyncCompileCommands.cmake")
+execute_process(
+    COMMAND
+        "${CMAKE_COMMAND}" -DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+        -DBINARY_ROOT=${CMAKE_BINARY_DIR} -P
+        "${_forest_compile_commands_sync_script}" COMMAND_ERROR_IS_FATAL ANY)
+add_custom_target(
+    sync-compile-commands
+    COMMAND
+        "${CMAKE_COMMAND}" -DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+        -DBINARY_ROOT=${CMAKE_BINARY_DIR} -P
+        "${_forest_compile_commands_sync_script}"
+    COMMENT "Pointing compile_commands.json at the active build tree"
+    VERBATIM)
+
 find_program(
     FOREST_CLANG_TIDY
     NAMES clang-tidy
@@ -18,6 +34,7 @@ find_program(
 
 # Common compiler options
 function(forest_sorting_apply_common_options target)
+    add_dependencies(${target} sync-compile-commands)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive-)
         return()
@@ -83,17 +100,19 @@ if(FOREST_CLANG_TIDY)
          "${CMAKE_CURRENT_SOURCE_DIR}/include/forest_sorting/*.hpp")
     file(GLOB_RECURSE _forest_tidy_support_headers CONFIGURE_DEPENDS
          "${CMAKE_CURRENT_SOURCE_DIR}/tests/support/*.hpp")
+    file(GLOB_RECURSE _forest_tidy_benchmark_headers CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/support/*.hpp")
+    file(
+        GLOB_RECURSE
+        _forest_tidy_sources
+        CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/*.cpp")
 
     set(_forest_tidy_files
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/forest_tests.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_support_tests.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/generic_api_tests.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/portable_include_tests.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/forest_bench.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tail_microbench.cpp"
-        ${_forest_tidy_headers}
-        ${_forest_tidy_support_headers})
+        ${_forest_tidy_sources} ${_forest_tidy_headers}
+        ${_forest_tidy_support_headers} ${_forest_tidy_benchmark_headers})
     set(_forest_tidy_extra_args)
     if(APPLE)
         if(CMAKE_OSX_SYSROOT)
@@ -126,3 +145,4 @@ else()
         COMMAND "${CMAKE_COMMAND}" -E false
         VERBATIM)
 endif()
+add_dependencies(tidy sync-compile-commands)

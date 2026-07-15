@@ -8,6 +8,7 @@
 #include "forest_sorting/detail/radix_counts.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -27,28 +28,6 @@ inline constexpr std::size_t production_id_radix_chunk_bytes = 4;
 inline constexpr std::size_t production_touched_count_max_range_size = 512;
 using ProductionIdCountPolicy =
     BitmaskTouchedCountsUpTo<production_touched_count_max_range_size>;
-
-enum class AdaptiveRadixChunkWidth : uint8_t {
-    Chunk8 = 1,
-    Chunk16 = 2,
-    Chunk32 = 4,
-};
-
-template <std::size_t Chunk8MaxRangeSize, std::size_t Chunk16MaxRangeSize>
-struct RangeLadder {
-    static_assert(Chunk8MaxRangeSize < Chunk16MaxRangeSize);
-
-    static constexpr AdaptiveRadixChunkWidth
-    chunkWidthForRange(std::size_t rangeSize) noexcept {
-        if (rangeSize <= Chunk8MaxRangeSize) {
-            return AdaptiveRadixChunkWidth::Chunk8;
-        }
-        if (rangeSize <= Chunk16MaxRangeSize) {
-            return AdaptiveRadixChunkWidth::Chunk16;
-        }
-        return AdaptiveRadixChunkWidth::Chunk32;
-    }
-};
 
 struct IdMsdChunkRange {
     std::size_t begin;
@@ -214,18 +193,14 @@ struct IdMsdChunkSortWorkspace {
         if (rangeSize <= capacity) {
             return;
         }
-        current = std::unique_ptr<IdMsdChunkEntry<RadixChunkBytes>[]>(
-            new IdMsdChunkEntry<RadixChunkBytes>[rangeSize]);
-        next = std::unique_ptr<IdMsdChunkEntry<RadixChunkBytes>[]>(
-            new IdMsdChunkEntry<RadixChunkBytes>[rangeSize]);
+        auto newCurrent =
+            std::make_unique<IdMsdChunkEntry<RadixChunkBytes>[]>(rangeSize);
+        auto newNext =
+            std::make_unique<IdMsdChunkEntry<RadixChunkBytes>[]>(rangeSize);
+        current = std::move(newCurrent);
+        next = std::move(newNext);
         capacity = rangeSize;
     }
-};
-
-template <typename CountPolicy> struct IdMsdChunkLadderSortWorkspace {
-    IdMsdChunkSortWorkspace<1, CountPolicy> chunk8;
-    IdMsdChunkSortWorkspace<2, CountPolicy> chunk16;
-    IdMsdChunkSortWorkspace<4, CountPolicy> chunk32;
 };
 
 template <std::size_t RadixChunkBytes, typename CountPolicy,
@@ -338,6 +313,8 @@ void sortIndexRangeByIdMsdChunksWithSmallSorter(
     std::size_t chunkIndex,
     IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> &workspace,
     SmallRangeSorter smallRangeSorter) {
+    assert(rangeBegin <= rangeEnd);
+    assert(rangeEnd <= order.size());
     const std::size_t initialRangeSize = rangeEnd - rangeBegin;
     if (initialRangeSize <= 1) {
         return;
@@ -351,8 +328,8 @@ void sortIndexRangeByIdMsdChunksWithSmallSorter(
     workspace.pending.clear();
     workspace.pending.push_back(
         IdMsdChunkRange{rangeBegin, rangeEnd, chunkIndex});
-    constexpr std::size_t chunkCount =
-        (IdTraits::id_byte_count + RadixChunkBytes - 1) / RadixChunkBytes;
+    constexpr std::size_t chunkCount = idChunkCount<RadixChunkBytes, IdTraits>;
+    assert(chunkIndex <= chunkCount);
 
     while (!workspace.pending.empty()) {
         const IdMsdChunkRange currentRange = workspace.pending.back();
@@ -379,57 +356,6 @@ void sortIndexRangeByIdMsdChunksWithSmallSorter(
         processIdMsdChunkRange<RadixChunkBytes, CountPolicy, SmallThreshold>(
             order, idForIndex, traits, currentBegin, currentEnd, workspace,
             chunkExtractor, hasNextRange, pushNextRange, smallRangeSorter);
-    }
-}
-
-template <std::size_t RadixChunkBytes, typename CountPolicy = FullClearCounts,
-          std::size_t SmallThreshold = small_id_range_sort_threshold,
-          typename Nodes, typename IdTraits, typename SmallRangeSorter>
-void sortRangeByIdMsdChunksWithSmallSorter(
-    std::vector<std::size_t> &order, const Nodes &nodes, const IdTraits &traits,
-    std::size_t rangeBegin, std::size_t rangeEnd, std::size_t chunkIndex,
-    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> &workspace,
-    SmallRangeSorter smallRangeSorter) {
-    auto idForIndex = [&](std::size_t itemIndex) {
-        return traits.id(nodes[itemIndex]);
-    };
-    auto adaptedSmallRangeSorter = [&](std::vector<std::size_t> &sortOrder,
-                                       auto, const IdTraits &sortTraits,
-                                       std::size_t sortBegin,
-                                       std::size_t sortEnd) {
-        smallRangeSorter(sortOrder, nodes, sortTraits, sortBegin, sortEnd);
-    };
-    sortIndexRangeByIdMsdChunksWithSmallSorter<RadixChunkBytes, CountPolicy,
-                                               SmallThreshold>(
-        order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex, workspace,
-        adaptedSmallRangeSorter);
-}
-
-template <typename LadderPolicy, typename CountPolicy, typename IdForIndex,
-          typename IdTraits>
-void sortIndexRangeByIdMsdChunkLadder(
-    std::vector<std::size_t> &order, IdForIndex idForIndex,
-    const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
-    IdMsdChunkLadderSortWorkspace<CountPolicy> &workspace) {
-    // Select once for the submitted range, then run the exact fixed-width
-    // kernel. Re-selecting for recursive prefix children can create unaligned
-    // chunk windows and makes the ladder incomparable with standalone rows.
-    switch (LadderPolicy::chunkWidthForRange(rangeEnd - rangeBegin)) {
-    case AdaptiveRadixChunkWidth::Chunk8:
-        sortIndexRangeByIdMsdChunks<1, CountPolicy>(order, idForIndex, traits,
-                                                    rangeBegin, rangeEnd, 0,
-                                                    workspace.chunk8);
-        break;
-    case AdaptiveRadixChunkWidth::Chunk16:
-        sortIndexRangeByIdMsdChunks<2, CountPolicy>(order, idForIndex, traits,
-                                                    rangeBegin, rangeEnd, 0,
-                                                    workspace.chunk16);
-        break;
-    case AdaptiveRadixChunkWidth::Chunk32:
-        sortIndexRangeByIdMsdChunks<4, CountPolicy>(order, idForIndex, traits,
-                                                    rangeBegin, rangeEnd, 0,
-                                                    workspace.chunk32);
-        break;
     }
 }
 
