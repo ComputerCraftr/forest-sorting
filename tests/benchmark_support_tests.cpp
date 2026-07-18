@@ -145,6 +145,32 @@ void test_benchmark_paired_relative_delta() {
                 "paired relative delta CI high was wrong");
 }
 
+void test_benchmark_relative_delta_rejects_zero_baselines() {
+    constexpr std::string_view kExpectedMessage =
+        "cannot compute relative benchmark delta from a zero baseline sample";
+    auto requireRejected = [kExpectedMessage](auto compute,
+                                              std::string_view message) {
+        bool rejected = false;
+        try {
+            compute();
+        } catch (const std::runtime_error &error) {
+            rejected = error.what() == kExpectedMessage;
+        }
+        require(rejected, message);
+    };
+
+    requireRejected([] { (void)pairedRelativeDeltas({1.0}, {0.0}); },
+                    "paired relative delta accepted a positive zero baseline");
+    requireRejected([] { (void)pairedRelativeDeltas({1.0}, {-0.0}); },
+                    "paired relative delta accepted a negative zero baseline");
+    requireRejected(
+        [] {
+            (void)bootstrapPairedRelativeDeltaCi95(
+                {8.0, 16.0, 24.0, 32.0}, {10.0, 20.0, 0.0, 40.0}, 456U, 1U);
+        },
+        "bootstrap relative delta did not prevalidate every baseline");
+}
+
 void test_benchmark_pipeline_samples_preserve_pairing() {
     const std::vector<double> parentSamples = {2.0, 4.0, 6.0};
     const std::vector<double> sortSamples = {1.0, 2.0, 3.0};
@@ -587,6 +613,8 @@ void runBenchmarkSupportTests() {
             test_benchmark_bootstrap_ci_is_deterministic);
     runTest("benchmark paired relative delta",
             test_benchmark_paired_relative_delta);
+    runTest("benchmark relative delta rejects zero baselines",
+            test_benchmark_relative_delta_rejects_zero_baselines);
     runTest("benchmark pipeline samples preserve pairing",
             test_benchmark_pipeline_samples_preserve_pairing);
     runTest("shared benchmark stat schema", test_shared_benchmark_stat_schema);

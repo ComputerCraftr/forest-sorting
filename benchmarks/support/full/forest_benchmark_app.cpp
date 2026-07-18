@@ -573,21 +573,20 @@ std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
 void printBenchmarkHeader() {
     std::cout << std::left << std::setw(kDatasetColumnWidth) << "dataset"
               << std::right << "  " << std::setw(kCountColumnWidth)
-              << "node_count"
-              << "  " << std::setw(kNameColumnWidth) << "data_seed"
-              << "  " << std::setw(kNameColumnWidth) << "parent_builder"
-              << "  " << std::setw(kNameColumnWidth) << "sort_algorithm"
-              << "  " << std::setw(kTimingColumnWidth) << "parent_med_ms"
-              << "  " << std::setw(kTimingColumnWidth) << "sort_med_ms"
-              << "  " << std::setw(kTimingColumnWidth) << "pipeline_med_ms"
-              << "  " << std::setw(kTimingColumnWidth) << "verify_med_ms"
-              << "  " << std::setw(kDeltaColumnWidth) << "sort_delta_%"
-              << "  " << std::setw(kDeltaColumnWidth) << "parent_delta_%"
-              << "  " << std::setw(kDeltaColumnWidth) << "pipeline_delta_%"
-              << "  " << std::setw(kWinnerColumnWidth) << "sort_win"
-              << "  " << std::setw(kWinnerColumnWidth) << "parent_win"
-              << "  " << std::setw(kWinnerColumnWidth) << "pipeline_win"
-              << "  status\n";
+              << "node_count" << "  " << std::setw(kNameColumnWidth)
+              << "data_seed" << "  " << std::setw(kNameColumnWidth)
+              << "parent_builder" << "  " << std::setw(kNameColumnWidth)
+              << "sort_algorithm" << "  " << std::setw(kTimingColumnWidth)
+              << "parent_med_ms" << "  " << std::setw(kTimingColumnWidth)
+              << "sort_med_ms" << "  " << std::setw(kTimingColumnWidth)
+              << "pipeline_med_ms" << "  " << std::setw(kTimingColumnWidth)
+              << "verify_med_ms" << "  " << std::setw(kDeltaColumnWidth)
+              << "sort_delta_%" << "  " << std::setw(kDeltaColumnWidth)
+              << "parent_delta_%" << "  " << std::setw(kDeltaColumnWidth)
+              << "pipeline_delta_%" << "  " << std::setw(kWinnerColumnWidth)
+              << "sort_win" << "  " << std::setw(kWinnerColumnWidth)
+              << "parent_win" << "  " << std::setw(kWinnerColumnWidth)
+              << "pipeline_win" << "  status\n";
 }
 
 void printTiming(double milliseconds) {

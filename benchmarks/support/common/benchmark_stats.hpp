@@ -217,12 +217,12 @@ pairedRelativeDeltas(const std::vector<double> &samples,
     deltas.reserve(pairCount);
     for (std::size_t sampleIdx = 0; sampleIdx < pairCount; ++sampleIdx) {
         const double baseline = baselineSamples[sampleIdx];
-        if (baseline == 0.0) {
-            deltas.push_back(0.0);
-        } else {
-            deltas.push_back(((samples[sampleIdx] - baseline) / baseline) *
-                             100.0);
+        if (std::fpclassify(baseline) == FP_ZERO) {
+            throw std::runtime_error(
+                "cannot compute relative benchmark delta from a zero baseline "
+                "sample");
         }
+        deltas.push_back(((samples[sampleIdx] - baseline) / baseline) * 100.0);
     }
     return deltas;
 }
@@ -232,14 +232,11 @@ bootstrapPairedRelativeDeltaCi95(const std::vector<double> &samples,
                                  const std::vector<double> &baselineSamples,
                                  uint32_t seed = kBootstrapSeed,
                                  std::size_t resamples = kBootstrapResamples) {
-    const std::size_t pairCount =
-        std::min(samples.size(), baselineSamples.size());
-    if (pairCount == 0U) {
-        throw std::runtime_error("cannot compare empty benchmark samples");
-    }
+    const std::vector<double> deltas =
+        pairedRelativeDeltas(samples, baselineSamples);
+    const std::size_t pairCount = deltas.size();
 
     if (pairCount == 1U || resamples == 0U) {
-        const auto deltas = pairedRelativeDeltas(samples, baselineSamples);
         return {deltas.front(), deltas.front()};
     }
 
@@ -252,10 +249,7 @@ bootstrapPairedRelativeDeltaCi95(const std::vector<double> &samples,
         double total = 0.0;
         for (std::size_t sampleIdx = 0; sampleIdx < pairCount; ++sampleIdx) {
             const std::size_t selectedIdx = distribution(engine);
-            const double baseline = baselineSamples[selectedIdx];
-            if (baseline != 0.0) {
-                total += ((samples[selectedIdx] - baseline) / baseline) * 100.0;
-            }
+            total += deltas[selectedIdx];
         }
         resampledDeltas.push_back(total / static_cast<double>(pairCount));
     }

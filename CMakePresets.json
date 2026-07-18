@@ -21,16 +21,26 @@
         {
             "name": "debug",
             "displayName": "Debug",
-            "description": "Debug build using default compilers on macOS/Linux",
+            "description": "Debug Clang build with ASan and UBSan",
             "inherits": "base"
         },
         {
             "name": "release",
             "displayName": "Release",
-            "description": "Optimized build using default compilers on macOS/Linux",
+            "description": "Optimized Clang build",
             "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "gcc-warnings",
+            "displayName": "GCC Warnings",
+            "description": "GCC build with warnings treated as errors",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_COMPILER": "g++"
             }
         }
     ],
@@ -42,6 +52,10 @@
         {
             "name": "build-release",
             "configurePreset": "release"
+        },
+        {
+            "name": "build-gcc-warnings",
+            "configurePreset": "gcc-warnings"
         }
     ],
     "testPresets": [
@@ -52,6 +66,10 @@
         {
             "name": "test-release",
             "configurePreset": "release"
+        },
+        {
+            "name": "test-gcc-warnings",
+            "configurePreset": "gcc-warnings"
         }
     ]
 }

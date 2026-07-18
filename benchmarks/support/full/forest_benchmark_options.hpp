@@ -271,7 +271,8 @@ void printHelp() {
         std::cout << entry.name;
         first = false;
     }
-    std::cout << "|default\n" << "  --sort ";
+    std::cout << "|default\n"
+              << "  --sort ";
     first = true;
     for (std::size_t entryIdx = 0; entryIdx < getSortRegistry().size();
          ++entryIdx) {

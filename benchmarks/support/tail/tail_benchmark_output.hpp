@@ -243,15 +243,12 @@ inline void printMicroTable(std::ostream &output,
                             const std::vector<MicroOutputRow> &rows) {
     output << std::left << std::setw(24) << "workload" << "  " << std::setw(18)
            << "pattern" << std::right << "  " << std::setw(8) << "source"
-           << "  " << std::setw(6) << "size"
-           << "  " << std::setw(7) << "tails" << "  " << std::left
-           << std::setw(22) << "algorithm"
-           << "  " << std::right << std::setw(12) << "median_ns"
-           << "  " << std::setw(22) << "timing_ci95_ns"
-           << "  " << std::setw(12) << "delta_%"
-           << "  " << std::setw(22) << "delta_ci95_%"
-           << "  " << std::left << std::setw(12) << "winner"
-           << "  status\n";
+           << "  " << std::setw(6) << "size" << "  " << std::setw(7) << "tails"
+           << "  " << std::left << std::setw(22) << "algorithm" << "  "
+           << std::right << std::setw(12) << "median_ns" << "  "
+           << std::setw(22) << "timing_ci95_ns" << "  " << std::setw(12)
+           << "delta_%" << "  " << std::setw(22) << "delta_ci95_%" << "  "
+           << std::left << std::setw(12) << "winner" << "  status\n";
 
     for (const MicroOutputRow &row : rows) {
         const std::string source =
@@ -285,11 +282,10 @@ inline void printMicroTable(std::ostream &output,
                    << deltaCi << "  " << std::left << std::setw(12)
                    << row.winner.value_or("n/a");
         } else {
-            output << "  " << std::setw(12) << "n/a"
-                   << "  " << std::setw(22) << "n/a"
-                   << "  " << std::setw(12) << "n/a"
-                   << "  " << std::setw(22) << "n/a"
-                   << "  " << std::left << std::setw(12) << "n/a";
+            output << "  " << std::setw(12) << "n/a" << "  " << std::setw(22)
+                   << "n/a" << "  " << std::setw(12) << "n/a" << "  "
+                   << std::setw(22) << "n/a" << "  " << std::left
+                   << std::setw(12) << "n/a";
         }
         output << "  " << row.status << '\n';
     }

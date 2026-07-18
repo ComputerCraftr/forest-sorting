@@ -424,6 +424,10 @@ void stableSortRangeSmallBranchlessBitwiseWithScratch(
     auto &nodeIndices = scratch.nodeIndices;
     auto &bits = scratch.bits;
     auto &idBytes = scratch.idBytes;
+    if (rangeSize > bits.size()) {
+        throw std::runtime_error(
+            "small sorter range exceeds fixed scratch capacity");
+    }
 
     const std::size_t totalBits = IdTraits::id_byte_count * 8;
     for (std::size_t i = 0; i < rangeSize; ++i) {
@@ -496,7 +500,10 @@ void stableSortRangeSmallBranchlessBitwiseWithScratch(
         const std::size_t bitOffset = 7 - (splitBitIndex % 8);
         std::size_t zeroCount = 0;
 
-        for (std::size_t i = 0; i < currentSize; ++i) {
+        for (std::size_t i = 0; i < bits.size(); ++i) {
+            if (i == currentSize) {
+                break;
+            }
             const std::size_t ordinal = localOrder[current.begin + i];
             const uint8_t byteVal = idBytes[ordinal][byteIdx];
             const std::size_t bit =
@@ -509,7 +516,10 @@ void stableSortRangeSmallBranchlessBitwiseWithScratch(
 
         std::size_t zeroWrite = 0;
         std::size_t oneWrite = zeroCount;
-        for (std::size_t i = 0; i < currentSize; ++i) {
+        for (std::size_t i = 0; i < bits.size(); ++i) {
+            if (i == currentSize) {
+                break;
+            }
             const std::size_t ordinal = localOrder[current.begin + i];
             const std::size_t bit = bits[i];
 
@@ -550,7 +560,6 @@ void stableSortRangeSmallBranchlessBitwise(std::vector<std::size_t> &order,
     if (rangeSize <= 1) {
         return;
     }
-    detail::requireFixedSmallSortCapacity<MaxRangeSize>(rangeSize);
 
     using CachedIdBytes = std::array<uint8_t, IdTraits::id_byte_count>;
     using Scratch =

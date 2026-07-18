@@ -5,18 +5,41 @@ on:
     pull_request:
 
 jobs:
+    format:
+        runs-on: ubuntu-26.04
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Install formatters
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y clang-format-22 pipx
+
+            - name: Check C++ formatting
+              run: |
+                  git ls-files -z '*.cpp' '*.cc' '*.cxx' '*.hpp' '*.hh' '*.h' \
+                    | xargs -0 clang-format-22 --dry-run --Werror
+
+            - name: Check CMake formatting
+              run: |
+                  git ls-files -z ':(glob)**/CMakeLists.txt' '*.cmake' \
+                    | xargs -0 pipx run --spec cmakelang==0.6.13 cmake-format --check
+
     build-and-test:
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
-                os: [ubuntu-latest, macos-latest]
+                os: [ubuntu-26.04, macos-latest]
         steps:
             - name: Checkout
               uses: actions/checkout@v6
 
             - name: Install clang-tidy (Ubuntu)
               if: runner.os == 'Linux'
-              run: sudo apt-get update && sudo apt-get install -y clang clang-tidy ninja-build
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y clang-22 clang-tidy-22 clang-tools-22 ninja-build
 
             - name: Install LLVM, Ninja, and configure path (macOS)
               if: runner.os == 'macOS'
@@ -27,7 +50,15 @@ jobs:
                   echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
 
             - name: Configure (Debug, sanitizers)
-              run: cmake --preset debug
+              run: |
+                  if [[ "$RUNNER_OS" == "Linux" ]]; then
+                    cmake --preset debug \
+                      -DCMAKE_CXX_COMPILER=clang++-22 \
+                      -DFOREST_CLANG_TIDY="$(command -v clang-tidy-22)" \
+                      -DFOREST_RUN_CLANG_TIDY="$(command -v run-clang-tidy-22)"
+                  else
+                    cmake --preset debug
+                  fi
 
             - name: Build (Debug, sanitizers)
               run: cmake --build --preset build-debug
@@ -39,7 +70,12 @@ jobs:
               run: ctest --preset test-debug --output-on-failure
 
             - name: Configure (Release)
-              run: cmake --preset release
+              run: |
+                  if [[ "$RUNNER_OS" == "Linux" ]]; then
+                    cmake --preset release -DCMAKE_CXX_COMPILER=clang++-22
+                  else
+                    cmake --preset release
+                  fi
 
             - name: Build (Release)
               run: cmake --build --preset build-release
@@ -49,3 +85,21 @@ jobs:
 
             - name: Test (Release)
               run: ctest --preset test-release --output-on-failure
+
+    gcc-warnings:
+        runs-on: ubuntu-24.04
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Install Ninja
+              run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+            - name: Configure (GCC warnings)
+              run: cmake --preset gcc-warnings
+
+            - name: Build (GCC warnings as errors)
+              run: cmake --build --preset build-gcc-warnings
+
+            - name: Test (GCC)
+              run: ctest --preset test-gcc-warnings --output-on-failure

@@ -81,13 +81,29 @@ optional headers on compilers that support `__SIZEOF_INT128__`:
 
 ## Building
 
-This repository uses CMake presets, the Ninja generator, and a C++20 `clang++`
-available on `PATH`.
+Repository build policy:
+
+- CMake presets use Ninja and C++20 `clang++`.
+- Top-level builds reject non-Ninja generators.
+- Clang and GCC warnings are treated as errors.
+- The `gcc-warnings` preset provides additional GCC diagnostic coverage.
 
 ```bash
 cmake --preset release            # generate Release Ninja files into out/build/release
 cmake --build --preset build-release # compile optimized binaries
 ./out/build/release/src/forest-sorting
+```
+
+If an existing build directory was configured with another generator or
+compiler, recreate its CMake state with `cmake --fresh --preset release` (or
+`debug`).
+
+Run the opt-in GCC warning build with:
+
+```bash
+cmake --preset gcc-warnings
+cmake --build --preset build-gcc-warnings
+ctest --preset test-gcc-warnings --output-on-failure
 ```
 
 On macOS with Homebrew LLVM, put LLVM first on `PATH` before configuring:
@@ -122,23 +138,42 @@ oracles remain under `tests/support`.
 
 ## Linting
 
-CMake always defines a `tidy` target. It auto-detects `clang-tidy` from `PATH`
-and common Homebrew LLVM locations; if none is found, the target fails with a
-message explaining how to set `FOREST_CLANG_TIDY`.
+CMake always defines a `tidy` target:
+
+- It runs `run-clang-tidy` with 32 parallel jobs.
+- It checks compile-database sources and diagnostics from project headers.
+- It atomically publishes the complete output to
+  `out/build/<preset>/clang-tidy.log`.
+- It fails on either a nonzero runner status or logged warnings and errors.
+- It treats tidy diagnostics as errors through `.clang-tidy`.
+- It fails clearly when `clang-tidy` or `run-clang-tidy` is unavailable.
 
 ```bash
 cmake --preset debug
 cmake --build --preset build-debug --target tidy
 ```
 
-The tidy target runs against the shipped headers, test support headers, tests,
-benchmarks, and executable sources using the generated `compile_commands.json`.
-On macOS it also passes the active SDK sysroot to `clang-tidy`. To use a
-specific binary, configure with:
+The target uses the active build's `compile_commands.json`; on macOS it also
+passes the active SDK sysroot. To select specific binaries, configure with:
 
 ```bash
-cmake --preset debug -DFOREST_CLANG_TIDY=/path/to/clang-tidy
+cmake --preset debug \
+  -DFOREST_CLANG_TIDY=/path/to/clang-tidy \
+  -DFOREST_RUN_CLANG_TIDY=/path/to/run-clang-tidy
 ```
+
+Formatting uses LLVM `clang-format` 22 for C++ and pipx `cmake-format` for
+CMake:
+
+```bash
+git ls-files -z '*.cpp' '*.cc' '*.cxx' '*.hpp' '*.hh' '*.h' |
+  xargs -0 clang-format-22 --dry-run --Werror
+git ls-files -z ':(glob)**/CMakeLists.txt' '*.cmake' |
+  xargs -0 pipx run --spec cmakelang==0.6.13 cmake-format --check
+```
+
+Linux Clang CI runs on Ubuntu 26.04 with LLVM 22 selected explicitly. The
+separate GCC warning build remains pinned to Ubuntu 24.04.
 
 ## Benchmarks
 
@@ -353,10 +388,11 @@ GitHub Actions runs on Ubuntu and macOS with the same presets:
 
 - Debug configure/build with ASan/UBSan
 - Debug tests
-- `clang-tidy`
+- parallel `clang-tidy`
 - Release configure/build
 - Release tests
 - benchmark CLI smoke tests with tiny iteration counts
+- an additional Ubuntu GCC build and test run with warnings as errors
 
 CI smoke tests verify parsing, registry wiring, and output formats. They do not
 run performance benchmark matrices.

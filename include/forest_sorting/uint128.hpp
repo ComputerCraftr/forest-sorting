@@ -15,7 +15,7 @@
 
 namespace forest_sorting {
 
-using UInt128 = unsigned __int128;
+__extension__ using UInt128 = unsigned __int128;
 
 inline UInt128 makeId(uint64_t high, uint64_t low) noexcept {
     return (static_cast<UInt128>(high) << 64) | static_cast<UInt128>(low);
