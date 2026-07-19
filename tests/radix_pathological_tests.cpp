@@ -1,12 +1,14 @@
+#include "forest_sorting/benchmark_support/common/uint128_fixtures.hpp"
+#include "forest_sorting/benchmark_support/full/parent_registry.hpp"
+#include "forest_sorting/benchmark_support/full/sort_baselines.hpp"
+#include "forest_sorting/benchmark_support/full/sort_registry.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/radix.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
-#include "full/parent_registry.hpp"
-#include "full/sort_registry.hpp"
-#include "sort_baselines.hpp"
 #include "test_harness.hpp"
-#include "uint128_fixtures.hpp"
+#include "test_suites.hpp"
+#include "uint128_test_fixtures.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -16,10 +18,13 @@
 #include <string_view>
 #include <vector>
 
+namespace {
+
 using forest_sorting::Node;
 using forest_sorting::UInt128;
 using forest_sorting::UInt128NodeTraits;
 using namespace forest_sorting::test_support;
+using namespace forest_sorting::benchmark_support;
 
 std::vector<Node> rootNodesFromIds(const std::vector<UInt128> &ids) {
     std::vector<Node> nodes;
@@ -37,7 +42,7 @@ void requireRegisteredSortsMatchComparison(const std::vector<Node> &inputNodes,
     const auto expected =
         sortForestByComparisonWithParent(inputNodes, artifacts.parentIndex);
 
-    for (const SortRegistryEntry &entry : getSortRegistry()) {
+    for (const SortRegistryEntry &entry : sortRegistry()) {
         const auto sorted =
             sortForestForKind(entry.kind, inputNodes, artifacts.parentIndex,
                               &artifacts.idPermutation);
@@ -179,7 +184,7 @@ void test_production_radix_parent_rejects_duplicate_ids() {
     require(rejected, "production radix parent path accepted duplicate IDs");
 }
 
-void runRadixPathologicalTests() {
+void runRadixPathologicalTestsImpl() {
     runTest("radix MSD materializes output at max digit",
             test_radix_msd_partition_materializes_scratch_at_max_digit);
     runTest("registered sorts handle recursive small ranges",
@@ -193,3 +198,7 @@ void runRadixPathologicalTests() {
     runTest("production radix parent rejects duplicate IDs",
             test_production_radix_parent_rejects_duplicate_ids);
 }
+
+} // namespace
+
+void runRadixPathologicalTests() { runRadixPathologicalTestsImpl(); }

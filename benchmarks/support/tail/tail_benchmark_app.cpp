@@ -1,29 +1,26 @@
-#include "tail/tail_benchmark_app.hpp"
-#include "common/benchmark_cli.hpp"
-#include "common/benchmark_output.hpp"
-#include "common/benchmark_stats.hpp"
-#include "full/adaptive_sort_variants.hpp"
-#include "tail/tail_benchmark_output.hpp"
-#include "tail/tail_corpus.hpp"
-#include "tail/tail_sort_variants.hpp"
+#include "forest_sorting/benchmark_support/tail/tail_benchmark_app.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_cli.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_execution.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_output.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_stats.hpp"
+#include "forest_sorting/benchmark_support/common/dataset.hpp"
+#include "forest_sorting/benchmark_support/tail/tail_benchmark_output.hpp"
+#include "forest_sorting/benchmark_support/tail/tail_corpus.hpp"
+#include "forest_sorting/benchmark_support/tail/tail_execution.hpp"
+#include "forest_sorting/benchmark_support/tail/tail_sort_variants.hpp"
 
 #include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
-#include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
-#include "uint128_fixtures.hpp"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <functional>
 #include <iostream>
 #include <numeric>
 #include <optional>
-#include <random>
 #include <ratio>
 #include <stdexcept>
 #include <string>
@@ -31,92 +28,34 @@
 #include <utility>
 #include <vector>
 
-using forest_sorting::makeId;
-using forest_sorting::Node;
-using forest_sorting::UInt128;
-using forest_sorting::UInt128NodeTraits;
-using namespace forest_sorting::test_support;
+namespace forest_sorting::benchmark_support {
+
 namespace detail = forest_sorting::detail;
 
-enum class Workload : uint8_t {
-    Synthetic,
-    CapturedNodeIds,
-    CapturedParentQueries,
-};
-
-enum class Pattern : uint8_t {
-    AlreadySorted,
-    ReverseSorted,
-    Random,
-    NearlySorted,
-    SameHigh32,
-    SameHigh64,
-    LongCommonPrefix,
-    FirstByteDiffers,
-    LastByteDiffers,
-};
-
-inline std::string_view patternName(Pattern pattern) {
-    switch (pattern) {
-    case Pattern::AlreadySorted:
-        return "already sorted";
-    case Pattern::ReverseSorted:
-        return "reverse sorted";
-    case Pattern::Random:
-        return "random";
-    case Pattern::NearlySorted:
-        return "nearly sorted";
-    case Pattern::SameHigh32:
-        return "same-high32";
-    case Pattern::SameHigh64:
-        return "same-high64";
-    case Pattern::LongCommonPrefix:
-        return "long common prefix";
-    case Pattern::FirstByteDiffers:
-        return "first-byte differs";
-    case Pattern::LastByteDiffers:
-        return "last-byte differs";
-    }
-    return "unknown";
-}
-
-inline constexpr std::array kAllPatterns = {
-    Pattern::AlreadySorted,    Pattern::ReverseSorted,
-    Pattern::Random,           Pattern::NearlySorted,
-    Pattern::SameHigh32,       Pattern::SameHigh64,
-    Pattern::LongCommonPrefix, Pattern::FirstByteDiffers,
-    Pattern::LastByteDiffers,
-};
-
-inline constexpr std::array kCapturedDatasets = {
-    DatasetKind::Random,
-    DatasetKind::SameHigh32,
-    DatasetKind::SameHigh64,
-    DatasetKind::Outliers,
-};
+namespace {
 
 struct Options {
     OutputFormat format = OutputFormat::Table;
-    std::vector<std::size_t> sizes = {4, 8, 16, 24, 32};
+    std::vector<std::size_t> tailSizes = {4, 8, 16, 24, 32};
     std::vector<Pattern> patterns =
         std::vector<Pattern>(kAllPatterns.begin(), kAllPatterns.end());
     std::vector<Workload> workloads = {Workload::Synthetic};
     std::vector<DatasetKind> datasets = std::vector<DatasetKind>(
         kCapturedDatasets.begin(), kCapturedDatasets.end());
-    std::vector<std::string> sorts = {"linear",
-                                      "binary",
-                                      "exponential",
-                                      "branchless-bitwise",
-                                      "shell-gap-10-4-1",
-                                      "shell-gap-3-2-1",
-                                      "shell-gap-16-7-3-1"};
+    std::vector<std::string> algorithms = {"linear",
+                                           "binary",
+                                           "exponential",
+                                           "branchless-bitwise",
+                                           "shell-gap-10-4-1",
+                                           "shell-gap-3-2-1",
+                                           "shell-gap-16-7-3-1"};
     int iterations = 100;
     int warmup = 10;
-    std::size_t numRanges = 1000;
+    std::size_t tailCountLimit = 1000;
     std::size_t sourceSize = 100000;
     uint32_t dataSeed = kDefaultBenchmarkDataSeed;
     uint32_t orderSeed = 0x5eedU;
-    std::string baselineSort = "linear";
+    std::string baselineAlgorithm = "linear";
     bool shuffle = false;
     bool help = false;
 };
@@ -125,139 +64,49 @@ struct MicroResult {
     std::string workload;
     std::string pattern;
     std::optional<std::size_t> sourceSize;
-    std::optional<std::size_t> rangeSize;
+    std::optional<std::size_t> tailSize;
     std::size_t minTailSize = 0;
     std::size_t maxTailSize = 0;
-    std::size_t rangeCount = 0;
+    std::size_t tailCount = 0;
     std::string algorithm;
     std::vector<double> samples;
     SampleStats stats;
     double deltaMedianPct = 0.0;
     ConfidenceInterval deltaPctCi95;
+    bool hasDelta = false;
     std::string winner = "none";
     std::string status = "ok";
 };
 
-using TailSortFunction =
-    std::function<void(std::vector<std::size_t> &, const std::vector<Node> &,
-                       const UInt128NodeTraits &, std::size_t, std::size_t)>;
+using MeasureFunction = double (*)(const TailCorpus &);
+using VerifyFunction = void (*)(const TailCorpus &);
+
+template <typename Sorter> void verifySorterOnCorpus(const TailCorpus &corpus);
+template <typename Sorter> double timeAlgorithm(const TailCorpus &corpus);
 
 struct Algorithm {
-    std::string name;
-    TailSortFunction sort;
+    std::string_view name;
+    MeasureFunction measure;
+    VerifyFunction verify;
 };
 
 std::vector<Algorithm> allAlgorithms() {
     return {
-        {"linear", LinearSmallSorterDynamic{}},
-        {"binary", BinarySmallSorterDynamic{}},
-        {"exponential", ExponentialSmallSorterDynamic{}},
-        {"branchless-bitwise", BranchlessBitwiseSmallSorterDynamic{}},
-        {"shell-gap-10-4-1", ShellGap10_4_1SmallSorterDynamic{}},
-        {"shell-gap-3-2-1", ShellGap3_2_1SmallSorterDynamic{}},
-        {"shell-gap-16-7-3-1", ShellGap16_7_3_1SmallSorterDynamic{}},
+        {"linear", timeAlgorithm<LinearSmallSorter<32>>,
+         verifySorterOnCorpus<LinearSmallSorter<32>>},
+        {"binary", timeAlgorithm<BinarySmallSorter<32>>,
+         verifySorterOnCorpus<BinarySmallSorter<32>>},
+        {"exponential", timeAlgorithm<ExponentialSmallSorter<32>>,
+         verifySorterOnCorpus<ExponentialSmallSorter<32>>},
+        {"branchless-bitwise", timeAlgorithm<BranchlessBitwiseSmallSorter<32>>,
+         verifySorterOnCorpus<BranchlessBitwiseSmallSorter<32>>},
+        {"shell-gap-10-4-1", timeAlgorithm<ShellGap10_4_1SmallSorter>,
+         verifySorterOnCorpus<ShellGap10_4_1SmallSorter>},
+        {"shell-gap-3-2-1", timeAlgorithm<ShellGap3_2_1SmallSorter>,
+         verifySorterOnCorpus<ShellGap3_2_1SmallSorter>},
+        {"shell-gap-16-7-3-1", timeAlgorithm<ShellGap16_7_3_1SmallSorter>,
+         verifySorterOnCorpus<ShellGap16_7_3_1SmallSorter>},
     };
-}
-
-void makeIdsUnique(std::vector<UInt128> &ids, uint64_t highBase,
-                   uint64_t lowBase) {
-    for (std::size_t idIdx = 0; idIdx < ids.size(); ++idIdx) {
-        ids[idIdx] = makeId(highBase, lowBase + idIdx + 1);
-    }
-}
-
-TailCorpus makeSyntheticCorpus(Pattern pattern, std::size_t rangeSize,
-                               std::size_t numRanges, uint32_t dataSeed) {
-    TailCorpus corpus{"synthetic", std::string(patternName(pattern)), 0};
-    const std::size_t totalNodeCount =
-        checkedSizeProduct(rangeSize, numRanges, "synthetic tail corpus");
-    corpus.nodes.reserve(totalNodeCount);
-    corpus.ranges.reserve(numRanges);
-    std::mt19937_64 rng(mixFixtureSeed(dataSeed, 0x7461696c2d73796eULL));
-
-    for (std::size_t rangeIdx = 0; rangeIdx < numRanges; ++rangeIdx) {
-        std::vector<UInt128> ids(rangeSize);
-        const std::size_t firstGlobalIndex = rangeIdx * rangeSize;
-        switch (pattern) {
-        case Pattern::AlreadySorted:
-        case Pattern::ReverseSorted:
-        case Pattern::NearlySorted:
-            makeIdsUnique(ids, 0, firstGlobalIndex);
-            break;
-        case Pattern::Random: {
-            const uint64_t randomSeed =
-                mixFixtureSeed(dataSeed, 0x72616e646f6dULL);
-            for (std::size_t idIdx = 0; idIdx < rangeSize; ++idIdx) {
-                ids[idIdx] = makeRandomId(randomSeed, firstGlobalIndex + idIdx);
-            }
-            std::shuffle(ids.begin(), ids.end(), rng);
-            break;
-        }
-        case Pattern::SameHigh32: {
-            constexpr uint64_t sharedHigh32 = 0x12345678ULL;
-            for (std::size_t idIdx = 0; idIdx < rangeSize; ++idIdx) {
-                const uint64_t high =
-                    (sharedHigh32 << 32U) |
-                    static_cast<uint64_t>(firstGlobalIndex + idIdx + 1);
-                ids[idIdx] = makeId(high, mixDeterministicUInt128Word(
-                                              firstGlobalIndex + idIdx));
-            }
-            std::shuffle(ids.begin(), ids.end(), rng);
-            break;
-        }
-        case Pattern::SameHigh64:
-            makeIdsUnique(ids, 0x123456789abcdef0ULL, firstGlobalIndex);
-            std::shuffle(ids.begin(), ids.end(), rng);
-            break;
-        case Pattern::LongCommonPrefix:
-            makeIdsUnique(ids, 0x123456789abcdef0ULL,
-                          0xfedcba9876540000ULL + firstGlobalIndex);
-            std::shuffle(ids.begin(), ids.end(), rng);
-            break;
-        case Pattern::FirstByteDiffers:
-            for (std::size_t idIdx = 0; idIdx < rangeSize; ++idIdx) {
-                const uint64_t high =
-                    (static_cast<uint64_t>(idIdx + 1) << 56U) |
-                    static_cast<uint64_t>(rangeIdx + 1);
-                ids[idIdx] = makeId(high, 1);
-            }
-            std::shuffle(ids.begin(), ids.end(), rng);
-            break;
-        case Pattern::LastByteDiffers:
-            for (std::size_t idIdx = 0; idIdx < rangeSize; ++idIdx) {
-                ids[idIdx] = makeId(0x123456789abcdef0ULL ^
-                                        static_cast<uint64_t>(rangeIdx),
-                                    0xfedcba9876540000ULL + idIdx + 1);
-            }
-            std::shuffle(ids.begin(), ids.end(), rng);
-            break;
-        }
-
-        if (pattern == Pattern::ReverseSorted) {
-            std::reverse(ids.begin(), ids.end());
-        } else if (pattern == Pattern::NearlySorted && rangeSize > 1) {
-            const std::size_t swapCount =
-                std::max<std::size_t>(1, rangeSize / 10);
-            for (std::size_t swapIdx = 0; swapIdx < swapCount; ++swapIdx) {
-                const std::size_t index =
-                    static_cast<std::size_t>(rng() % (rangeSize - 1));
-                std::swap(ids[index], ids[index + 1]);
-            }
-        }
-        appendTail(corpus, ids);
-    }
-
-    std::vector<UInt128> allIds;
-    allIds.reserve(corpus.nodes.size());
-    for (const Node &node : corpus.nodes) {
-        allIds.push_back(node.id);
-    }
-    std::sort(allIds.begin(), allIds.end());
-    if (std::adjacent_find(allIds.begin(), allIds.end()) != allIds.end()) {
-        throw std::runtime_error(
-            "synthetic tail corpus contains duplicate IDs");
-    }
-    return corpus;
 }
 
 Pattern parsePattern(std::string_view value) {
@@ -265,24 +114,6 @@ Pattern parsePattern(std::string_view value) {
         if (value == patternName(pattern)) {
             return pattern;
         }
-    }
-    if (value == "already-sorted") {
-        return Pattern::AlreadySorted;
-    }
-    if (value == "reverse-sorted") {
-        return Pattern::ReverseSorted;
-    }
-    if (value == "nearly-sorted") {
-        return Pattern::NearlySorted;
-    }
-    if (value == "long-common-prefix") {
-        return Pattern::LongCommonPrefix;
-    }
-    if (value == "first-byte-differs") {
-        return Pattern::FirstByteDiffers;
-    }
-    if (value == "last-byte-differs") {
-        return Pattern::LastByteDiffers;
     }
     throw std::runtime_error("unknown pattern: " + std::string(value));
 }
@@ -296,28 +127,22 @@ DatasetKind parseCapturedDataset(std::string_view value) {
     throw std::runtime_error("unknown captured dataset: " + std::string(value));
 }
 
-void appendWorkload(std::vector<Workload> &workloads, std::string_view value) {
-    if (value == "synthetic") {
-        appendUniqueSelection(workloads, Workload::Synthetic);
-    } else if (value == "captured-node-ids") {
-        appendUniqueSelection(workloads, Workload::CapturedNodeIds);
-    } else if (value == "captured-parent-queries") {
-        appendUniqueSelection(workloads, Workload::CapturedParentQueries);
-    } else if (value == "all") {
-        workloads = {Workload::Synthetic, Workload::CapturedNodeIds,
-                     Workload::CapturedParentQueries};
-    } else {
-        throw std::runtime_error("unknown workload: " + std::string(value));
+Workload parseWorkload(std::string_view value) {
+    for (Workload workload : kAllWorkloads) {
+        if (value == workloadName(workload)) {
+            return workload;
+        }
     }
+    throw std::runtime_error("unknown workload: " + std::string(value));
 }
 
 Options parseOptions(int argc, char **argv) {
     Options options;
-    bool customSizes = false;
+    bool customTailSizes = false;
     bool customPatterns = false;
     bool customWorkloads = false;
     bool customDatasets = false;
-    bool customSorts = false;
+    bool customAlgorithms = false;
 
     for (int argIndex = 1; argIndex < argc; ++argIndex) {
         const std::string_view option = argv[argIndex];
@@ -337,170 +162,215 @@ Options parseOptions(int argc, char **argv) {
 
         if (option == "--format") {
             options.format = parseFormat(value);
-        } else if (option == "--size") {
-            if (!customSizes) {
-                options.sizes.clear();
-                customSizes = true;
+        } else if (option == "--tail-size") {
+            if (!customTailSizes) {
+                options.tailSizes.clear();
+                customTailSizes = true;
             }
-            appendUniqueSelection(options.sizes,
-                                  parsePositiveSizeOption(value, "--size"));
+            appendUniqueSelection(options.tailSizes, parsePositiveSizeOption(
+                                                         value, "--tail-size"));
         } else if (option == "--source-size") {
             options.sourceSize =
                 parsePositiveSizeOption(value, "--source-size");
         } else if (option == "--pattern") {
-            if (!customPatterns) {
-                options.patterns.clear();
-                customPatterns = true;
-            }
-            if (value == "all") {
-                options.patterns.assign(kAllPatterns.begin(),
-                                        kAllPatterns.end());
-            } else {
-                appendUniqueSelection(options.patterns, parsePattern(value));
-            }
+            const std::vector<Pattern> allPatterns(kAllPatterns.begin(),
+                                                   kAllPatterns.end());
+            applyRegistrySelection(options.patterns, customPatterns, value,
+                                   allPatterns, allPatterns, parsePattern);
         } else if (option == "--dataset") {
-            if (!customDatasets) {
-                options.datasets.clear();
-                customDatasets = true;
-            }
-            if (value == "all") {
-                options.datasets.assign(kCapturedDatasets.begin(),
-                                        kCapturedDatasets.end());
-            } else {
-                appendUniqueSelection(options.datasets,
-                                      parseCapturedDataset(value));
-            }
+            const std::vector<DatasetKind> allDatasets(
+                kCapturedDatasets.begin(), kCapturedDatasets.end());
+            applyRegistrySelection(options.datasets, customDatasets, value,
+                                   allDatasets, allDatasets,
+                                   parseCapturedDataset);
         } else if (option == "--workload") {
-            if (!customWorkloads) {
-                options.workloads.clear();
-                customWorkloads = true;
+            const std::vector<Workload> defaults = {Workload::Synthetic};
+            const std::vector<Workload> allWorkloads(kAllWorkloads.begin(),
+                                                     kAllWorkloads.end());
+            applyRegistrySelection(options.workloads, customWorkloads, value,
+                                   defaults, allWorkloads, parseWorkload);
+        } else if (option == "--algorithm") {
+            std::vector<std::string> registered;
+            for (const Algorithm &algorithm : allAlgorithms()) {
+                registered.emplace_back(algorithm.name);
             }
-            appendWorkload(options.workloads, value);
-        } else if (option == "--sort") {
-            if (!customSorts) {
-                options.sorts.clear();
-                customSorts = true;
-            }
-            if (value == "all") {
-                options.sorts.clear();
-                for (const Algorithm &algorithm : allAlgorithms()) {
-                    options.sorts.push_back(algorithm.name);
-                }
-            } else {
-                appendUniqueSelection(options.sorts, std::string(value));
-            }
+            applyRegistrySelection(
+                options.algorithms, customAlgorithms, value, registered,
+                registered, [&](std::string_view name) {
+                    const auto found =
+                        std::find_if(registered.begin(), registered.end(),
+                                     [&](const std::string &entry) {
+                                         return entry == name;
+                                     });
+                    if (found == registered.end()) {
+                        throw std::runtime_error("unknown algorithm: " +
+                                                 std::string(name));
+                    }
+                    return *found;
+                });
         } else if (option == "--iterations") {
             options.iterations = parsePositiveIntOption(value, "--iterations");
         } else if (option == "--warmup") {
             options.warmup = parseNonNegativeIntOption(value, "--warmup");
-        } else if (option == "--ranges") {
-            options.numRanges = parsePositiveSizeOption(value, "--ranges");
-        } else if (option == "--seed" || option == "--data-seed") {
-            options.dataSeed = parseSeedOption(value, option);
+        } else if (option == "--tail-count") {
+            options.tailCountLimit =
+                parsePositiveSizeOption(value, "--tail-count");
+        } else if (option == "--data-seed") {
+            options.dataSeed = parseSeedOption(value, "--data-seed");
         } else if (option == "--order-seed") {
             options.orderSeed = parseSeedOption(value, "--order-seed");
-        } else if (option == "--baseline-sort") {
-            options.baselineSort = std::string(value);
+        } else if (option == "--baseline-algorithm") {
+            options.baselineAlgorithm = std::string(value);
         } else {
             throw std::runtime_error("unknown option: " + std::string(option));
         }
     }
 
-    for (std::size_t size : options.sizes) {
+    for (std::size_t size : options.tailSizes) {
         if (size == 0 || size > detail::small_id_range_sort_threshold) {
-            throw std::runtime_error("range size must be between 1 and 32");
+            throw std::runtime_error("tail size must be between 1 and 32");
         }
     }
+    const std::vector<Algorithm> available = allAlgorithms();
+    const auto baseline = std::find_if(
+        available.begin(), available.end(), [&](const Algorithm &algorithm) {
+            return algorithm.name == options.baselineAlgorithm;
+        });
+    if (baseline == available.end()) {
+        throw std::runtime_error("unknown baseline algorithm: " +
+                                 options.baselineAlgorithm);
+    }
+    appendMissingBaseline(options.algorithms, options.baselineAlgorithm);
     (void)checkedBenchmarkPassCount(options.warmup, options.iterations);
     return options;
 }
 
 void printHelp() {
+    std::cout << "usage: forest-sorting-tail-bench [options]\n\n"
+              << "  --format table|csv|tsv|json\n"
+              << "  --workload ";
+    bool first = true;
+    for (Workload workload : kAllWorkloads) {
+        std::cout << (first ? "" : "|") << workloadName(workload);
+        first = false;
+    }
     std::cout
-        << "usage: forest-sorting-tail-bench [options]\n\n"
-        << "  --format table|csv|tsv|json\n"
-        << "  --workload synthetic|captured-node-ids|"
-           "captured-parent-queries|all\n"
-        << "  --size N                 synthetic tail size, repeatable "
+        << "|default|all\n"
+        << "  --tail-size N            synthetic tail size, repeatable "
            "(default: 4,8,16,24,32)\n"
         << "  --source-size N          captured source size (default: 100000)\n"
-        << "  --pattern PATTERN        synthetic pattern, repeatable\n"
-        << "  --dataset DATASET        captured dataset: random|same-high32|"
-           "same-high64|outliers|all\n"
-        << "  --sort NAME              repeatable; includes linear, binary, "
-           "exponential,\n"
-        << "                           branchless-bitwise, shell-gap-10-4-1, "
-           "shell-gap-3-2-1,\n"
-        << "                           shell-gap-16-7-3-1, or all\n"
+        << "  --pattern ";
+    first = true;
+    for (Pattern pattern : kAllPatterns) {
+        std::cout << (first ? "" : "|") << patternName(pattern);
+        first = false;
+    }
+    std::cout << "|default|all\n" << "  --dataset ";
+    first = true;
+    for (DatasetKind dataset : kCapturedDatasets) {
+        std::cout << (first ? "" : "|") << datasetName(dataset);
+        first = false;
+    }
+    std::cout << "|default|all\n" << "  --algorithm ";
+    first = true;
+    for (const Algorithm &algorithm : allAlgorithms()) {
+        std::cout << (first ? "" : "|") << algorithm.name;
+        first = false;
+    }
+    std::cout
+        << "|default|all\n"
         << "  --iterations N           (default: 100)\n"
         << "  --warmup N               (default: 10)\n"
-        << "  --ranges N               generated/captured range cap "
+        << "  --tail-count N           generated/captured tail cap "
            "(default: 1000)\n"
         << "  --data-seed N            corpus seed (default: 0x5eed1234)\n"
-        << "  --seed N                 compatibility alias for --data-seed\n"
         << "  --order-seed N           shuffled schedule seed (default: "
            "0x5eed)\n"
         << "  --shuffle                shuffle algorithm order per sample\n"
-        << "  --baseline-sort NAME     (default: linear)\n"
+        << "  --baseline-algorithm NAME (default: linear)\n"
         << "  --help\n";
 }
 
 std::vector<Algorithm> selectAlgorithms(const Options &options) {
     const std::vector<Algorithm> available = allAlgorithms();
     std::vector<Algorithm> selected;
-    for (const std::string &name : options.sorts) {
+    for (const std::string &name : options.algorithms) {
         const auto found = std::find_if(
             available.begin(), available.end(),
             [&](const Algorithm &algo) { return algo.name == name; });
         if (found == available.end()) {
-            throw std::runtime_error("unknown sort algorithm: " + name);
+            throw std::runtime_error("unknown algorithm: " + name);
         }
         selected.push_back(*found);
-    }
-    const bool hasBaseline =
-        std::any_of(selected.begin(), selected.end(), [&](const auto &algo) {
-            return algo.name == options.baselineSort;
-        });
-    if (!hasBaseline) {
-        throw std::runtime_error("baseline sort '" + options.baselineSort +
-                                 "' is not selected");
-    }
-    if (!hasSelectionOtherThan(options.sorts, options.baselineSort)) {
-        throw std::runtime_error(
-            "tail baseline-sort has no alternate sort to compare");
     }
     return selected;
 }
 
-std::vector<TailCorpus> buildCorpora(const Options &options) {
-    std::vector<TailCorpus> corpora;
+std::vector<TailCorpusDescriptor> initializeCorpusDescriptors(
+    const Options &options, const std::vector<Algorithm> &algorithms,
+    std::size_t baselineAlgorithmIndex, std::vector<MicroResult> &results) {
+    std::vector<TailCorpusDescriptor> descriptors;
+    auto appendDescriptor = [&](TailCorpusDescriptor descriptor) {
+        descriptor.resultBegin = results.size();
+        descriptor.resultCount = algorithms.size();
+        descriptor.baselineResultIndex =
+            descriptor.resultBegin + baselineAlgorithmIndex;
+        descriptors.push_back(descriptor);
+
+        for (const Algorithm &algorithm : algorithms) {
+            MicroResult result;
+            result.workload = std::string(workloadName(descriptor.workload));
+            if (descriptor.workload == Workload::Synthetic) {
+                result.pattern = std::string(patternName(descriptor.pattern));
+                result.tailSize = descriptor.itemCount;
+            } else {
+                result.pattern = std::string(datasetName(descriptor.dataset));
+                result.sourceSize = descriptor.itemCount;
+            }
+            result.algorithm = algorithm.name;
+            result.samples.resize(static_cast<std::size_t>(options.iterations));
+            results.push_back(std::move(result));
+        }
+    };
+
     for (Workload workload : options.workloads) {
         if (workload == Workload::Synthetic) {
             for (Pattern pattern : options.patterns) {
-                for (std::size_t size : options.sizes) {
-                    corpora.push_back(makeSyntheticCorpus(
-                        pattern, size, options.numRanges, options.dataSeed));
+                for (std::size_t size : options.tailSizes) {
+                    appendDescriptor(TailCorpusDescriptor{
+                        workload, pattern, DatasetKind::Random, size});
                 }
             }
             continue;
         }
         for (DatasetKind dataset : options.datasets) {
-            if (workload == Workload::CapturedNodeIds) {
-                corpora.push_back(makeCapturedNodeIdTailCorpus(
-                    dataset, options.sourceSize, options.numRanges,
-                    options.dataSeed));
-            } else {
-                corpora.push_back(makeCapturedParentQueryTailCorpus(
-                    dataset, options.sourceSize, options.numRanges,
-                    options.dataSeed));
-            }
+            appendDescriptor(TailCorpusDescriptor{workload, Pattern::Random,
+                                                  dataset, options.sourceSize});
         }
     }
-    return corpora;
+    return descriptors;
 }
 
-void verifySorterOnCorpus(const Algorithm &algorithm,
-                          const TailCorpus &corpus) {
+TailCorpus materializeCorpus(const TailCorpusDescriptor &descriptor,
+                             const Options &options) {
+    if (descriptor.workload == Workload::Synthetic) {
+        return makeSyntheticCorpus(
+            descriptor.pattern, descriptor.itemCount, options.tailCountLimit,
+            tailSyntheticGenerationSeed(descriptor, options.dataSeed));
+    }
+    if (descriptor.workload == Workload::CapturedNodeIds) {
+        return makeCapturedNodeIdTailCorpus(
+            descriptor.dataset, descriptor.itemCount, options.tailCountLimit,
+            options.dataSeed,
+            tailNodeReservoirSeed(descriptor, options.dataSeed));
+    }
+    return makeCapturedParentQueryTailCorpus(
+        descriptor.dataset, descriptor.itemCount, options.tailCountLimit,
+        options.dataSeed,
+        tailParentReservoirSeed(descriptor, options.dataSeed));
+}
+
+template <typename Sorter> void verifySorterOnCorpus(const TailCorpus &corpus) {
     std::vector<std::size_t> order(corpus.nodes.size());
     std::iota(order.begin(), order.end(), std::size_t{0});
     std::vector<std::size_t> expected = order;
@@ -513,7 +383,7 @@ void verifySorterOnCorpus(const Algorithm &algorithm,
                 return detail::idLess(corpus.nodes[lhs].id,
                                       corpus.nodes[rhs].id, traits);
             });
-        algorithm.sort(order, corpus.nodes, traits, range.begin, range.end);
+        Sorter{}(order, corpus.nodes, traits, range.begin, range.end);
         if (!std::equal(
                 order.begin() + static_cast<std::ptrdiff_t>(range.begin),
                 order.begin() + static_cast<std::ptrdiff_t>(range.end),
@@ -530,7 +400,7 @@ void verifySorterOnCorpus(const Algorithm &algorithm,
     }
 }
 
-double timeAlgorithm(const Algorithm &algorithm, const TailCorpus &corpus) {
+template <typename Sorter> double timeAlgorithm(const TailCorpus &corpus) {
     if (corpus.ranges.empty()) {
         throw std::runtime_error("cannot time an empty tail corpus");
     }
@@ -539,116 +409,134 @@ double timeAlgorithm(const Algorithm &algorithm, const TailCorpus &corpus) {
     const UInt128NodeTraits traits;
     const auto start = std::chrono::high_resolution_clock::now();
     for (TailRange range : corpus.ranges) {
-        algorithm.sort(order, corpus.nodes, traits, range.begin, range.end);
+        Sorter{}(order, corpus.nodes, traits, range.begin, range.end);
     }
     const auto end = std::chrono::high_resolution_clock::now();
     return std::chrono::duration<double, std::nano>(end - start).count() /
            static_cast<double>(corpus.ranges.size());
 }
 
-std::vector<MicroResult> runMicrobenchmarks(const Options &options) {
-    const std::vector<Algorithm> algorithms = selectAlgorithms(options);
-    const std::vector<TailCorpus> corpora = buildCorpora(options);
-    std::vector<MicroResult> results;
-    std::mt19937_64 scheduleRng(options.orderSeed);
-
-    for (const TailCorpus &corpus : corpora) {
-        const std::size_t resultBegin = results.size();
-        for (const Algorithm &algorithm : algorithms) {
-            MicroResult result;
-            result.workload = corpus.workload;
-            result.pattern = corpus.pattern;
-            if (corpus.sourceSize != 0) {
-                result.sourceSize = corpus.sourceSize;
-            } else {
-                result.rangeSize = corpus.minTailSize;
-            }
-            result.minTailSize = corpus.minTailSize;
-            result.maxTailSize = corpus.maxTailSize;
-            result.rangeCount = corpus.ranges.size();
-            result.algorithm = algorithm.name;
-            result.samples.resize(static_cast<std::size_t>(options.iterations));
-            if (corpus.ranges.empty()) {
-                result.status = "no MSD tails captured";
-                result.samples.clear();
-            } else {
-                try {
-                    verifySorterOnCorpus(algorithm, corpus);
-                } catch (const std::exception &exception) {
-                    result.status = exception.what();
-                    result.samples.clear();
-                }
-            }
-            results.push_back(std::move(result));
+void applyCorpusDeltas(const TailCorpusDescriptor &descriptor,
+                       std::vector<MicroResult> &results) {
+    MicroResult &baseline = results[descriptor.baselineResultIndex];
+    for (std::size_t resultIndex = descriptor.resultBegin;
+         resultIndex < descriptor.resultBegin + descriptor.resultCount;
+         ++resultIndex) {
+        MicroResult &result = results[resultIndex];
+        if (resultIndex == descriptor.baselineResultIndex ||
+            result.status != "ok" || baseline.status != "ok") {
+            continue;
         }
+        result.deltaMedianPct = medianOfSamples(
+            pairedRelativeDeltas(result.samples, baseline.samples));
+        result.deltaPctCi95 =
+            bootstrapPairedRelativeDeltaCi95(result.samples, baseline.samples);
+        result.hasDelta = true;
+        baseline.hasDelta = true;
+        result.winner = std::string(classifyBenchmarkWinner(
+            result.deltaMedianPct, result.deltaPctCi95));
+    }
+}
 
+void runCorpus(const TailCorpusDescriptor &descriptor, const TailCorpus &corpus,
+               const std::vector<Algorithm> &algorithms, const Options &options,
+               std::vector<MicroResult> &results) {
+    for (std::size_t algorithmIndex = 0; algorithmIndex < algorithms.size();
+         ++algorithmIndex) {
+        MicroResult &result = results[descriptor.resultBegin + algorithmIndex];
+        result.minTailSize = corpus.minTailSize;
+        result.maxTailSize = corpus.maxTailSize;
+        result.tailCount = corpus.ranges.size();
+        if (corpus.ranges.empty()) {
+            result.status = "empty";
+            result.samples.clear();
+            continue;
+        }
+        try {
+            algorithms[algorithmIndex].verify(corpus);
+        } catch (const std::exception &exception) {
+            result.status = exception.what();
+            result.samples.clear();
+        }
+    }
+
+    if (!corpus.ranges.empty()) {
         std::vector<std::size_t> schedule(algorithms.size());
         std::iota(schedule.begin(), schedule.end(), std::size_t{0});
         const int totalPasses =
             checkedBenchmarkPassCount(options.warmup, options.iterations);
+        const uint32_t scheduleSeed =
+            tailAlgorithmScheduleSeed(descriptor, options.orderSeed);
         for (int pass = 0; pass < totalPasses; ++pass) {
             if (options.shuffle) {
-                std::shuffle(schedule.begin(), schedule.end(), scheduleRng);
+                std::iota(schedule.begin(), schedule.end(), std::size_t{0});
+                shuffleBenchmarkOrder(schedule, scheduleSeed, pass);
             }
             for (std::size_t algorithmIdx : schedule) {
-                MicroResult &result = results[resultBegin + algorithmIdx];
+                MicroResult &result =
+                    results[descriptor.resultBegin + algorithmIdx];
                 if (result.status != "ok") {
                     continue;
                 }
-                const double elapsed =
-                    timeAlgorithm(algorithms[algorithmIdx], corpus);
+                const double elapsed = algorithms[algorithmIdx].measure(corpus);
                 if (pass >= options.warmup) {
                     result.samples[static_cast<std::size_t>(
                         pass - options.warmup)] = elapsed;
                 }
             }
         }
-        for (std::size_t algorithmIdx = 0; algorithmIdx < algorithms.size();
-             ++algorithmIdx) {
-            MicroResult &result = results[resultBegin + algorithmIdx];
-            if (result.status == "ok") {
-                result.stats = computeSampleStats(result.samples);
-            }
+    }
+    for (std::size_t algorithmIdx = 0; algorithmIdx < algorithms.size();
+         ++algorithmIdx) {
+        MicroResult &result = results[descriptor.resultBegin + algorithmIdx];
+        if (result.status == "ok") {
+            result.stats = computeSampleStats(result.samples);
         }
     }
+    applyCorpusDeltas(descriptor, results);
+}
+
+std::vector<MicroResult> runMicrobenchmarks(const Options &options) {
+    const std::vector<Algorithm> algorithms = selectAlgorithms(options);
+    const auto baseline = std::find_if(
+        algorithms.begin(), algorithms.end(), [&](const Algorithm &algorithm) {
+            return algorithm.name == options.baselineAlgorithm;
+        });
+    if (baseline == algorithms.end()) {
+        throw std::logic_error(
+            "baseline algorithm is missing from tail execution");
+    }
+    const std::size_t baselineAlgorithmIndex =
+        static_cast<std::size_t>(baseline - algorithms.begin());
+
+    std::vector<MicroResult> results;
+    const std::vector<TailCorpusDescriptor> descriptors =
+        initializeCorpusDescriptors(options, algorithms, baselineAlgorithmIndex,
+                                    results);
+    std::vector<std::size_t> executionOrder =
+        makeSequentialIndexOrder(descriptors.size());
+    if (options.shuffle) {
+        shuffleBenchmarkOrder(executionOrder,
+                              tailCorpusOrderSeed(options.orderSeed), 0);
+    }
+    forEachMaterializedContext(
+        descriptors, executionOrder,
+        [&](const TailCorpusDescriptor &descriptor) {
+            return materializeCorpus(descriptor, options);
+        },
+        [&](const TailCorpusDescriptor &descriptor, const TailCorpus &corpus) {
+            runCorpus(descriptor, corpus, algorithms, options, results);
+        });
     return results;
-}
-
-bool sameContext(const MicroResult &lhs, const MicroResult &rhs) {
-    return lhs.workload == rhs.workload && lhs.pattern == rhs.pattern &&
-           lhs.sourceSize == rhs.sourceSize && lhs.rangeSize == rhs.rangeSize;
-}
-
-void computeDeltas(std::vector<MicroResult> &results,
-                   std::string_view baselineName) {
-    for (MicroResult &result : results) {
-        if (result.algorithm == baselineName || result.status != "ok") {
-            continue;
-        }
-        const auto baseline =
-            std::find_if(results.begin(), results.end(), [&](const auto &row) {
-                return row.algorithm == baselineName &&
-                       sameContext(row, result);
-            });
-        if (baseline == results.end() || baseline->status != "ok") {
-            continue;
-        }
-        result.deltaMedianPct = medianOfSamples(
-            pairedRelativeDeltas(result.samples, baseline->samples));
-        result.deltaPctCi95 =
-            bootstrapPairedRelativeDeltaCi95(result.samples, baseline->samples);
-        result.winner = std::string(classifyBenchmarkWinner(
-            result.deltaMedianPct, result.deltaPctCi95));
-    }
 }
 
 std::vector<MicroOutputRow>
 makeMicroOutputRows(const std::vector<MicroResult> &results,
-                    std::string_view baselineSort) {
+                    std::string_view baselineAlgorithm) {
     std::vector<MicroOutputRow> rows;
     rows.reserve(results.size());
     for (const MicroResult &result : results) {
-        rows.push_back(makeMicroOutputRow(result, baselineSort));
+        rows.push_back(makeMicroOutputRow(result, baselineAlgorithm));
     }
     return rows;
 }
@@ -657,42 +545,48 @@ void printJson(const std::vector<MicroOutputRow> &rows,
                const Options &options) {
     std::cout << "{\n  \"iterations\": " << options.iterations
               << ",\n  \"warmup\": " << options.warmup
-              << ",\n  \"range_cap\": " << options.numRanges
+              << ",\n  \"tail_count_limit\": " << options.tailCountLimit
               << ",\n  \"source_size\": " << options.sourceSize
               << ",\n  \"data_seed\": " << options.dataSeed
               << ",\n  \"order_seed\": " << options.orderSeed
               << ",\n  \"shuffle\": " << (options.shuffle ? "true" : "false")
-              << ",\n  \"baseline_sort\": \""
-              << jsonEscape(options.baselineSort) << "\""
+              << ",\n  \"baseline_algorithm\": \""
+              << jsonEscape(options.baselineAlgorithm) << "\""
               << ",\n  \"results\": ";
     printMicroJsonRows(std::cout, rows);
     std::cout << "\n}\n";
 }
 
+} // namespace
+
+} // namespace forest_sorting::benchmark_support
+
+namespace forest_sorting::benchmark_app::tail {
+
 int runTailBenchmark(int argc, char **argv) {
     try {
-        const Options options = parseOptions(argc, argv);
+        const auto options = benchmark_support::parseOptions(argc, argv);
         if (options.help) {
-            printHelp();
+            benchmark_support::printHelp();
             return 0;
         }
 
-        auto results = runMicrobenchmarks(options);
-        computeDeltas(results, options.baselineSort);
-        const auto rows = makeMicroOutputRows(results, options.baselineSort);
+        const auto results = benchmark_support::runMicrobenchmarks(options);
+        const auto rows = benchmark_support::makeMicroOutputRows(
+            results, options.baselineAlgorithm);
 
         switch (options.format) {
-        case OutputFormat::Table:
-            printMicroTable(std::cout, rows);
+        case benchmark_support::OutputFormat::Table:
+            benchmark_support::printMicroTable(std::cout, rows);
             break;
-        case OutputFormat::Csv:
-            printMicroDelimited(std::cout, rows, ',');
+        case benchmark_support::OutputFormat::Csv:
+            benchmark_support::printMicroDelimited(std::cout, rows, ',');
             break;
-        case OutputFormat::Tsv:
-            printMicroDelimited(std::cout, rows, '\t');
+        case benchmark_support::OutputFormat::Tsv:
+            benchmark_support::printMicroDelimited(std::cout, rows, '\t');
             break;
-        case OutputFormat::Json:
-            printJson(rows, options);
+        case benchmark_support::OutputFormat::Json:
+            benchmark_support::printJson(rows, options);
             break;
         }
         return 0;
@@ -705,3 +599,5 @@ int runTailBenchmark(int argc, char **argv) {
         return 1;
     }
 }
+
+} // namespace forest_sorting::benchmark_app::tail

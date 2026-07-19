@@ -98,6 +98,32 @@ struct InstrumentedTraitTraits {
     }
 };
 
+struct InstrumentedLessOnlyTraits {
+    using Id = InstrumentedTraitId;
+    static constexpr std::size_t id_byte_count = 8;
+
+    IdDispatchCounters *counters = nullptr;
+
+    bool less(const Id &lhs, const Id &rhs) const noexcept {
+        record(IdDispatchPath::Trait);
+        return lhs.value < rhs.value;
+    }
+
+    uint8_t byte_msb_first(const Id &nodeId,
+                           std::size_t byteIndex) const noexcept {
+        record(IdDispatchPath::ByteFallback);
+        const std::size_t shift = (id_byte_count - 1U - byteIndex) * 8U;
+        return static_cast<uint8_t>(nodeId.value >> shift);
+    }
+
+  private:
+    void record(IdDispatchPath path) const noexcept {
+        if (counters != nullptr) {
+            counters->record(path);
+        }
+    }
+};
+
 struct InstrumentedNativeId {
     uint64_t value = 0;
 
@@ -105,12 +131,12 @@ struct InstrumentedNativeId {
 
     bool operator<(const InstrumentedNativeId &other) const noexcept {
         record(IdDispatchPath::Native);
-        return value < other.value;
+        return value > other.value;
     }
 
     bool operator==(const InstrumentedNativeId &other) const noexcept {
         record(IdDispatchPath::Native);
-        return value == other.value;
+        return value != other.value;
     }
 
   private:
@@ -127,9 +153,8 @@ struct InstrumentedNativeTraits {
 
     static uint8_t byte_msb_first(const Id &nodeId,
                                   std::size_t byteIndex) noexcept {
-        (void)nodeId;
-        (void)byteIndex;
-        return 0;
+        const std::size_t shift = (id_byte_count - 1U - byteIndex) * 8U;
+        return static_cast<uint8_t>(nodeId.value >> shift);
     }
 };
 

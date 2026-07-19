@@ -100,7 +100,8 @@ inline void groupOrderByDepthDense(std::vector<std::size_t> &order,
                                        depthStarts, depthOffsets, collectRange);
 }
 
-template <std::size_t DepthPrefixBytes, typename CountPolicy = FullClearCounts,
+template <std::size_t DepthPrefixBytes,
+          DepthRadixCountPolicy Policy = ProductionDepthCountPolicy,
           typename Depth, typename RangeConsumer>
 inline void groupOrderByDepthMsdWithConsumer(std::vector<std::size_t> &order,
                                              std::vector<std::size_t> &scratch,
@@ -116,12 +117,13 @@ inline void groupOrderByDepthMsdWithConsumer(std::vector<std::size_t> &order,
         }
     };
 
-    radixMsdPartitionRanges<CountPolicy>(order, scratch, 0, order.size(), 0,
-                                         DepthPrefixBytes, digitForIndex,
-                                         rangeDone);
+    radixMsdPartitionRanges<typename Policy::counter_policy>(
+        order, scratch, 0, order.size(), 0, DepthPrefixBytes, digitForIndex,
+        rangeDone);
 }
 
-template <std::size_t DepthPrefixBytes, typename CountPolicy = FullClearCounts,
+template <std::size_t DepthPrefixBytes,
+          DepthRadixCountPolicy Policy = ProductionDepthCountPolicy,
           typename Depth>
 inline void groupOrderByDepthMsd(std::vector<std::size_t> &order,
                                  std::vector<std::size_t> &scratch,
@@ -132,12 +134,13 @@ inline void groupOrderByDepthMsd(std::vector<std::size_t> &order,
     auto collectRange = [&](Depth depth, std::size_t begin, std::size_t end) {
         ranges.push_back({depth, begin, end});
     };
-    groupOrderByDepthMsdWithConsumer<DepthPrefixBytes, CountPolicy>(
+    groupOrderByDepthMsdWithConsumer<DepthPrefixBytes, Policy>(
         order, scratch, depths, collectRange);
 }
 
 template <std::size_t DepthPrefixBytes,
-          typename CountPolicy = ProductionIdCountPolicy, typename Depth>
+          DepthRadixCountPolicy Policy = ProductionDepthCountPolicy,
+          typename Depth>
 inline void stableGroupOrderByDepth(std::vector<std::size_t> &order,
                                     std::vector<std::size_t> &scratch,
                                     const std::vector<Depth> &depths,
@@ -150,7 +153,7 @@ inline void stableGroupOrderByDepth(std::vector<std::size_t> &order,
                                            observedMaxDepth, depthStarts,
                                            depthOffsets, ignoreRange);
     } else {
-        groupOrderByDepthMsdWithConsumer<DepthPrefixBytes, CountPolicy>(
+        groupOrderByDepthMsdWithConsumer<DepthPrefixBytes, Policy>(
             order, scratch, depths, ignoreRange);
     }
 }

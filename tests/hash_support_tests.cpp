@@ -1,4 +1,4 @@
-#include "hash_support.hpp"
+#include "forest_sorting/benchmark_support/full/hash_variants.hpp"
 #include "test_harness.hpp"
 
 #ifdef __SIZEOF_INT128__
@@ -16,8 +16,10 @@ using forest_sorting::test_support::require;
 #ifdef __SIZEOF_INT128__
 using forest_sorting::UInt128;
 
+namespace {
+
 void test_fnv1a_128_hash() {
-    using namespace forest_sorting::test_support;
+    using namespace forest_sorting::benchmark_support;
 
     const UInt128 val0 = 0;
     const UInt128 val1 = 1;
@@ -39,6 +41,8 @@ void test_fnv1a_128_hash() {
     const UInt128 valHigh = static_cast<UInt128>(1) << 100;
     require(fnvHashUInt128(valHigh) != hash0, "high-bit ID collided with zero");
 }
+
+} // namespace
 #endif
 
 int main() {
@@ -51,18 +55,19 @@ int main() {
         const std::uint64_t high = 0x0123456789abcdefULL;
         const std::uint64_t low = 0xfedcba9876543210ULL;
 
-        require(forest_sorting::test_support::fnvHashUInt128Words(high, low) ==
-                    forest_sorting::test_support::fnvHashBytes(bytes),
-                "portable word and byte hashes differ");
+        require(
+            forest_sorting::benchmark_support::fnvHashUInt128Words(high, low) ==
+                forest_sorting::benchmark_support::fnvHashBytes(bytes),
+            "portable word and byte hashes differ");
 
         // 2. Compile-and-run conditional native check when __int128 exists
 #ifdef __SIZEOF_INT128__
         const UInt128 native =
             (static_cast<UInt128>(high) << 64U) | static_cast<UInt128>(low);
-        require(
-            forest_sorting::test_support::fnvHashUInt128(native) ==
-                forest_sorting::test_support::fnvHashUInt128Words(high, low),
-            "native and portable hashes differ");
+        require(forest_sorting::benchmark_support::fnvHashUInt128(native) ==
+                    forest_sorting::benchmark_support::fnvHashUInt128Words(high,
+                                                                           low),
+                "native and portable hashes differ");
 
         test_fnv1a_128_hash();
 #endif

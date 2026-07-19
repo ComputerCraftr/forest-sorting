@@ -110,15 +110,15 @@ RadixParentIndexResult buildParentIndexRadixJoinWithPermutationSorter(
 }
 
 template <std::size_t RadixChunkBytes,
-          typename CountPolicy = ProductionIdCountPolicy, typename Nodes,
+          IdRadixCountPolicy Policy = ProductionIdCountPolicy, typename Nodes,
           typename Traits>
 RadixParentIndexResult
 buildParentIndexRadixJoinResultByMsdChunks(const Nodes &nodes,
                                            const Traits &traits) {
-    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> workspace;
+    IdMsdChunkSortWorkspace<RadixChunkBytes, Policy> workspace;
     auto sortPermutation = [&](std::vector<std::size_t> &permutation,
                                auto idForIndex, const auto &sortTraits) {
-        sortIndexRangeByIdMsdChunks<RadixChunkBytes, CountPolicy>(
+        sortIndexRangeByIdMsdChunks<RadixChunkBytes, Policy>(
             permutation, idForIndex, sortTraits, 0, permutation.size(), 0,
             workspace);
     };

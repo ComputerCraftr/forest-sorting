@@ -5,6 +5,14 @@ project(
     VERSION 0.1.0
     LANGUAGES CXX)
 
+option(FOREST_SORTING_WARNING_PROBE_ONLY
+       "Configure only the active frontend's fatal-warning policy probes" OFF)
+include(cmake/ForestSortingWarnings.cmake)
+if(FOREST_SORTING_WARNING_PROBE_ONLY)
+    forest_sorting_run_warning_policy_probes()
+    return()
+endif()
+
 if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_GENERATOR MATCHES "^Ninja")
     message(
         FATAL_ERROR
@@ -43,75 +51,39 @@ find_program(
     NAMES run-clang-tidy
     HINTS "/opt/homebrew/opt/llvm/bin" "/usr/local/opt/llvm/bin"
     DOC "Path to run-clang-tidy")
-
-# Common compiler options
-function(forest_sorting_apply_common_options target)
-    add_dependencies(${target} sync-compile-commands)
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
-        return()
+if(PROJECT_IS_TOP_LEVEL)
+    find_program(
+        FOREST_API_MANIFEST_CLANG
+        NAMES clang++-22 clang++
+        HINTS "/opt/homebrew/opt/llvm@22/bin" "/usr/local/opt/llvm@22/bin"
+              "/opt/homebrew/opt/llvm/bin" "/usr/local/opt/llvm/bin"
+        DOC "Clang C++ frontend used to generate the public API AST manifest")
+    if(FOREST_API_MANIFEST_CLANG)
+        execute_process(
+            COMMAND "${FOREST_API_MANIFEST_CLANG}" --version
+            OUTPUT_VARIABLE _forest_api_manifest_clang_version
+            ERROR_VARIABLE _forest_api_manifest_clang_version_error
+            RESULT_VARIABLE _forest_api_manifest_clang_result
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _forest_api_manifest_clang_result EQUAL 0
+           OR _forest_api_manifest_clang_version MATCHES "Apple clang"
+           OR NOT _forest_api_manifest_clang_version MATCHES
+              "clang version 22([.]| )")
+            message(
+                FATAL_ERROR
+                    "Public API manifests require upstream Clang 22. "
+                    "FOREST_API_MANIFEST_CLANG=${FOREST_API_MANIFEST_CLANG}\n"
+                    "${_forest_api_manifest_clang_version}\n"
+                    "${_forest_api_manifest_clang_version_error}")
+        endif()
     endif()
+    find_package(
+        Python3
+        COMPONENTS Interpreter
+        REQUIRED)
+endif()
 
-    target_compile_options(
-        ${target}
-        PRIVATE -Wall
-                -Wextra
-                -Werror
-                -Wpedantic
-                -Wcast-align
-                -Wcast-qual
-                -Wconversion
-                -Wdouble-promotion
-                -Wfloat-equal
-                -Wformat=2
-                -Wimplicit-fallthrough
-                -Wpointer-arith
-                -Wsign-conversion
-                -Wswitch-enum
-                -Wundef
-                -Wunused-but-set-parameter
-                -Wunused-but-set-variable
-                -Wunused-const-variable
-                -Wunused-function
-                -Wunused-local-typedefs
-                -Wunused-macros
-                -Wunused-parameter
-                -Wunused-value
-                -Wunused-variable
-                -Wvla
-                -Wwrite-strings)
-
-    if(CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
-        target_compile_options(
-            ${target}
-            PRIVATE -Wnewline-eof
-                    -Wnull-dereference
-                    -Wshadow-all
-                    -Wunreachable-code
-                    -Wunreachable-code-break
-                    -Wunreachable-code-return
-                    -Wunused-lambda-capture
-                    -Wunused-private-field
-                    -Wunneeded-internal-declaration)
-    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        target_compile_options(
-            ${target}
-            PRIVATE -Wduplicated-branches
-                    -Wduplicated-cond
-                    -Wformat-overflow=2
-                    -Wformat-truncation=2
-                    -Wlogical-op
-                    -Wshadow=local
-                    -Wstringop-overflow=4)
-    endif()
-
-    target_compile_options(
-        ${target} PRIVATE $<$<CONFIG:Debug>:-fsanitize=address,undefined>
-                          $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
-    target_link_options(${target} PRIVATE
-                        $<$<CONFIG:Debug>:-fsanitize=address,undefined>)
-endfunction()
-
+forest_sorting_run_warning_policy_probes()
 enable_testing()
 
 add_subdirectory(include)

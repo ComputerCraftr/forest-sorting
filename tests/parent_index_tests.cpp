@@ -1,15 +1,18 @@
-#include "control_parent_index.hpp"
 #include "forest_sorting/algorithms.hpp"
+#include "forest_sorting/benchmark_support/common/dataset.hpp"
+#include "forest_sorting/benchmark_support/common/uint128_fixtures.hpp"
+#include "forest_sorting/benchmark_support/full/adaptive_sort_variants.hpp"
+#include "forest_sorting/benchmark_support/full/control_parent_baseline.hpp"
+#include "forest_sorting/benchmark_support/full/parent_registry.hpp"
+#include "forest_sorting/benchmark_support/full/sort_baselines.hpp"
+#include "forest_sorting/benchmark_support/full/sort_registry.hpp"
 #include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
-#include "full/adaptive_sort_variants.hpp"
-#include "full/parent_registry.hpp"
-#include "full/sort_registry.hpp"
-#include "sort_baselines.hpp"
 #include "test_harness.hpp"
-#include "uint128_fixtures.hpp"
+#include "test_suites.hpp"
+#include "uint128_test_fixtures.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,12 +20,16 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace {
 
 using forest_sorting::Node;
 using forest_sorting::UInt128;
 using forest_sorting::UInt128NodeTraits;
 using namespace forest_sorting::test_support;
+using namespace forest_sorting::benchmark_support;
 using forest_sorting::detail::buildParentIndexRadixJoin;
 
 void assertParentBuildersMatch(const std::vector<Node> &nodes) {
@@ -192,8 +199,8 @@ void test_radix_directory_parent_lookup_shapes() {
 void test_global_id_first_sort_computes_or_reuses_id_permutation() {
     for (DatasetKind datasetKind : allDatasetKinds()) {
         const auto nodes = makeGeneratedForestForKind(datasetKind, 1000);
-        const auto publicProduction = forest_sorting::sortedCopyByDepthAndId<2>(
-            nodes, UInt128NodeTraits{});
+        const auto publicProduction =
+            forest_sorting::sortedCopyByDepthAndId(nodes, UInt128NodeTraits{});
         for (ParentKind parentKind : registeredParentKinds()) {
             const auto artifacts =
                 buildParentArtifactsForKind(parentKind, nodes);
@@ -333,7 +340,7 @@ void test_parent_builder_identity_hash_rejects_duplicate_full_id() {
                       "duplicate full id");
 }
 
-void runParentIndexTests() {
+void runParentIndexTestsImpl() {
     runTest("parent builders match for registered datasets",
             test_parent_builders_match_for_registered_datasets);
     runTest("radix parent artifacts retain sorted node permutations",
@@ -353,3 +360,7 @@ void runParentIndexTests() {
     runTest("parent builder identity hash rejects duplicate full ID",
             test_parent_builder_identity_hash_rejects_duplicate_full_id);
 }
+
+} // namespace
+
+void runParentIndexTests() { runParentIndexTestsImpl(); }

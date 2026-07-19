@@ -49,6 +49,10 @@ struct UInt128Traits {
         return nodeId == 0;
     }
 
+    static bool less(UInt128 lhs, UInt128 rhs) noexcept { return lhs < rhs; }
+
+    static bool equal(UInt128 lhs, UInt128 rhs) noexcept { return lhs == rhs; }
+
     static uint8_t byte_msb_first(UInt128 nodeId,
                                   std::size_t byteIndex) noexcept {
         const std::size_t shift = (id_byte_count - 1 - byteIndex) * 8;

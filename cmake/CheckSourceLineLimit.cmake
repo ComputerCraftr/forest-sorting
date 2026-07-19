@@ -20,6 +20,7 @@ else()
             "${SOURCE_ROOT}/${root}/*.h"
             "${SOURCE_ROOT}/${root}/*.hpp"
             "${SOURCE_ROOT}/${root}/*.hxx"
+            "${SOURCE_ROOT}/${root}/*.py"
             "${SOURCE_ROOT}/${root}/*.cmake"
             "${SOURCE_ROOT}/${root}/CMakeLists.txt")
         list(APPEND source_files ${root_files})

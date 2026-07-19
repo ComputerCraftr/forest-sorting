@@ -13,7 +13,7 @@ int main() {
     try {
         using forest_sorting::makeId;
         using forest_sorting::Node;
-        using forest_sorting::sortForestByDepthAndId;
+        using forest_sorting::sortedCopyByDepthAndId;
         using forest_sorting::toHex;
         using forest_sorting::UInt128;
         using forest_sorting::verifySortedByDepthAndId;
@@ -41,7 +41,7 @@ int main() {
             nodes.push_back(Node{makeRandomId(), nodes[parentIndex].id});
         }
 
-        auto sorted = sortForestByDepthAndId(nodes);
+        auto sorted = sortedCopyByDepthAndId(nodes);
 
         std::cout
             << "Deterministically sorted forest nodes (by depth, then id):\n";

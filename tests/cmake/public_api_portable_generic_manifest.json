@@ -1,0 +1,1334 @@
+{
+  "configuration": "portable-generic",
+  "declarations": [
+    {
+      "constraint": {
+        "kind": "logical-and",
+        "operands": [
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "forest_sorting::IndexedNodeInput"
+          },
+          {
+            "arguments": [
+              {
+                "arguments": [
+                  {
+                    "index": 0,
+                    "kind": "template-parameter"
+                  }
+                ],
+                "kind": "template-specialization",
+                "name": "detail::IndexedValue"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "std::copy_constructible"
+          }
+        ]
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::CopyableNodeInput",
+      "template": {
+        "parameters": [
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "kind": "logical-and",
+        "operands": [
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "detail::ValidForestIdByteCount"
+          },
+          {
+            "arguments": [
+              {
+                "kind": "dependent-name",
+                "name": "Traits::Id"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "std::copyable"
+          },
+          {
+            "kind": "requires",
+            "parameters": [
+              {
+                "kind": "lvalue-reference",
+                "to": {
+                  "kind": "qualified",
+                  "qualifiers": [
+                    "const"
+                  ],
+                  "type": {
+                    "index": 0,
+                    "kind": "template-parameter"
+                  }
+                }
+              },
+              {
+                "kind": "lvalue-reference",
+                "to": {
+                  "kind": "qualified",
+                  "qualifiers": [
+                    "const"
+                  ],
+                  "type": {
+                    "index": 1,
+                    "kind": "template-parameter"
+                  }
+                }
+              },
+              {
+                "kind": "lvalue-reference",
+                "to": {
+                  "kind": "qualified",
+                  "qualifiers": [
+                    "const"
+                  ],
+                  "type": {
+                    "kind": "named",
+                    "name": "Traits::Id"
+                  }
+                }
+              },
+              {
+                "kind": "named",
+                "name": "std::size_t"
+              }
+            ],
+            "requirements": [
+              {
+                "kind": "type-requirement",
+                "type": {
+                  "kind": "dependent-name",
+                  "name": "Traits::Id"
+                }
+              },
+              {
+                "expression": {
+                  "kind": "expression",
+                  "tokens": [
+                    "$requirement:0",
+                    ".",
+                    "id",
+                    "(",
+                    "$requirement:1",
+                    ")"
+                  ]
+                },
+                "kind": "compound-requirement",
+                "noexcept": false,
+                "return_constraint": {
+                  "arguments": [
+                    {
+                      "kind": "dependent-name",
+                      "name": "Traits::Id"
+                    }
+                  ],
+                  "kind": "concept-specialization",
+                  "name": "std::same_as"
+                }
+              },
+              {
+                "expression": {
+                  "kind": "expression",
+                  "tokens": [
+                    "$requirement:0",
+                    ".",
+                    "parent_id",
+                    "(",
+                    "$requirement:1",
+                    ")"
+                  ]
+                },
+                "kind": "compound-requirement",
+                "noexcept": false,
+                "return_constraint": {
+                  "arguments": [
+                    {
+                      "kind": "dependent-name",
+                      "name": "Traits::Id"
+                    }
+                  ],
+                  "kind": "concept-specialization",
+                  "name": "std::same_as"
+                }
+              },
+              {
+                "expression": {
+                  "kind": "expression",
+                  "tokens": [
+                    "$requirement:0",
+                    ".",
+                    "byte_msb_first",
+                    "(",
+                    "$requirement:2",
+                    ",",
+                    "$requirement:3",
+                    ")"
+                  ]
+                },
+                "kind": "compound-requirement",
+                "noexcept": false,
+                "return_constraint": {
+                  "arguments": [
+                    {
+                      "kind": "named",
+                      "name": "uint8_t"
+                    }
+                  ],
+                  "kind": "concept-specialization",
+                  "name": "std::convertible_to"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::ForestTraits",
+      "template": {
+        "parameters": [
+          {
+            "kind": "type",
+            "pack": false
+          },
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "kind": "logical-and",
+        "operands": [
+          {
+            "kind": "logical-or",
+            "operands": [
+              {
+                "kind": "binary-expression",
+                "operands": [
+                  {
+                    "kind": "expression",
+                    "tokens": [
+                      "$template:0"
+                    ]
+                  },
+                  {
+                    "kind": "expression",
+                    "tokens": [
+                      "1"
+                    ]
+                  }
+                ],
+                "operator": "=="
+              },
+              {
+                "kind": "binary-expression",
+                "operands": [
+                  {
+                    "kind": "expression",
+                    "tokens": [
+                      "$template:0"
+                    ]
+                  },
+                  {
+                    "kind": "expression",
+                    "tokens": [
+                      "2"
+                    ]
+                  }
+                ],
+                "operator": "=="
+              },
+              {
+                "kind": "binary-expression",
+                "operands": [
+                  {
+                    "kind": "expression",
+                    "tokens": [
+                      "$template:0"
+                    ]
+                  },
+                  {
+                    "kind": "expression",
+                    "tokens": [
+                      "4"
+                    ]
+                  }
+                ],
+                "operator": "=="
+              },
+              {
+                "kind": "binary-expression",
+                "operands": [
+                  {
+                    "kind": "expression",
+                    "tokens": [
+                      "$template:0"
+                    ]
+                  },
+                  {
+                    "kind": "expression",
+                    "tokens": [
+                      "8"
+                    ]
+                  }
+                ],
+                "operator": "=="
+              }
+            ]
+          },
+          {
+            "kind": "requires",
+            "parameters": [
+              {
+                "kind": "lvalue-reference",
+                "to": {
+                  "kind": "qualified",
+                  "qualifiers": [
+                    "const"
+                  ],
+                  "type": {
+                    "index": 1,
+                    "kind": "template-parameter"
+                  }
+                }
+              },
+              {
+                "kind": "lvalue-reference",
+                "to": {
+                  "kind": "qualified",
+                  "qualifiers": [
+                    "const"
+                  ],
+                  "type": {
+                    "kind": "named",
+                    "name": "Traits::Id"
+                  }
+                }
+              },
+              {
+                "kind": "named",
+                "name": "std::size_t"
+              }
+            ],
+            "requirements": [
+              {
+                "expression": {
+                  "kind": "expression",
+                  "tokens": [
+                    "$requirement:0",
+                    ".",
+                    "template",
+                    "chunk_msb_first",
+                    "<",
+                    "$template:0",
+                    ">",
+                    "(",
+                    "$requirement:1",
+                    ",",
+                    "$requirement:2",
+                    ")"
+                  ]
+                },
+                "kind": "compound-requirement",
+                "noexcept": false,
+                "return_constraint": {
+                  "arguments": [
+                    {
+                      "arguments": [
+                        {
+                          "index": 0,
+                          "kind": "template-parameter"
+                        }
+                      ],
+                      "kind": "template-specialization",
+                      "name": "detail::ForestTraitsChunkValue"
+                    }
+                  ],
+                  "kind": "concept-specialization",
+                  "name": "std::convertible_to"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::ForestTraitsChunkAccess",
+      "template": {
+        "parameters": [
+          {
+            "kind": "non-type",
+            "pack": false,
+            "type": {
+              "kind": "named",
+              "name": "std::size_t"
+            }
+          },
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "kind": "requires",
+        "parameters": [
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "kind": "named",
+                "name": "Traits::Id"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "kind": "named",
+                "name": "Traits::Id"
+              }
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "expression": {
+              "kind": "expression",
+              "tokens": [
+                "$requirement:0",
+                ".",
+                "equal",
+                "(",
+                "$requirement:1",
+                ",",
+                "$requirement:2",
+                ")"
+              ]
+            },
+            "kind": "compound-requirement",
+            "noexcept": false,
+            "return_constraint": {
+              "arguments": [
+                {
+                  "kind": "builtin",
+                  "name": "bool"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "std::convertible_to"
+            }
+          }
+        ]
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::ForestTraitsEqual",
+      "template": {
+        "parameters": [
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "kind": "requires",
+        "parameters": [
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "kind": "named",
+                "name": "Traits::Id"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "kind": "named",
+                "name": "Traits::Id"
+              }
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "expression": {
+              "kind": "expression",
+              "tokens": [
+                "$requirement:0",
+                ".",
+                "less",
+                "(",
+                "$requirement:1",
+                ",",
+                "$requirement:2",
+                ")"
+              ]
+            },
+            "kind": "compound-requirement",
+            "noexcept": false,
+            "return_constraint": {
+              "arguments": [
+                {
+                  "kind": "builtin",
+                  "name": "bool"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "std::convertible_to"
+            }
+          }
+        ]
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::ForestTraitsLess",
+      "template": {
+        "parameters": [
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "kind": "requires",
+        "parameters": [
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "kind": "named",
+                "name": "Traits::Id"
+              }
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "expression": {
+              "kind": "expression",
+              "tokens": [
+                "$requirement:0",
+                ".",
+                "is_parent_sentinel",
+                "(",
+                "$requirement:1",
+                ")"
+              ]
+            },
+            "kind": "compound-requirement",
+            "noexcept": false,
+            "return_constraint": {
+              "arguments": [
+                {
+                  "kind": "builtin",
+                  "name": "bool"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "std::convertible_to"
+            }
+          }
+        ]
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::ForestTraitsParentSentinel",
+      "template": {
+        "parameters": [
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "kind": "logical-and",
+        "operands": [
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "detail::IndexedInput"
+          },
+          {
+            "arguments": [
+              {
+                "arguments": [
+                  {
+                    "index": 0,
+                    "kind": "template-parameter"
+                  }
+                ],
+                "kind": "template-specialization",
+                "name": "detail::IndexedValue"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "std::unsigned_integral"
+          },
+          {
+            "kind": "unary-expression",
+            "operand": {
+              "arguments": [
+                {
+                  "arguments": [
+                    {
+                      "index": 0,
+                      "kind": "template-parameter"
+                    }
+                  ],
+                  "kind": "template-specialization",
+                  "name": "detail::IndexedValue"
+                },
+                {
+                  "kind": "builtin",
+                  "name": "bool"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "std::same_as"
+            },
+            "operator": "!"
+          }
+        ]
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::IndexedDepthInput",
+      "template": {
+        "parameters": [
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "template-parameter"
+          }
+        ],
+        "kind": "concept-specialization",
+        "name": "detail::IndexedInput"
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::IndexedNodeInput",
+      "template": {
+        "parameters": [
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "kind": "logical-and",
+        "operands": [
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "forest_sorting::IndexedNodeInput"
+          },
+          {
+            "arguments": [
+              {
+                "arguments": [
+                  {
+                    "index": 0,
+                    "kind": "template-parameter"
+                  }
+                ],
+                "kind": "template-specialization",
+                "name": "detail::IndexedValue"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "std::movable"
+          },
+          {
+            "arguments": [
+              {
+                "arguments": [
+                  {
+                    "index": 0,
+                    "kind": "template-parameter"
+                  }
+                ],
+                "kind": "template-specialization",
+                "name": "detail::IndexedValue"
+              }
+            ],
+            "kind": "concept-specialization",
+            "name": "std::swappable"
+          },
+          {
+            "kind": "requires",
+            "parameters": [
+              {
+                "kind": "lvalue-reference",
+                "to": {
+                  "index": 0,
+                  "kind": "template-parameter"
+                }
+              },
+              {
+                "kind": "named",
+                "name": "std::size_t"
+              },
+              {
+                "arguments": [
+                  {
+                    "index": 0,
+                    "kind": "template-parameter"
+                  }
+                ],
+                "kind": "template-specialization",
+                "name": "detail::IndexedValue"
+              }
+            ],
+            "requirements": [
+              {
+                "expression": {
+                  "kind": "expression",
+                  "tokens": [
+                    "$requirement:0",
+                    "[",
+                    "$requirement:1",
+                    "]"
+                  ]
+                },
+                "kind": "compound-requirement",
+                "noexcept": false,
+                "return_constraint": {
+                  "arguments": [
+                    {
+                      "kind": "lvalue-reference",
+                      "to": {
+                        "arguments": [
+                          {
+                            "index": 0,
+                            "kind": "template-parameter"
+                          }
+                        ],
+                        "kind": "template-specialization",
+                        "name": "detail::IndexedValue"
+                      }
+                    }
+                  ],
+                  "kind": "concept-specialization",
+                  "name": "std::same_as"
+                }
+              },
+              {
+                "expression": {
+                  "kind": "binary-expression",
+                  "operands": [
+                    {
+                      "kind": "expression",
+                      "tokens": [
+                        "$requirement:0",
+                        "[",
+                        "$requirement:1",
+                        "]"
+                      ]
+                    },
+                    {
+                      "kind": "expression",
+                      "tokens": [
+                        "std",
+                        "::",
+                        "move",
+                        "(",
+                        "$requirement:2",
+                        ")"
+                      ]
+                    }
+                  ],
+                  "operator": "="
+                },
+                "kind": "simple-requirement"
+              }
+            ]
+          }
+        ]
+      },
+      "kind": "ConceptDecl",
+      "name": "forest_sorting::MutableNodeInput",
+      "template": {
+        "parameters": [
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      }
+    },
+    {
+      "constraint": {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "template-parameter"
+          },
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "template-specialization",
+            "name": "detail::ForestSortingNode"
+          }
+        ],
+        "kind": "concept-specialization",
+        "name": "forest_sorting::ForestTraits"
+      },
+      "kind": "FunctionTemplateDecl",
+      "name": "forest_sorting::sortInPlaceByDepthAndId",
+      "template": {
+        "parameters": [
+          {
+            "constraint": {
+              "arguments": [
+                {
+                  "index": 0,
+                  "kind": "template-parameter"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "forest_sorting::MutableNodeInput"
+            },
+            "kind": "type",
+            "pack": false
+          },
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      },
+      "type": {
+        "const": false,
+        "kind": "function",
+        "noexcept": false,
+        "parameters": [
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "index": 0,
+              "kind": "template-parameter"
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 1,
+                "kind": "template-parameter"
+              }
+            }
+          }
+        ],
+        "ref_qualifier": "none",
+        "return": {
+          "kind": "builtin",
+          "name": "void"
+        },
+        "volatile": false
+      }
+    },
+    {
+      "constraint": {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "template-parameter"
+          },
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "template-specialization",
+            "name": "detail::ForestSortingNode"
+          }
+        ],
+        "kind": "concept-specialization",
+        "name": "forest_sorting::ForestTraits"
+      },
+      "kind": "FunctionTemplateDecl",
+      "name": "forest_sorting::sortedCopyByDepthAndId",
+      "template": {
+        "parameters": [
+          {
+            "constraint": {
+              "arguments": [
+                {
+                  "index": 0,
+                  "kind": "template-parameter"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "forest_sorting::CopyableNodeInput"
+            },
+            "kind": "type",
+            "pack": false
+          },
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      },
+      "type": {
+        "const": false,
+        "kind": "function",
+        "noexcept": false,
+        "parameters": [
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 1,
+                "kind": "template-parameter"
+              }
+            }
+          }
+        ],
+        "ref_qualifier": "none",
+        "return": {
+          "kind": "auto"
+        },
+        "volatile": false
+      }
+    },
+    {
+      "constraint": {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "template-parameter"
+          },
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "template-specialization",
+            "name": "detail::ForestSortingNode"
+          }
+        ],
+        "kind": "concept-specialization",
+        "name": "forest_sorting::ForestTraits"
+      },
+      "kind": "FunctionTemplateDecl",
+      "name": "forest_sorting::sortedOrderByDepthAndId",
+      "template": {
+        "parameters": [
+          {
+            "constraint": {
+              "arguments": [
+                {
+                  "index": 0,
+                  "kind": "template-parameter"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "forest_sorting::IndexedNodeInput"
+            },
+            "kind": "type",
+            "pack": false
+          },
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      },
+      "type": {
+        "const": false,
+        "kind": "function",
+        "noexcept": false,
+        "parameters": [
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 1,
+                "kind": "template-parameter"
+              }
+            }
+          }
+        ],
+        "ref_qualifier": "none",
+        "return": {
+          "arguments": [
+            {
+              "kind": "named",
+              "name": "std::size_t"
+            }
+          ],
+          "kind": "template-specialization",
+          "name": "std::vector"
+        },
+        "volatile": false
+      }
+    },
+    {
+      "constraint": {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "template-parameter"
+          },
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "template-specialization",
+            "name": "detail::ForestSortingNode"
+          }
+        ],
+        "kind": "concept-specialization",
+        "name": "forest_sorting::ForestTraits"
+      },
+      "kind": "FunctionTemplateDecl",
+      "name": "forest_sorting::sortedOrderByDepthAndIdWithDepths",
+      "template": {
+        "parameters": [
+          {
+            "constraint": {
+              "arguments": [
+                {
+                  "index": 0,
+                  "kind": "template-parameter"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "forest_sorting::IndexedNodeInput"
+            },
+            "kind": "type",
+            "pack": false
+          },
+          {
+            "kind": "type",
+            "pack": false
+          },
+          {
+            "constraint": {
+              "arguments": [
+                {
+                  "index": 2,
+                  "kind": "template-parameter"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "forest_sorting::IndexedDepthInput"
+            },
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      },
+      "type": {
+        "const": false,
+        "kind": "function",
+        "noexcept": false,
+        "parameters": [
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 1,
+                "kind": "template-parameter"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 2,
+                "kind": "template-parameter"
+              }
+            }
+          }
+        ],
+        "ref_qualifier": "none",
+        "return": {
+          "arguments": [
+            {
+              "kind": "named",
+              "name": "std::size_t"
+            }
+          ],
+          "kind": "template-specialization",
+          "name": "std::vector"
+        },
+        "volatile": false
+      }
+    },
+    {
+      "constraint": {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "template-parameter"
+          },
+          {
+            "arguments": [
+              {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            ],
+            "kind": "template-specialization",
+            "name": "detail::ForestSortingNode"
+          }
+        ],
+        "kind": "concept-specialization",
+        "name": "forest_sorting::ForestTraits"
+      },
+      "kind": "FunctionTemplateDecl",
+      "name": "forest_sorting::verifySortedByDepthAndId",
+      "template": {
+        "parameters": [
+          {
+            "constraint": {
+              "arguments": [
+                {
+                  "index": 0,
+                  "kind": "template-parameter"
+                }
+              ],
+              "kind": "concept-specialization",
+              "name": "forest_sorting::IndexedNodeInput"
+            },
+            "kind": "type",
+            "pack": false
+          },
+          {
+            "kind": "type",
+            "pack": false
+          }
+        ]
+      },
+      "type": {
+        "const": false,
+        "kind": "function",
+        "noexcept": false,
+        "parameters": [
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 0,
+                "kind": "template-parameter"
+              }
+            }
+          },
+          {
+            "kind": "lvalue-reference",
+            "to": {
+              "kind": "qualified",
+              "qualifiers": [
+                "const"
+              ],
+              "type": {
+                "index": 1,
+                "kind": "template-parameter"
+              }
+            }
+          }
+        ],
+        "ref_qualifier": "none",
+        "return": {
+          "kind": "builtin",
+          "name": "bool"
+        },
+        "volatile": false
+      }
+    }
+  ],
+  "manifest_schema": 2
+}

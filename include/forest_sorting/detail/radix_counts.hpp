@@ -3,6 +3,7 @@
 
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 
@@ -19,6 +20,26 @@ template <std::size_t MaxRangeSize> struct BitmaskTouchedCountsUpTo {
     static constexpr std::size_t max_size = MaxRangeSize;
 };
 
+template <typename CounterPolicy> struct IdCountPolicy {
+    using counter_policy = CounterPolicy;
+};
+
+template <typename CounterPolicy> struct DepthCountPolicy {
+    using counter_policy = CounterPolicy;
+};
+
+template <typename Policy>
+concept IdRadixCountPolicy = requires {
+    typename Policy::counter_policy;
+} && std::same_as<Policy, IdCountPolicy<typename Policy::counter_policy>>;
+
+template <typename Policy>
+concept DepthRadixCountPolicy = requires {
+    typename Policy::counter_policy;
+} && std::same_as<Policy, DepthCountPolicy<typename Policy::counter_policy>>;
+
+using ProductionDepthCountPolicy = DepthCountPolicy<FullClearCounts>;
+
 struct FullClearCountScratch {
     std::array<std::size_t, radix_bucket_count> counts{};
 };
@@ -28,6 +49,32 @@ struct BitmaskTouchedCountScratch {
 
     std::array<std::size_t, radix_bucket_count> counts{};
     std::array<uint64_t, mask_word_count> touchedMask{};
+};
+
+template <typename CounterPolicy> struct RadixCounterTraits;
+
+template <> struct RadixCounterTraits<FullClearCounts> {
+    using policy_scratch_type = FullClearCountScratch;
+    using workspace_scratch_type = EmptyScratch;
+    static constexpr bool alwaysUsePolicy = true;
+
+    [[nodiscard]] static constexpr bool
+    usePolicyForRange(std::size_t rangeSize) noexcept {
+        (void)rangeSize;
+        return true;
+    }
+};
+
+template <std::size_t MaxRangeSize>
+struct RadixCounterTraits<BitmaskTouchedCountsUpTo<MaxRangeSize>> {
+    using policy_scratch_type = BitmaskTouchedCountScratch;
+    using workspace_scratch_type = BitmaskTouchedCountScratch;
+    static constexpr bool alwaysUsePolicy = false;
+
+    [[nodiscard]] static constexpr bool
+    usePolicyForRange(std::size_t rangeSize) noexcept {
+        return rangeSize <= MaxRangeSize;
+    }
 };
 
 inline void resetRadixCounts(FullClearCountScratch &countScratch) {

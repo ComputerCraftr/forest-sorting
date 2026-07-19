@@ -3,38 +3,13 @@
 
 #include "forest_sorting/detail/id_chunks.hpp"
 #include "forest_sorting/traits.hpp"
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 
 namespace forest_sorting::detail {
 
-template <typename Traits, typename IdType>
-concept HasForestTraitsLess =
-    requires(const Traits &traits, const IdType &lhs, const IdType &rhs) {
-        { traits.less(lhs, rhs) } -> std::convertible_to<bool>;
-    };
-
-template <typename IdType>
-concept HasNativeIdLess = requires(const IdType &lhs, const IdType &rhs) {
-    { lhs < rhs } -> std::convertible_to<bool>;
-};
-
 template <typename Traits>
-concept HasCheapForestTraitsIdOrder =
-    HasForestTraitsLess<Traits, forest_sorting::ForestTraitsId<Traits>> ||
-    HasNativeIdLess<forest_sorting::ForestTraitsId<Traits>>;
-
-template <typename Traits, typename IdType>
-concept HasForestTraitsEqual =
-    requires(const Traits &traits, const IdType &lhs, const IdType &rhs) {
-        { traits.equal(lhs, rhs) } -> std::convertible_to<bool>;
-    };
-
-template <typename IdType>
-concept HasNativeIdEqual = requires(const IdType &lhs, const IdType &rhs) {
-    { lhs == rhs } -> std::convertible_to<bool>;
-};
+concept HasCheapForestTraitsIdOrder = forest_sorting::ForestTraitsLess<Traits>;
 
 template <typename Traits>
 inline constexpr bool shouldCacheChunkIds =
@@ -136,19 +111,11 @@ inline int compareIdsMsbFirst(const NodeId &lhs, const NodeId &rhs,
 template <typename NodeId, typename NodeTraits>
 inline int compareNodeIds(const NodeId &first, const NodeId &second,
                           const NodeTraits &traits) {
-    if constexpr (HasForestTraitsLess<NodeTraits, NodeId>) {
+    if constexpr (forest_sorting::ForestTraitsLess<NodeTraits>) {
         if (traits.less(first, second)) {
             return -1;
         }
         if (traits.less(second, first)) {
-            return 1;
-        }
-        return 0;
-    } else if constexpr (HasNativeIdLess<NodeId>) {
-        if (first < second) {
-            return -1;
-        }
-        if (second < first) {
             return 1;
         }
         return 0;
@@ -160,10 +127,8 @@ inline int compareNodeIds(const NodeId &first, const NodeId &second,
 template <typename NodeId, typename NodeTraits>
 inline bool idLess(const NodeId &lhs, const NodeId &rhs,
                    const NodeTraits &traits) {
-    if constexpr (HasForestTraitsLess<NodeTraits, NodeId>) {
+    if constexpr (forest_sorting::ForestTraitsLess<NodeTraits>) {
         return traits.less(lhs, rhs);
-    } else if constexpr (HasNativeIdLess<NodeId>) {
-        return lhs < rhs;
     } else {
         return compareNodeIds(lhs, rhs, traits) < 0;
     }
@@ -172,12 +137,10 @@ inline bool idLess(const NodeId &lhs, const NodeId &rhs,
 template <typename NodeId, typename NodeTraits>
 inline bool idEqual(const NodeId &lhs, const NodeId &rhs,
                     const NodeTraits &traits) {
-    if constexpr (HasForestTraitsEqual<NodeTraits, NodeId>) {
+    if constexpr (forest_sorting::ForestTraitsEqual<NodeTraits>) {
         return traits.equal(lhs, rhs);
-    } else if constexpr (HasNativeIdEqual<NodeId>) {
-        return lhs == rhs;
     } else {
-        return compareNodeIds(lhs, rhs, traits) == 0;
+        return compareIdsMsbFirst(lhs, rhs, traits) == 0;
     }
 }
 

@@ -1,19 +1,13 @@
 #ifndef FOREST_SORTING_DETAIL_PARENT_SENTINEL_HPP
 #define FOREST_SORTING_DETAIL_PARENT_SENTINEL_HPP
 
-#include <concepts>
+#include "forest_sorting/traits.hpp"
 
 namespace forest_sorting::detail {
 
 template <typename Traits, typename IdType>
-concept HasForestTraitsParentSentinel =
-    requires(const Traits &traits, const IdType &parentId) {
-        { traits.is_parent_sentinel(parentId) } -> std::convertible_to<bool>;
-    };
-
-template <typename Traits, typename IdType>
 inline bool isParentSentinel(const Traits &traits, const IdType &parentId) {
-    if constexpr (HasForestTraitsParentSentinel<Traits, IdType>) {
+    if constexpr (forest_sorting::ForestTraitsParentSentinel<Traits>) {
         return traits.is_parent_sentinel(parentId);
     } else {
         return false;

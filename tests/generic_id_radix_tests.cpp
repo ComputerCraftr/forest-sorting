@@ -6,6 +6,7 @@
 #include "hashed_test_bytes.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"
+#include "test_suites.hpp"
 
 #include <algorithm>
 #include <concepts>
@@ -14,6 +15,8 @@
 #include <numeric>
 #include <type_traits>
 #include <vector>
+
+namespace {
 
 using namespace forest_sorting::test_support;
 
@@ -209,7 +212,7 @@ void test_chunk_permutation_sort_generic_id_widths() {
 #undef X
 }
 
-void runGenericIdRadixTests() {
+void runGenericIdRadixTestsImpl() {
     runTest("chunk comparison matches byte lexicographic order",
             test_chunk_comparison_matches_byte_lexicographic_order);
     runTest("chunk permutation sort supports generic ID widths",
@@ -219,3 +222,7 @@ void runGenericIdRadixTests() {
     runTest("merge join uses injected predicates",
             test_merge_join_sorted_permutations_uses_injected_predicates);
 }
+
+} // namespace
+
+void runGenericIdRadixTests() { runGenericIdRadixTestsImpl(); }

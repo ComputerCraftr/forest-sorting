@@ -1,15 +1,18 @@
 #include "control_parent_index.hpp"
+#include "forest_sorting/benchmark_support/full/hash_variants.hpp"
 #include "forest_sorting/detail/constants.hpp"
+#include "forest_sorting/detail/id_chunks.hpp"
 #include "forest_sorting/detail/id_compare.hpp"
 #include "forest_sorting/detail/id_small_sort.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
+#include "forest_sorting/traits.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
-#include "hash_support.hpp"
 #include "hashed_test_bytes.hpp"
 #include "id_dispatch_oracle.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"
+#include "test_suites.hpp"
 
 #include <array>
 #include <cstddef>
@@ -17,7 +20,10 @@
 #include <stdexcept>
 #include <vector>
 
+namespace {
+
 using namespace forest_sorting::test_support;
+using namespace forest_sorting::benchmark_support;
 using forest_sorting::UInt128NodeTraits;
 
 template <std::size_t ByteCount> struct CustomMockId {
@@ -40,7 +46,7 @@ template <std::size_t ByteCount> struct CustomMockTraits {
         return node.parentId;
     }
     std::size_t hash(const Id &nodeId) const noexcept {
-        return forest_sorting::test_support::fnvHashBytes(nodeId.bytes);
+        return forest_sorting::benchmark_support::fnvHashBytes(nodeId.bytes);
     }
     uint8_t byte_msb_first(const Id &nodeId,
                            std::size_t byteIndex) const noexcept {
@@ -56,24 +62,109 @@ CustomMockId<ByteCount> makeMockBytes(uint8_t high, uint8_t low) {
     return nodeId;
 }
 
+struct PartialChunkTraits {
+    using Id = InstrumentedByteId<8>;
+    static constexpr std::size_t id_byte_count = 8;
+
+    IdDispatchCounters *counters;
+
+    uint8_t byte_msb_first(const Id &nodeId,
+                           std::size_t byteIndex) const noexcept {
+        counters->record(IdDispatchPath::ByteFallback);
+        return nodeId.bytes[byteIndex];
+    }
+
+    template <std::size_t ChunkBytes>
+        requires(ChunkBytes == 2)
+    uint16_t chunk_msb_first(const Id &nodeId,
+                             std::size_t chunkIndex) const noexcept {
+        counters->record(IdDispatchPath::Chunk2);
+        const std::size_t firstByte = chunkIndex * 2;
+        return static_cast<uint16_t>(
+            (static_cast<uint16_t>(nodeId.bytes[firstByte]) << 8U) |
+            nodeId.bytes[firstByte + 1]);
+    }
+
+    static void less(const Id &lhs, const Id &rhs) noexcept {
+        (void)lhs;
+        (void)rhs;
+    }
+    static void equal(const Id &lhs, const Id &rhs) noexcept {
+        (void)lhs;
+        (void)rhs;
+    }
+    static void is_parent_sentinel(const Id &parentId) noexcept {
+        (void)parentId;
+    }
+};
+
+struct MissingIdOptionalTraits {};
+
+static_assert(!forest_sorting::ForestTraitsLess<MissingIdOptionalTraits>);
+static_assert(!forest_sorting::ForestTraitsEqual<MissingIdOptionalTraits>);
+static_assert(
+    !forest_sorting::ForestTraitsParentSentinel<MissingIdOptionalTraits>);
+static_assert(
+    !forest_sorting::ForestTraitsChunkAccess<1, MissingIdOptionalTraits>);
+static_assert(!forest_sorting::ForestTraitsLess<PartialChunkTraits>);
+static_assert(!forest_sorting::ForestTraitsEqual<PartialChunkTraits>);
+static_assert(!forest_sorting::ForestTraitsParentSentinel<PartialChunkTraits>);
+static_assert(!forest_sorting::ForestTraitsChunkAccess<1, PartialChunkTraits>);
+static_assert(forest_sorting::ForestTraitsChunkAccess<2, PartialChunkTraits>);
+static_assert(!forest_sorting::ForestTraitsChunkAccess<4, PartialChunkTraits>);
+static_assert(!forest_sorting::ForestTraitsChunkAccess<8, PartialChunkTraits>);
+
+void test_partial_chunk_capabilities_fall_back_independently() {
+    IdDispatchCounters counters;
+    PartialChunkTraits traits{&counters};
+    PartialChunkTraits::Id nodeId{};
+    nodeId.bytes = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    require(forest_sorting::detail::chunkMsbFirst<1>(nodeId, 0, traits) == 1);
+    require(forest_sorting::detail::chunkMsbFirst<2>(nodeId, 0, traits) ==
+            0x0102U);
+    require(forest_sorting::detail::chunkMsbFirst<4>(nodeId, 0, traits) ==
+            0x01020304U);
+    require(forest_sorting::detail::chunkMsbFirst<8>(nodeId, 0, traits) ==
+            0x0102030405060708ULL);
+    require(counters.count(IdDispatchPath::Chunk2) == 1,
+            "supported chunk width did not use its trait hook");
+    require(counters.count(IdDispatchPath::ByteFallback) == 13,
+            "unsupported chunk widths did not independently use bytes");
+}
+
 void test_id_equal_falls_back_to_msb_chunks_without_equal_hook() {
-    using IdType = CustomMockId<12>;
     using TraitsType = CustomMockTraits<12>;
     const TraitsType traits;
 
-    static_assert(
-        !forest_sorting::detail::HasForestTraitsEqual<TraitsType, IdType>);
-    static_assert(!forest_sorting::detail::HasNativeIdEqual<IdType>);
+    static_assert(!forest_sorting::ForestTraitsEqual<TraitsType>);
     static_assert(forest_sorting::detail::shouldCacheChunkIds<TraitsType>);
 
-    const IdType low = makeMockBytes<12>(1, 2);
-    const IdType sameLow = makeMockBytes<12>(1, 2);
-    const IdType high = makeMockBytes<12>(1, 3);
+    const CustomMockId<12> low = makeMockBytes<12>(1, 2);
+    const CustomMockId<12> sameLow = makeMockBytes<12>(1, 2);
+    const CustomMockId<12> high = makeMockBytes<12>(1, 3);
 
     require(forest_sorting::detail::idEqual(low, sameLow, traits),
             "idEqual did not fall back to MSB chunk equality");
     require(!forest_sorting::detail::idEqual(low, high, traits),
             "idEqual treated different byte IDs as equal");
+
+    IdDispatchCounters counters;
+    const InstrumentedLessOnlyTraits lessOnlyTraits{&counters};
+    const InstrumentedTraitId first{0x0102030405060708ULL};
+    const InstrumentedTraitId sameFirst{0x0102030405060708ULL};
+    const InstrumentedTraitId second{0x0102030405060709ULL};
+    static_assert(forest_sorting::ForestTraitsLess<InstrumentedLessOnlyTraits>);
+    static_assert(
+        !forest_sorting::ForestTraitsEqual<InstrumentedLessOnlyTraits>);
+
+    require(forest_sorting::detail::idEqual(first, sameFirst, lessOnlyTraits) &&
+                !forest_sorting::detail::idEqual(first, second, lessOnlyTraits),
+            "idEqual did not use canonical bytes without an equal hook");
+    requireDispatchUsed(counters, IdDispatchPath::ByteFallback,
+                        "idEqual did not read canonical bytes");
+    requireDispatchUnused(counters, IdDispatchPath::Trait,
+                          "idEqual incorrectly routed through traits.less");
 }
 
 void test_comparison_and_equality_dispatch_priority() {
@@ -105,7 +196,7 @@ void test_comparison_and_equality_dispatch_priority() {
     requireDispatchUnused(counters, IdDispatchPath::ByteFallback,
                           "trait compareNodeIds used the MSB byte fallback");
 
-    // 2. Test native operator preference when traits lack hooks.
+    // 2. Native operators must not override canonical byte order.
     counters.reset();
     InstrumentedNativeId::counters = &counters;
     InstrumentedNativeTraits nTraits;
@@ -113,21 +204,21 @@ void test_comparison_and_equality_dispatch_priority() {
     InstrumentedNativeId nid2{20};
 
     require(forest_sorting::detail::idLess(nid1, nid2, nTraits),
-            "idLess native failed");
-    requireDispatchUsed(counters, IdDispatchPath::Native,
-                        "idLess did not use the Native path");
+            "idLess byte fallback failed");
+    requireDispatchUnused(counters, IdDispatchPath::Native,
+                          "idLess used native operator<");
 
     counters.reset();
     require(!forest_sorting::detail::idEqual(nid1, nid2, nTraits),
-            "idEqual native failed");
-    requireDispatchUsed(counters, IdDispatchPath::Native,
-                        "idEqual did not use the Native path");
+            "idEqual byte fallback failed");
+    requireDispatchUnused(counters, IdDispatchPath::Native,
+                          "idEqual used native operator==");
 
     counters.reset();
     require(forest_sorting::detail::compareNodeIds(nid1, nid2, nTraits) == -1,
-            "compareNodeIds native failed");
-    requireDispatchUsed(counters, IdDispatchPath::Native,
-                        "compareNodeIds did not use the Native path");
+            "compareNodeIds byte fallback failed");
+    requireDispatchUnused(counters, IdDispatchPath::Native,
+                          "compareNodeIds used native operators");
     InstrumentedNativeId::counters = nullptr;
 
     // 3. Test that MSB fallback is used when both traits and native are absent.
@@ -167,11 +258,9 @@ void test_comparison_and_equality_dispatch_priority() {
                             "compareNodeIds fallback did not use chunk access");
     }
 
-    // 4. Test that traits/native hooks suppress caching
+    // 4. Trait hooks suppress caching; native operators do not participate.
     static_assert(
         !forest_sorting::detail::shouldCacheChunkIds<InstrumentedTraitTraits>);
-    static_assert(
-        !forest_sorting::detail::shouldCacheChunkIds<InstrumentedNativeTraits>);
 
     // 5. Test that caching works and cached path avoids slow MSB fallback
     static_assert(forest_sorting::detail::shouldCacheChunkIds<
@@ -415,7 +504,7 @@ void test_parent_index_lookup_semantics() {
         using Node128 = forest_sorting::Node;
         using Traits128 = UInt128NodeTraits;
         Traits128 traits;
-        const forest_sorting::test_support::UInt128NodeHashedTraits
+        const forest_sorting::benchmark_support::UInt128NodeHashedTraits
             hashedTraits;
 
         std::vector<Node128> nodes(3);
@@ -481,7 +570,9 @@ void test_parent_index_lookup_semantics() {
     }
 }
 
-void runGenericIdParentTests() {
+void runGenericIdParentTestsImpl() {
+    runTest("partial chunk capabilities fall back independently",
+            test_partial_chunk_capabilities_fall_back_independently);
     runTest("idEqual falls back without equal hook",
             test_id_equal_falls_back_to_msb_chunks_without_equal_hook);
     runTest("comparison and equality dispatch priority",
@@ -491,3 +582,7 @@ void runGenericIdParentTests() {
     runTest("parent index lookup semantics",
             test_parent_index_lookup_semantics);
 }
+
+} // namespace
+
+void runGenericIdParentTests() { runGenericIdParentTestsImpl(); }

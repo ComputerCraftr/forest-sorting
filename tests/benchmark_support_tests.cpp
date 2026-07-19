@@ -1,16 +1,23 @@
-#include "common/benchmark_cli.hpp"
-#include "common/benchmark_output.hpp"
-#include "common/benchmark_stats.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_cli.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_execution.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_output.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_stats.hpp"
+#include "forest_sorting/benchmark_support/common/dataset.hpp"
+#include "forest_sorting/benchmark_support/common/uint128_fixtures.hpp"
+#include "forest_sorting/benchmark_support/full/forest_benchmark_output.hpp"
+#include "forest_sorting/benchmark_support/full/parent_registry.hpp"
+#include "forest_sorting/benchmark_support/tail/tail_sort_variants.hpp"
+#include "forest_sorting/detail/constants.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
+#include "forest_sorting/detail/parent_sentinel.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
-#include "full/adaptive_sort_variants.hpp"
-#include "full/forest_benchmark_output.hpp"
 #include "hashed_test_bytes.hpp"
 #include "small_sort_test_types.hpp"
 #include "test_bytes.hpp"
 #include "test_harness.hpp"
-#include "uint128_fixtures.hpp"
+#include "test_suites.hpp"
+#include "uint128_test_fixtures.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,6 +25,7 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -25,9 +33,339 @@
 #include <string_view>
 #include <vector>
 
+namespace {
+
 using namespace forest_sorting::test_support;
+using namespace forest_sorting::benchmark_support;
 using forest_sorting::Node;
 using forest_sorting::UInt128;
+
+static_assert(deepChainNodeCount(0) == 1);
+static_assert(deepChainNodeCount(UINT32_MAX) == (uint64_t{1} << 32U));
+
+void test_materialized_context_lifetimes_and_schedule_seeds() {
+    struct LifetimeState {
+        std::size_t live = 0;
+        std::size_t maximumLive = 0;
+        std::size_t liveArtifacts = 0;
+        int artifactOwner = 0;
+        bool overlappingArtifactOwners = false;
+        std::vector<int> processed;
+    };
+    struct TrackedContext {
+        LifetimeState &state;
+        int descriptor;
+
+        TrackedContext(LifetimeState &lifetimeState, int value)
+            : state(lifetimeState), descriptor(value) {
+            ++state.live;
+            state.maximumLive = std::max(state.maximumLive, state.live);
+        }
+        ~TrackedContext() { --state.live; }
+
+        TrackedContext(const TrackedContext &) = delete;
+        TrackedContext &operator=(const TrackedContext &) = delete;
+    };
+    struct TrackedArtifact {
+        LifetimeState &state;
+
+        TrackedArtifact(LifetimeState &lifetimeState, int descriptor)
+            : state(lifetimeState) {
+            if (state.liveArtifacts != 0 && state.artifactOwner != descriptor) {
+                state.overlappingArtifactOwners = true;
+            }
+            state.artifactOwner = descriptor;
+            ++state.liveArtifacts;
+        }
+        ~TrackedArtifact() {
+            --state.liveArtifacts;
+            if (state.liveArtifacts == 0) {
+                state.artifactOwner = 0;
+            }
+        }
+
+        TrackedArtifact(const TrackedArtifact &) = delete;
+        TrackedArtifact &operator=(const TrackedArtifact &) = delete;
+    };
+
+    const std::vector<int> descriptors = {10, 20, 30};
+    const std::vector<std::size_t> executionOrder = {2, 0, 1};
+    LifetimeState state;
+    forEachMaterializedContext(
+        descriptors, executionOrder,
+        [&](int descriptor) {
+            require(state.liveArtifacts == 0,
+                    "prior context artifacts survived materialization");
+            return std::make_unique<TrackedContext>(state, descriptor);
+        },
+        [&](int descriptor, const auto &context) {
+            require(state.live == 1,
+                    "more than one materialized context remained alive");
+            require(context->descriptor == descriptor,
+                    "materialized context did not match its descriptor");
+            const auto firstArtifact =
+                std::make_unique<TrackedArtifact>(state, descriptor);
+            const auto secondArtifact =
+                std::make_unique<TrackedArtifact>(state, descriptor);
+            require(state.liveArtifacts == 2,
+                    "context artifacts were not scoped to processing");
+            state.processed.push_back(descriptor);
+        });
+    require(state.live == 0 && state.maximumLive == 1 &&
+                state.liveArtifacts == 0 && !state.overlappingArtifactOwners,
+            "materialized context lifetime escaped one execution iteration");
+    require((state.processed == std::vector<int>{30, 10, 20}),
+            "materialized contexts ignored execution order");
+
+    LifetimeState sequentialState;
+    forEachMaterializedContext(
+        descriptors, std::vector<std::size_t>{0, 1, 2},
+        [&](int descriptor) {
+            return std::make_unique<TrackedContext>(sequentialState,
+                                                    descriptor);
+        },
+        [&](int descriptor, const auto &) {
+            sequentialState.processed.push_back(descriptor);
+        });
+    require(sequentialState.live == 0 && sequentialState.maximumLive == 1 &&
+                sequentialState.processed == descriptors,
+            "unshuffled contexts did not preserve descriptor order and scope");
+
+    LifetimeState exceptionalState;
+    bool caught = false;
+    try {
+        forEachMaterializedContext(
+            descriptors, std::vector<std::size_t>{0, 1, 2},
+            [&](int descriptor) {
+                return std::make_unique<TrackedContext>(exceptionalState,
+                                                        descriptor);
+            },
+            [&](int descriptor, const auto &) {
+                if (descriptor == 20) {
+                    throw std::runtime_error("expected lifecycle test error");
+                }
+                exceptionalState.processed.push_back(descriptor);
+            });
+    } catch (const std::runtime_error &) {
+        caught = true;
+    }
+    require(caught && exceptionalState.live == 0 &&
+                exceptionalState.maximumLive == 1 &&
+                exceptionalState.processed == std::vector<int>{10},
+            "materialized context escaped during exception unwinding");
+
+    const uint32_t first = benchmarkParentScheduleSeed(10000, 2, 7, 0x5eedU);
+    require(first == benchmarkParentScheduleSeed(10000, 2, 7, 0x5eedU),
+            "context schedule seed was not deterministic");
+    require(first != benchmarkParentScheduleSeed(10001, 2, 7, 0x5eedU) &&
+                first != benchmarkParentScheduleSeed(10000, 2, 8, 0x5eedU) &&
+                first != benchmarkParentScheduleSeed(10000, 2, 7, 0x5eeeU) &&
+                first != benchmarkSortScheduleSeed(10000, 2, 7, 0x5eedU),
+            "context identity did not affect its schedule seed");
+    require(benchmarkContextOrderSeed(0x5eedU) ==
+                    benchmarkContextOrderSeed(0x5eedU) &&
+                benchmarkContextOrderSeed(0x5eedU) !=
+                    benchmarkContextOrderSeed(0x5eeeU),
+            "context order seed was not deterministic and domain-separated");
+
+    std::vector<std::size_t> firstSchedule(16);
+    std::iota(firstSchedule.begin(), firstSchedule.end(), std::size_t{0});
+    auto matchingSchedule = firstSchedule;
+    auto changedSchedule = firstSchedule;
+    shuffleBenchmarkOrder(firstSchedule, first, 3);
+    shuffleBenchmarkOrder(matchingSchedule, first, 3);
+    shuffleBenchmarkOrder(changedSchedule,
+                          benchmarkParentScheduleSeed(10000, 2, 7, 0x5eeeU), 3);
+    require(firstSchedule == matchingSchedule,
+            "identical context seeds produced different schedules");
+    require(firstSchedule != changedSchedule,
+            "different order seeds produced the same context schedule");
+}
+
+void test_deep_chain_uses_checked_count_semantics() {
+    std::vector<Node> nodes;
+    appendDeepChain(nodes, 0, 0x100U);
+    require(nodes.size() == 1 && nodes.front().parentId == 0,
+            "zero-depth chain did not append exactly its root");
+
+    appendDeepChain(nodes, 3, 0x200U);
+    require(nodes.size() == 5,
+            "deep-chain fixture changed maximum-depth semantics");
+    require(nodes[1].parentId == 0 && nodes[2].parentId == nodes[1].id &&
+                nodes[3].parentId == nodes[2].id &&
+                nodes[4].parentId == nodes[3].id,
+            "deep-chain fixture did not link its checked append range");
+}
+
+void test_dataset_cardinality_and_bounded_depth_cycles() {
+    constexpr std::array<std::size_t, 13> kSizes = {
+        0, 1, 31, 128, 129, 130, 641, 642, 643, 1666, 1667, 2000, 10000};
+    for (DatasetKind dataset : allDatasetKinds()) {
+        for (std::size_t size : kSizes) {
+            const auto nodes =
+                makeGeneratedForestForKind(dataset, size, 0x1234U);
+            const auto repeated =
+                makeGeneratedForestForKind(dataset, size, 0x1234U);
+            require(nodes.size() == size,
+                    std::string(datasetName(dataset)) +
+                        " dataset did not preserve requested cardinality");
+            require(sameNodes(nodes, repeated),
+                    std::string(datasetName(dataset)) +
+                        " dataset generation was not deterministic");
+
+            std::vector<UInt128> sortedIds;
+            sortedIds.reserve(nodes.size());
+            for (const Node &node : nodes) {
+                sortedIds.push_back(node.id);
+            }
+            std::sort(sortedIds.begin(), sortedIds.end());
+            require(std::adjacent_find(sortedIds.begin(), sortedIds.end()) ==
+                        sortedIds.end(),
+                    std::string(datasetName(dataset)) +
+                        " dataset generated duplicate node IDs");
+
+            for (const Node &node : nodes) {
+                const bool sentinel = forest_sorting::detail::isParentSentinel(
+                    forest_sorting::UInt128NodeTraits{}, node.parentId);
+                const bool resolves = std::binary_search(
+                    sortedIds.begin(), sortedIds.end(), node.parentId);
+                if (dataset == DatasetKind::ExternalParents) {
+                    require(!sentinel && !resolves,
+                            "external parent was a sentinel or generated ID");
+                } else {
+                    require(sentinel || resolves,
+                            std::string(datasetName(dataset)) +
+                                " dataset contains an unintended unresolved "
+                                "parent");
+                }
+            }
+
+            if (dataset == DatasetKind::ExternalParents) {
+                const auto control =
+                    buildParentIndexForKind(ParentKind::Control, nodes);
+                const auto production = buildParentIndexForKind(
+                    ParentKind::RadixJoinIdMsdChunk32, nodes);
+                require(control == production &&
+                            std::all_of(
+                                control.begin(), control.end(),
+                                [](std::size_t parentIndex) {
+                                    return parentIndex ==
+                                           forest_sorting::detail::no_parent;
+                                }),
+                        "external parents did not remain unresolved in parent "
+                        "builders");
+            }
+        }
+    }
+
+    auto makeSequentialId = [](std::size_t index) {
+        return forest_sorting::makeId(0, static_cast<uint64_t>(index) + 1U);
+    };
+    require(makeDepthLinkedForest(0, UINT32_MAX, makeSequentialId).empty(),
+            "empty depth-cycle fixture changed behavior");
+    const auto oneNode = makeDepthLinkedForest(1, UINT32_MAX, makeSequentialId);
+    require(oneNode.size() == 1 && oneNode.front().parentId == 0,
+            "single-node fixture allocated unreachable depth state");
+    const auto clamped = makeDepthLinkedForest(4, UINT32_MAX, makeSequentialId);
+    require(clamped.size() == 4 && clamped[1].parentId == clamped[0].id &&
+                clamped[2].parentId == clamped[1].id &&
+                clamped[3].parentId == clamped[2].id,
+            "depth-cycle clamp changed reachable chain behavior");
+}
+
+void test_outlier_dataset_uses_requested_budget() {
+    struct BudgetCase {
+        std::size_t requested;
+        std::array<std::size_t, 3> expectedChains;
+    };
+    constexpr std::array kCases = {
+        BudgetCase{0, {0, 0, 0}},           BudgetCase{1, {1, 0, 0}},
+        BudgetCase{129, {129, 0, 0}},       BudgetCase{130, {129, 1, 0}},
+        BudgetCase{642, {129, 513, 0}},     BudgetCase{643, {129, 513, 1}},
+        BudgetCase{1666, {129, 513, 1024}}, BudgetCase{1667, {129, 513, 1025}},
+        BudgetCase{2000, {129, 513, 1025}},
+    };
+
+    for (const BudgetCase &testCase : kCases) {
+        const auto nodes = makeGeneratedForestWithOutliers(
+            testCase.requested, kCommonFixtureMaxDepth, 42U);
+        require(nodes.size() == testCase.requested,
+                "outlier dataset exceeded its requested budget");
+        std::array<std::size_t, 3> chainCounts{};
+        for (const Node &node : nodes) {
+            const uint64_t high = static_cast<uint64_t>(node.id >> 64U);
+            if (high == 0x1000ULL) {
+                ++chainCounts[0];
+            } else if (high == 0x2000ULL) {
+                ++chainCounts[1];
+            } else if (high == 0x3000ULL) {
+                ++chainCounts[2];
+            }
+        }
+        require(chainCounts == testCase.expectedChains,
+                "outlier dataset changed its bounded chain allocation");
+        require(sameNodes(nodes,
+                          makeGeneratedForestWithOutliers(
+                              testCase.requested, kCommonFixtureMaxDepth, 42U)),
+                "outlier dataset was not deterministic");
+    }
+}
+
+void test_retained_artifact_replacement_releases_old_payload() {
+    struct LifetimeState {
+        std::size_t liveOwners = 0;
+        std::size_t maximumOwners = 0;
+        bool buildSawRetainedPayload = false;
+    };
+    struct TrackedPayload {
+        LifetimeState *state = nullptr;
+        bool owns = false;
+
+        TrackedPayload() = default;
+        explicit TrackedPayload(LifetimeState &lifetimeState)
+            : state(&lifetimeState), owns(true) {
+            ++state->liveOwners;
+            state->maximumOwners =
+                std::max(state->maximumOwners, state->liveOwners);
+        }
+        TrackedPayload(TrackedPayload &&other) noexcept
+            : state(other.state), owns(other.owns) {
+            other.owns = false;
+        }
+        TrackedPayload &operator=(TrackedPayload &&other) noexcept {
+            if (owns) {
+                --state->liveOwners;
+            }
+            state = other.state;
+            owns = other.owns;
+            other.owns = false;
+            return *this;
+        }
+        TrackedPayload(const TrackedPayload &) = delete;
+        TrackedPayload &operator=(const TrackedPayload &) = delete;
+        ~TrackedPayload() {
+            if (owns) {
+                --state->liveOwners;
+            }
+        }
+    };
+
+    LifetimeState state;
+    TrackedPayload retained;
+    auto rebuild = [&] {
+        state.buildSawRetainedPayload =
+            state.buildSawRetainedPayload || state.liveOwners != 0;
+        return TrackedPayload(state);
+    };
+    (void)replaceRetainedArtifactMs(retained, rebuild);
+    (void)replaceRetainedArtifactMs(retained, rebuild);
+    require(!state.buildSawRetainedPayload && state.maximumOwners == 1 &&
+                state.liveOwners == 1,
+            "repeated build overlapped old and new retained payloads");
+    retained = TrackedPayload{};
+    require(state.liveOwners == 0,
+            "retained artifact payload escaped its owner");
+}
 
 void test_benchmark_stats_median_and_stddev() {
     const auto oddStats = computeSampleStats({3.0, 1.0, 2.0});
@@ -47,16 +385,29 @@ void test_benchmark_stats_median_and_stddev() {
 }
 
 void test_benchmark_cli_selection_helpers() {
-    std::vector<int> values;
-    appendUniqueSelection(values, 1);
-    appendUniqueSelection(values, 1);
-    require((values == std::vector<int>{1}),
-            "benchmark CLI retained a duplicate selection");
-    require(!hasSelectionOtherThan(values, 1),
-            "single baseline selection reported a candidate");
-    appendUniqueSelection(values, 2);
-    require(hasSelectionOtherThan(values, 1),
-            "alternate benchmark selection was not detected");
+    const std::vector<int> defaults = {1, 2};
+    const std::vector<int> all = {1, 2, 3, 4};
+    std::vector<int> values = defaults;
+    bool seen = false;
+    auto parse = [](std::string_view value) {
+        return value == "three" ? 3 : 4;
+    };
+    applyRegistrySelection(values, seen, "three", defaults, all, parse);
+    applyRegistrySelection(values, seen, "three", defaults, all, parse);
+    require((values == std::vector<int>{3}),
+            "first selector did not replace defaults uniquely");
+    applyRegistrySelection(values, seen, "default", defaults, all, parse);
+    require(values == defaults, "default selector did not reset selection");
+    applyRegistrySelection(values, seen, "four", defaults, all, parse);
+    require((values == std::vector<int>{1, 2, 4}),
+            "concrete selector did not append after default reset");
+    applyRegistrySelection(values, seen, "all", defaults, all, parse);
+    require(values == all, "all selector did not reset to full registry");
+    appendMissingBaseline(values, 5);
+    appendMissingBaseline(values, 5);
+    require(values.back() == 5 && static_cast<std::size_t>(std::count(
+                                      values.begin(), values.end(), 5)) == 1,
+            "missing baseline was not appended exactly once");
 }
 
 void test_benchmark_cli_numeric_parsing() {
@@ -327,13 +678,16 @@ void test_full_benchmark_output_renderers() {
     baseline.sortBaseline = "candidate";
     baseline.sortComparisonStatus = "baseline";
     baseline.sortWinner = "none";
+    baseline.sortDeltaAvailable = true;
     baseline.parentBaseline = "control";
     baseline.parentComparisonStatus = "baseline";
     baseline.parentWinner = "none";
+    baseline.parentDeltaAvailable = true;
     baseline.pipelineBaselineParent = "control";
     baseline.pipelineBaselineSort = "candidate";
     baseline.pipelineComparisonStatus = "baseline";
     baseline.pipelineWinner = "none";
+    baseline.pipelineDeltaAvailable = true;
     baseline.parentStats = computeSampleStats(parentSamples);
     baseline.sortStats = computeSampleStats(sortSamples);
     baseline.pipelineStats = computeSampleStats(pipelineSamples);
@@ -564,15 +918,6 @@ void test_small_sort_scratch_policies() {
                                       "fixed exponential");
     requireSmallSorterMatchesExpected(BranchlessBitwiseSmallSorter<4>{},
                                       "fixed branchless-bitwise");
-    requireSmallSorterMatchesExpected(LinearSmallSorterDynamic{},
-                                      "dynamic linear");
-    requireSmallSorterMatchesExpected(BinarySmallSorterDynamic{},
-                                      "dynamic binary");
-    requireSmallSorterMatchesExpected(ExponentialSmallSorterDynamic{},
-                                      "dynamic exponential");
-    requireSmallSorterMatchesExpected(BranchlessBitwiseSmallSorterDynamic{},
-                                      "dynamic branchless-bitwise");
-
     using Traits = TestBytesTraits<16>;
     std::vector<TestNode<16>> nodes(5);
     for (std::size_t nodeIdx = 0; nodeIdx < nodes.size(); ++nodeIdx) {
@@ -600,7 +945,17 @@ void test_small_sort_scratch_policies() {
             "capacity");
 }
 
-void runBenchmarkSupportTests() {
+void runBenchmarkSupportTestsImpl() {
+    runTest("materialized benchmark context lifetime and schedule",
+            test_materialized_context_lifetimes_and_schedule_seeds);
+    runTest("deep-chain fixture count semantics",
+            test_deep_chain_uses_checked_count_semantics);
+    runTest("dataset cardinality and bounded depth cycles",
+            test_dataset_cardinality_and_bounded_depth_cycles);
+    runTest("outlier dataset requested budget",
+            test_outlier_dataset_uses_requested_budget);
+    runTest("retained artifact replacement lifecycle",
+            test_retained_artifact_replacement_releases_old_payload);
     runTest("benchmark CLI selection helpers",
             test_benchmark_cli_selection_helpers);
     runTest("benchmark CLI numeric parsing",
@@ -630,3 +985,7 @@ void runBenchmarkSupportTests() {
     runTest("same-high32 dataset shape", test_same_high32_dataset_shape);
     runTest("small sort scratch policies", test_small_sort_scratch_policies);
 }
+
+} // namespace
+
+void runBenchmarkSupportTests() { runBenchmarkSupportTestsImpl(); }

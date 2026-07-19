@@ -8,7 +8,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <type_traits>
 #include <vector>
 
 namespace forest_sorting::detail {
@@ -127,11 +126,9 @@ void radixMsdPartitionCoreWithStack(
     stack.clear();
     stack.push_back({begin, end, firstDigit});
 
-    FullClearCountScratch fullClearScratch;
-    using BitmaskScratchType =
-        std::conditional_t<std::is_same_v<CountPolicy, FullClearCounts>,
-                           EmptyScratch, BitmaskTouchedCountScratch>;
-    BitmaskScratchType bitmaskScratch;
+    using CounterTraits = RadixCounterTraits<CountPolicy>;
+    typename CounterTraits::policy_scratch_type policyScratch;
+    FullClearCountScratch fallbackScratch;
 
     while (!stack.empty()) {
         const auto currentRange = stack.back();
@@ -148,18 +145,18 @@ void radixMsdPartitionCoreWithStack(
             continue;
         }
 
-        const std::size_t rangeSize = currentRange.end - currentRange.begin;
-        if constexpr (std::is_same_v<CountPolicy, FullClearCounts>) {
-            partitionSingleRange(currentRange, stack, fullClearScratch,
+        if constexpr (CounterTraits::alwaysUsePolicy) {
+            partitionSingleRange(currentRange, stack, policyScratch,
                                  digitForOffset, moveToScratch,
                                  copyFromScratch);
         } else {
-            if (rangeSize <= CountPolicy::max_size) {
-                partitionSingleRange(currentRange, stack, bitmaskScratch,
+            const std::size_t rangeSize = currentRange.end - currentRange.begin;
+            if (CounterTraits::usePolicyForRange(rangeSize)) {
+                partitionSingleRange(currentRange, stack, policyScratch,
                                      digitForOffset, moveToScratch,
                                      copyFromScratch);
             } else {
-                partitionSingleRange(currentRange, stack, fullClearScratch,
+                partitionSingleRange(currentRange, stack, fallbackScratch,
                                      digitForOffset, moveToScratch,
                                      copyFromScratch);
             }

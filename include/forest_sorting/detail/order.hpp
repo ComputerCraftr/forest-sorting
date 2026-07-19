@@ -54,7 +54,7 @@ stableDepthGroupTrustedIdPermutation(std::vector<std::size_t> order,
     }
 
     std::vector<std::size_t> scratch(order.size());
-    stableGroupOrderByDepth<DepthPrefixBytes, ProductionIdCountPolicy>(
+    stableGroupOrderByDepth<DepthPrefixBytes, ProductionDepthCountPolicy>(
         order, scratch, depths, static_cast<Depth>(observedMaxDepth));
     return order;
 }

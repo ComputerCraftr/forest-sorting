@@ -43,6 +43,15 @@ add_test(NAME bench.forest.defaults
          COMMAND forest-sorting-bench --size 10000 --dataset random --parent
                  control --iterations 1 --warmup 0 --data-seed 0x5eed1234)
 add_test(
+    NAME bench.forest.dataset-cardinality-smoke
+    COMMAND
+        forest-sorting-bench --size 100 --dataset all --parent
+        radix-join-id-msd-chunk32 --sort
+        global-id-permutation-then-depth-stable --baseline-parent
+        radix-join-id-msd-chunk32 --baseline-sort
+        global-id-permutation-then-depth-stable --iterations 1 --warmup 0
+        --data-seed 1 --shuffle --order-seed 0x5eed)
+add_test(
     NAME bench.forest.sort-family-smoke
     COMMAND
         forest-sorting-bench --size 10000 --dataset random --sort
@@ -117,32 +126,52 @@ add_failing_benchmark_test(bench.forest.invalid.iterations forest-sorting-bench
 add_failing_benchmark_test(bench.forest.invalid.baseline forest-sorting-bench
                            --baseline-sort non-existent)
 
-add_failing_benchmark_test(
-    bench.forest.invalid.sort-baseline-without-candidate forest-sorting-bench
-    --sort comparison --baseline-sort comparison)
+add_test(
+    NAME bench.forest.baseline-only
+    COMMAND
+        forest-sorting-bench --size 100 --dataset random --parent
+        radix-join-id-msd-chunk32 --sort comparison --baseline-parent
+        radix-join-id-msd-chunk32 --baseline-sort comparison --iterations 1
+        --warmup 0 --data-seed 1 --format json)
+set_tests_properties(
+    bench.forest.baseline-only PROPERTIES PASS_REGULAR_EXPRESSION
+                                          "\"pipeline_delta_median_pct\": null")
 
-add_failing_benchmark_test(
-    bench.forest.invalid.parent-baseline-without-candidate forest-sorting-bench
-    --parent radix-join-id-msd-chunk32 --baseline-parent
-    radix-join-id-msd-chunk32)
+add_test(
+    NAME bench.forest.parent-only-comparison
+    COMMAND
+        forest-sorting-bench --size 100 --dataset random --parent
+        radix-join-id-msd-chunk16 --sort
+        global-id-permutation-then-depth-stable --baseline-parent
+        radix-join-id-msd-chunk32 --baseline-sort
+        global-id-permutation-then-depth-stable --iterations 1 --warmup 0
+        --data-seed 1 --format json)
+set_tests_properties(
+    bench.forest.parent-only-comparison
+    PROPERTIES PASS_REGULAR_EXPRESSION "\"parent_comparison_status\": \"ok\"")
 
-add_failing_benchmark_test(
-    bench.forest.invalid.pipeline-baseline-without-candidate
-    forest-sorting-bench
-    --parent
-    radix-join-id-msd-chunk32
-    --sort
-    comparison
-    --baseline-parent
-    radix-join-id-msd-chunk32
-    --baseline-sort
-    comparison)
+add_test(
+    NAME bench.forest.sort-only-comparison
+    COMMAND
+        forest-sorting-bench --size 100 --dataset random --parent
+        radix-join-id-msd-chunk32 --sort comparison --baseline-parent
+        radix-join-id-msd-chunk32 --baseline-sort
+        global-id-permutation-then-depth-stable --iterations 1 --warmup 0
+        --data-seed 1 --format json)
+set_tests_properties(
+    bench.forest.sort-only-comparison
+    PROPERTIES PASS_REGULAR_EXPRESSION "\"sort_comparison_status\": \"ok\"")
 
-add_failing_benchmark_test(bench.forest.invalid.sort-all forest-sorting-bench
-                           --sort all)
+add_test(
+    NAME bench.forest.sort-all
+    COMMAND
+        forest-sorting-bench --size 100 --dataset random --parent
+        radix-join-id-msd-chunk32 --sort all --iterations 1 --warmup 0
+        --data-seed 1)
 
-add_failing_benchmark_test(bench.forest.invalid.parent-all forest-sorting-bench
-                           --parent all)
+add_test(NAME bench.forest.parent-all
+         COMMAND forest-sorting-bench --size 100 --dataset random --parent all
+                 --sort comparison --iterations 1 --warmup 0 --data-seed 1)
 
 add_failing_benchmark_test(bench.forest.invalid.legacy-parent-radix
                            forest-sorting-bench --parent radix)

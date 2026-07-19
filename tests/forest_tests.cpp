@@ -1,16 +1,19 @@
 #include "forest_sorting/algorithms.hpp"
+#include "forest_sorting/benchmark_support/common/dataset.hpp"
+#include "forest_sorting/benchmark_support/common/uint128_fixtures.hpp"
+#include "forest_sorting/benchmark_support/full/adaptive_sort_variants.hpp"
+#include "forest_sorting/benchmark_support/full/parent_registry.hpp"
+#include "forest_sorting/benchmark_support/full/sort_baselines.hpp"
+#include "forest_sorting/benchmark_support/full/sort_registry.hpp"
+#include "forest_sorting/detail/id_chunks.hpp"
 #include "forest_sorting/detail/id_radix.hpp"
 #include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/detail/radix_counts.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
-#include "full/adaptive_sort_variants.hpp"
-#include "full/parent_registry.hpp"
-#include "full/sort_registry.hpp"
-#include "sort_baselines.hpp"
 #include "test_harness.hpp"
 #include "test_suites.hpp"
-#include "uint128_fixtures.hpp"
+#include "uint128_test_fixtures.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,13 +28,16 @@
 #include <type_traits>
 #include <vector>
 
+namespace {
+
 using forest_sorting::Node;
-using forest_sorting::sortForestByDepthAndId;
+using forest_sorting::sortedCopyByDepthAndId;
 using forest_sorting::UInt128;
 using forest_sorting::UInt128NodeTraits;
 using forest_sorting::UInt128Traits;
 using forest_sorting::verifySortedByDepthAndId;
 using namespace forest_sorting::test_support;
+using namespace forest_sorting::benchmark_support;
 
 using forest_sorting::detail::buildParentIndex;
 using forest_sorting::detail::buildParentIndexRadixJoin;
@@ -60,7 +66,7 @@ void requireUniqueDatasetParentAndSortRegistries() {
     for (std::size_t kindIdx = 0; kindIdx < parentKinds.size(); ++kindIdx) {
         require(!parentName(parentKinds[kindIdx]).empty(),
                 "parent registry contains an empty name");
-        const ParentRegistryEntry &entry = getParentRegistry()[kindIdx];
+        const ParentRegistryEntry &entry = parentRegistry()[kindIdx];
         require(entry.kind == parentKinds[kindIdx],
                 "parent registry kind projection is inconsistent");
         require(entry.build != nullptr,
@@ -82,7 +88,7 @@ void requireUniqueDatasetParentAndSortRegistries() {
 
     validateSortRegistry();
 
-    const auto &registry = getSortRegistry();
+    const auto &registry = sortRegistry();
     const auto globalIdFirstIt =
         std::ranges::find_if(registry, [](const SortRegistryEntry &entry) {
             return entry.kind == SortKind::GlobalIdPermutationThenDepthStable;
@@ -114,17 +120,11 @@ void requireUniqueDatasetParentAndSortRegistries() {
         "depth-first comparator is wired to the wrong pipeline");
 }
 
-void requireSortIsExplicitOptIn(SortKind sortKind, std::string_view message) {
-    const auto defaultSorts = defaultSortKinds();
-    require(std::ranges::find(defaultSorts, sortKind) == defaultSorts.end(),
-            message);
-}
-
 void requireAllRegisteredSortsMatch(const std::vector<Node> &nodes,
                                     const std::vector<Node> &expected) {
     const auto artifacts =
         buildParentArtifactsForKind(ParentKind::RadixJoinIdMsdChunk32, nodes);
-    for (const SortRegistryEntry &entry : getSortRegistry()) {
+    for (const SortRegistryEntry &entry : sortRegistry()) {
         const auto sorted = sortForestForKind(
             entry.kind, nodes, artifacts.parentIndex, &artifacts.idPermutation);
         if (!sameNodes(sorted, expected)) {
@@ -188,10 +188,19 @@ void test_bitmask_touched_chunk_sort_reuses_scratch() {
     auto idForIndex = [&](std::size_t nodeIndex) {
         return UInt128NodeTraits::id(nodes[nodeIndex]);
     };
+    auto sortFirstByte = [&] {
+        for (std::size_t offset = 0; offset < order.size(); ++offset) {
+            const std::size_t itemIndex = order[offset];
+            current[offset] = {forest_sorting::detail::chunkMsbFirst<1>(
+                                   idForIndex(itemIndex), 0, traits),
+                               itemIndex};
+        }
+        forest_sorting::detail::
+            stableLsdSortIndexRangeByIdMsdChunkWithCounterPreFilled<1>(
+                order, 0, order.size(), current.data(), next.data(), scratch);
+    };
 
-    forest_sorting::detail::stableLsdSortIndexRangeByIdMsdChunkWithCounter(
-        order, idForIndex, traits, 0, order.size(), 0, current.data(),
-        next.data(), scratch);
+    sortFirstByte();
     require((order == std::vector<std::size_t>{1, 3, 2, 0}),
             "first bitmask touched chunk sort produced wrong order");
 
@@ -202,9 +211,7 @@ void test_bitmask_touched_chunk_sort_reuses_scratch() {
         {makeId(0x0400000000000000ULL, 4), 0},
     };
     order = {0, 1, 2, 3};
-    forest_sorting::detail::stableLsdSortIndexRangeByIdMsdChunkWithCounter(
-        order, idForIndex, traits, 0, order.size(), 0, current.data(),
-        next.data(), scratch);
+    sortFirstByte();
     require((order == std::vector<std::size_t>{1, 2, 0, 3}),
             "second bitmask touched chunk sort reused stale counts");
 }
@@ -230,7 +237,7 @@ void requireSortRejectsParentCycle(const std::vector<Node> &nodes,
                                    std::string_view caseName) {
     bool rejected = false;
     try {
-        (void)sortForestByDepthAndId(nodes);
+        (void)sortedCopyByDepthAndId(nodes);
     } catch (const std::runtime_error &error) {
         rejected = std::string_view(error.what()) == "parent cycle";
     }
@@ -314,7 +321,7 @@ void test_sort_and_verify_multi_root() {
         {makeId(0, 21), makeId(0, 20)},
     };
 
-    auto sorted = sortForestByDepthAndId(nodes);
+    auto sorted = sortedCopyByDepthAndId(nodes);
     require(verifySortedByDepthAndId(sorted));
 
     // Roots should be in id order.
@@ -372,7 +379,7 @@ void test_production_sort_orders_by_high64_before_low64() {
         {makeId(0, UINT64_MAX), 0},
     };
 
-    const auto sorted = sortForestByDepthAndId(nodes);
+    const auto sorted = sortedCopyByDepthAndId(nodes);
     const auto parentIndex =
         buildParentIndexForKind(ParentKind::Unordered, nodes);
     const auto expected = sortForestByComparisonWithParent(nodes, parentIndex);
@@ -393,7 +400,7 @@ void test_production_sort_uses_low64_when_high64_matches() {
         {makeId(9, 2), 0},
     };
 
-    const auto sorted = sortForestByDepthAndId(nodes);
+    const auto sorted = sortedCopyByDepthAndId(nodes);
     const auto parentIndex =
         buildParentIndexForKind(ParentKind::Unordered, nodes);
     const auto expected = sortForestByComparisonWithParent(nodes, parentIndex);
@@ -413,7 +420,7 @@ void test_public_sort_matches_retained_permutation_production_path() {
     const auto artifacts =
         buildParentArtifactsForKind(ParentKind::RadixJoinIdMsdChunk32, nodes);
 
-    const auto productionSorted = sortForestByDepthAndId(nodes);
+    const auto productionSorted = sortedCopyByDepthAndId(nodes);
     const auto retainedPermutationSorted =
         sortForestForKind(SortKind::GlobalIdPermutationThenDepthStable, nodes,
                           artifacts.parentIndex, &artifacts.idPermutation);
@@ -437,7 +444,7 @@ void test_production_sort_matches_comparison_for_shuffled_input() {
         nodes[5], nodes[2], nodes[0], nodes[4], nodes[1], nodes[3],
     };
 
-    const auto sorted = sortForestByDepthAndId(shuffled);
+    const auto sorted = sortedCopyByDepthAndId(shuffled);
     const auto expectedParent =
         buildParentIndexForKind(ParentKind::Unordered, nodes);
     const auto expected =
@@ -452,7 +459,7 @@ void test_production_sort_and_registered_rows_match_100k_common_depth_forest() {
     constexpr std::size_t nodeCount = 100000;
 
     const auto nodes = makeGeneratedForest(nodeCount, kCommonFixtureMaxDepth);
-    const auto sorted = sortForestByDepthAndId(nodes);
+    const auto sorted = sortedCopyByDepthAndId(nodes);
     const auto parentIndex =
         buildParentIndexForKind(ParentKind::Unordered, nodes);
     const auto expected = sortForestByComparisonWithParent(nodes, parentIndex);
@@ -478,7 +485,7 @@ void test_registered_sort_rows_match_canonical_order_across_permutations() {
     };
 
     for (const auto &permutation : permutations) {
-        const auto productionSorted = sortForestByDepthAndId(permutation);
+        const auto productionSorted = sortedCopyByDepthAndId(permutation);
 
         requireAllRegisteredSortsMatch(permutation, canonical);
         if (!sameNodes(productionSorted, canonical)) {
@@ -496,7 +503,7 @@ void test_production_sort_and_registered_rows_match_deep_depth_outliers() {
 
     const auto nodes =
         makeGeneratedForestWithOutliers(nodeCount, kCommonFixtureMaxDepth);
-    const auto sorted = sortForestByDepthAndId(nodes);
+    const auto sorted = sortedCopyByDepthAndId(nodes);
     const auto parentIndex =
         buildParentIndexForKind(ParentKind::Unordered, nodes);
     const auto expected = sortForestByComparisonWithParent(nodes, parentIndex);
@@ -515,7 +522,7 @@ void test_sort_rejects_duplicate_full_uint128_id() {
 
     bool rejected = false;
     try {
-        (void)sortForestByDepthAndId(nodes);
+        (void)sortedCopyByDepthAndId(nodes);
     } catch (const std::runtime_error &) {
         rejected = true;
     }
@@ -535,28 +542,19 @@ void test_verify_rejects_duplicate_full_uint128_id() {
     require(!verifySortedByDepthAndId(nodes));
 }
 
-void test_sort_rejects_depth_over_one_byte_prefix_limit() {
+void test_sort_infers_two_bytes_above_one_byte_depth_limit() {
     std::vector<Node> nodes;
-    constexpr uint32_t rejectedDepth = 256;
-    nodes.reserve(static_cast<std::size_t>(rejectedDepth) + 1);
+    constexpr uint32_t depthLimit = 256;
+    nodes.reserve(static_cast<std::size_t>(depthLimit) + 1);
 
     nodes.push_back(Node{makeId(0, 1), 0});
-    for (uint32_t depth = 1; depth <= rejectedDepth; ++depth) {
+    for (uint32_t depth = 1; depth <= depthLimit; ++depth) {
         nodes.push_back(Node{makeId(0, static_cast<uint64_t>(depth) + 1ULL),
                              makeId(0, static_cast<uint64_t>(depth))});
     }
 
-    bool rejected = false;
-    try {
-        (void)sortForestByDepthAndId<1>(nodes);
-    } catch (const std::runtime_error &) {
-        rejected = true;
-    }
-
-    if (!rejected) {
-        throw std::runtime_error(
-            "sort accepted a forest deeper than the limit");
-    }
+    const auto sorted = sortedCopyByDepthAndId(nodes);
+    require(verifySortedByDepthAndId(sorted));
 }
 
 void test_sort_accepts_depth_1024_with_two_byte_prefix() {
@@ -570,14 +568,14 @@ void test_sort_accepts_depth_1024_with_two_byte_prefix() {
                              makeId(0, static_cast<uint64_t>(depth))});
     }
 
-    const auto sorted = sortForestByDepthAndId<2>(nodes);
-    require(verifySortedByDepthAndId<2>(sorted));
+    const auto sorted = sortedCopyByDepthAndId(nodes);
+    require(verifySortedByDepthAndId(sorted));
 }
 
 void test_verify_accepts_sorted_common_forest() {
     constexpr std::size_t nodeCount = 10000;
 
-    const auto sorted = sortForestByDepthAndId(
+    const auto sorted = sortedCopyByDepthAndId(
         makeGeneratedForest(nodeCount, kCommonFixtureMaxDepth));
 
     require(verifySortedByDepthAndId(sorted));
@@ -621,7 +619,7 @@ void test_verify_treats_missing_parent_as_root() {
     require(verifySortedByDepthAndId(nodes));
 }
 
-void test_verify_rejects_depth_over_one_byte_prefix_limit() {
+void test_verify_accepts_depth_above_one_byte_limit() {
     std::vector<Node> nodes;
     constexpr uint32_t rejectedDepth = 256;
     nodes.reserve(static_cast<std::size_t>(rejectedDepth) + 1);
@@ -632,12 +630,10 @@ void test_verify_rejects_depth_over_one_byte_prefix_limit() {
                              makeId(0, static_cast<uint64_t>(depth))});
     }
 
-    require(!verifySortedByDepthAndId<1>(nodes));
+    require(verifySortedByDepthAndId(nodes));
 }
 
 void test_dense_depth2_baseline_limits() {
-    using namespace forest_sorting::test_support;
-
     // Accepts depth 65535 (2-byte limit)
     {
         std::vector<Node> nodes;
@@ -668,6 +664,8 @@ void test_dense_depth2_baseline_limits() {
                           "accepted depth 65536");
     }
 }
+
+} // namespace
 
 int main() {
     try {
@@ -719,8 +717,8 @@ int main() {
             test_production_sort_and_registered_rows_match_deep_depth_outliers);
         runTest("sort rejects duplicate full UInt128 ID",
                 test_sort_rejects_duplicate_full_uint128_id);
-        runTest("sort rejects depth over one-byte prefix limit",
-                test_sort_rejects_depth_over_one_byte_prefix_limit);
+        runTest("sort infers two bytes above one-byte depth limit",
+                test_sort_infers_two_bytes_above_one_byte_depth_limit);
         runTest("sort accepts depth 1024 with two-byte prefix",
                 test_sort_accepts_depth_1024_with_two_byte_prefix);
         runGenericApiAndDepthTests();
@@ -744,8 +742,8 @@ int main() {
                 test_verify_treats_missing_parent_as_root);
         runTest("verify rejects duplicate full UInt128 ID",
                 test_verify_rejects_duplicate_full_uint128_id);
-        runTest("verify rejects depth over one-byte prefix limit",
-                test_verify_rejects_depth_over_one_byte_prefix_limit);
+        runTest("verify accepts depth above one-byte limit",
+                test_verify_accepts_depth_above_one_byte_limit);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "forest-sorting-tests failed: " << error.what() << "\n";

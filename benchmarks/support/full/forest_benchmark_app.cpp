@@ -1,14 +1,16 @@
-#include "full/forest_benchmark_app.hpp"
-#include "common/benchmark_cli.hpp"
-#include "common/benchmark_stats.hpp"
+#include "forest_sorting/benchmark_support/full/forest_benchmark_app.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_cli.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_execution.hpp"
+#include "forest_sorting/benchmark_support/common/benchmark_stats.hpp"
+#include "forest_sorting/benchmark_support/common/dataset.hpp"
+#include "forest_sorting/benchmark_support/common/uint128_fixtures.hpp"
+#include "forest_sorting/benchmark_support/full/forest_benchmark_options.hpp"
+#include "forest_sorting/benchmark_support/full/forest_benchmark_output.hpp"
+#include "forest_sorting/benchmark_support/full/parent_registry.hpp"
+#include "forest_sorting/benchmark_support/full/sort_registry.hpp"
 #include "forest_sorting/detail/depth.hpp"
 #include "forest_sorting/uint128.hpp"
 #include "forest_sorting/uint128_forest.hpp"
-#include "full/forest_benchmark_options.hpp"
-#include "full/forest_benchmark_output.hpp"
-#include "full/parent_registry.hpp"
-#include "full/sort_registry.hpp"
-#include "uint128_fixtures.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -19,15 +21,15 @@
 #include <iostream>
 #include <ratio>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-using forest_sorting::Node;
-using forest_sorting::UInt128;
-using forest_sorting::verifySortedByDepthAndId;
-using namespace forest_sorting::test_support;
+namespace forest_sorting::benchmark_support {
+
+namespace {
 
 constexpr int kDatasetColumnWidth = 24;
 constexpr int kCountColumnWidth = 12;
@@ -44,6 +46,13 @@ struct DatasetContext {
     std::vector<Node> nodes;
     std::vector<std::size_t> expectedParent;
     std::vector<UInt128> expectedIds;
+};
+
+struct DatasetDescriptor {
+    std::size_t nodeCount = 0;
+    DatasetKind datasetKind = DatasetKind::Random;
+    uint32_t dataSeed = kDefaultBenchmarkDataSeed;
+    std::size_t resultBegin = 0;
 };
 
 struct BenchmarkResult {
@@ -63,12 +72,14 @@ struct BenchmarkResult {
     std::string sortBaseline;
     std::string sortComparisonStatus = "none";
     std::string sortWinner = "none";
+    bool sortDeltaAvailable = false;
     double sortDeltaMedianMs = 0.0;
     double sortDeltaMedianPct = 0.0;
     ConfidenceInterval sortDeltaPctCi95;
     std::string parentBaseline;
     std::string parentComparisonStatus = "none";
     std::string parentWinner = "none";
+    bool parentDeltaAvailable = false;
     double parentDeltaMedianMs = 0.0;
     double parentDeltaMedianPct = 0.0;
     ConfidenceInterval parentDeltaPctCi95;
@@ -76,6 +87,7 @@ struct BenchmarkResult {
     std::string pipelineBaselineSort;
     std::string pipelineComparisonStatus = "none";
     std::string pipelineWinner = "none";
+    bool pipelineDeltaAvailable = false;
     double pipelineDeltaMedianMs = 0.0;
     double pipelineDeltaMedianPct = 0.0;
     ConfidenceInterval pipelineDeltaPctCi95;
@@ -83,12 +95,10 @@ struct BenchmarkResult {
 };
 
 double timeParentBuildMs(const std::vector<Node> &nodes, ParentKind parentKind,
-                         ParentBuildArtifacts &artifacts) {
-    const auto start = std::chrono::steady_clock::now();
-    ParentBuildArtifacts built = buildParentArtifactsForKind(parentKind, nodes);
-    const auto end = std::chrono::steady_clock::now();
-    artifacts = std::move(built);
-    return std::chrono::duration<double, std::milli>(end - start).count();
+                         ParentBuildArtifacts &retainedArtifacts) {
+    return replaceRetainedArtifactMs(retainedArtifacts, [&] {
+        return buildParentArtifactsForKind(parentKind, nodes);
+    });
 }
 
 double timeSortMs(const std::vector<Node> &nodes,
@@ -189,57 +199,11 @@ struct ParentJob {
     std::vector<std::size_t> resultIndexes;
 };
 
-bool sameComparisonGroup(const BenchmarkResult &result,
-                         const BenchmarkResult &candidate) {
-    return result.dataset == candidate.dataset &&
-           result.nodeCount == candidate.nodeCount &&
-           result.dataSeed == candidate.dataSeed;
-}
-
-BenchmarkResult *findSortBaseline(std::vector<BenchmarkResult> &results,
-                                  const BenchmarkResult &result,
-                                  std::string_view baselineSort) {
-    for (BenchmarkResult &candidate : results) {
-        if (sameComparisonGroup(result, candidate) &&
-            result.parentBuilder == candidate.parentBuilder &&
-            candidate.sortAlgorithm == baselineSort) {
-            return &candidate;
-        }
-    }
-    return nullptr;
-}
-
-BenchmarkResult *findParentBaseline(std::vector<BenchmarkResult> &results,
-                                    const BenchmarkResult &result,
-                                    std::string_view baselineParent) {
-    for (BenchmarkResult &candidate : results) {
-        if (sameComparisonGroup(result, candidate) &&
-            result.sortAlgorithm == candidate.sortAlgorithm &&
-            candidate.parentBuilder == baselineParent) {
-            return &candidate;
-        }
-    }
-    return nullptr;
-}
-
-BenchmarkResult *findPipelineBaseline(std::vector<BenchmarkResult> &results,
-                                      const BenchmarkResult &result,
-                                      std::string_view baselineParent,
-                                      std::string_view baselineSort) {
-    for (BenchmarkResult &candidate : results) {
-        if (sameComparisonGroup(result, candidate) &&
-            candidate.parentBuilder == baselineParent &&
-            candidate.sortAlgorithm == baselineSort) {
-            return &candidate;
-        }
-    }
-    return nullptr;
-}
-
 void applySortBaseline(BenchmarkResult &result,
                        const BenchmarkResult &baseline) {
     result.sortBaseline = baseline.sortAlgorithm;
     result.sortComparisonStatus = "ok";
+    result.sortDeltaAvailable = true;
     result.sortDeltaMedianMs = medianOfSamples(
         pairedAbsoluteDeltas(result.sortSamples, baseline.sortSamples));
     result.sortDeltaMedianPct = medianOfSamples(
@@ -254,6 +218,7 @@ void applyParentBaseline(BenchmarkResult &result,
                          const BenchmarkResult &baseline) {
     result.parentBaseline = baseline.parentBuilder;
     result.parentComparisonStatus = "ok";
+    result.parentDeltaAvailable = true;
     result.parentDeltaMedianMs = medianOfSamples(
         pairedAbsoluteDeltas(result.parentSamples, baseline.parentSamples));
     result.parentDeltaMedianPct = medianOfSamples(
@@ -269,6 +234,7 @@ void applyPipelineBaseline(BenchmarkResult &result,
     result.pipelineBaselineParent = baseline.parentBuilder;
     result.pipelineBaselineSort = baseline.sortAlgorithm;
     result.pipelineComparisonStatus = "ok";
+    result.pipelineDeltaAvailable = true;
     result.pipelineDeltaMedianMs = medianOfSamples(
         pairedAbsoluteDeltas(result.pipelineSamples, baseline.pipelineSamples));
     result.pipelineDeltaMedianPct = medianOfSamples(
@@ -375,63 +341,192 @@ void printDepthRangeStats(const DatasetContext &context) {
               << "  nodes_in_ranges_le_65536: " << nodes_le_65536 << "\n\n";
 }
 
-std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
-    std::vector<DatasetContext> contexts;
+std::size_t matrixResultIndex(const DatasetDescriptor &descriptor,
+                              std::size_t parentIndex, std::size_t sortIndex,
+                              std::size_t sortCount) {
+    return descriptor.resultBegin + (parentIndex * sortCount) + sortIndex;
+}
+
+template <typename Value>
+std::size_t requiredSelectionIndex(const std::vector<Value> &selection,
+                                   Value selected,
+                                   std::string_view description) {
+    const auto found = std::find(selection.begin(), selection.end(), selected);
+    if (found == selection.end()) {
+        throw std::logic_error(std::string(description) +
+                               " is missing from the execution matrix");
+    }
+    return static_cast<std::size_t>(found - selection.begin());
+}
+
+std::vector<DatasetDescriptor>
+initializeBenchmarkResults(const Options &options,
+                           std::vector<BenchmarkResult> &results) {
+    std::vector<DatasetDescriptor> descriptors;
+    const std::size_t resultCountPerContext =
+        checkedSizeProduct(options.parents.size(), options.sorts.size(),
+                           "benchmark result matrix");
+    const std::size_t contextCount = checkedSizeProduct(
+        checkedSizeProduct(options.sizes.size(), options.datasets.size(),
+                           "benchmark context matrix"),
+        options.dataSeeds.size(), "benchmark context matrix");
+    descriptors.reserve(contextCount);
+    results.reserve(checkedSizeProduct(contextCount, resultCountPerContext,
+                                       "benchmark result matrix"));
     for (std::size_t nodeCount : options.sizes) {
         for (DatasetKind datasetKind : options.datasets) {
             for (uint32_t dataSeed : options.dataSeeds) {
-                DatasetContext context;
-                context.nodeCount = nodeCount;
-                context.datasetKind = datasetKind;
-                context.dataSeed = dataSeed;
-                context.nodes = makeGeneratedForestForKind(datasetKind,
-                                                           nodeCount, dataSeed);
-                context.expectedParent = buildParentIndexForKind(
-                    ParentKind::Unordered, context.nodes);
-                const auto canonicalSorted =
-                    sortForestForKind(SortKind::Comparison, context.nodes,
-                                      context.expectedParent);
-
-                context.expectedIds.reserve(canonicalSorted.size());
-                for (const auto &node : canonicalSorted) {
-                    context.expectedIds.push_back(node.id);
+                const DatasetDescriptor descriptor{nodeCount, datasetKind,
+                                                   dataSeed, results.size()};
+                descriptors.push_back(descriptor);
+                for (ParentKind parentKind : options.parents) {
+                    for (SortKind sortKind : options.sorts) {
+                        BenchmarkResult result;
+                        result.dataset = std::string(datasetName(datasetKind));
+                        result.nodeCount = nodeCount;
+                        result.dataSeed = dataSeed;
+                        result.parentBuilder =
+                            std::string(parentName(parentKind));
+                        result.sortAlgorithm = std::string(sortName(sortKind));
+                        result.parentSamples.reserve(
+                            static_cast<std::size_t>(options.iterations));
+                        result.sortSamples.reserve(
+                            static_cast<std::size_t>(options.iterations));
+                        result.pipelineSamples.reserve(
+                            static_cast<std::size_t>(options.iterations));
+                        result.verifySamples.reserve(
+                            static_cast<std::size_t>(options.iterations));
+                        results.push_back(std::move(result));
+                    }
                 }
-                if (options.format == OutputFormat::Table) {
-                    printDepthRangeStats(context);
-                }
-                contexts.push_back(std::move(context));
             }
         }
     }
+    return descriptors;
+}
 
+DatasetContext materializeDatasetContext(const DatasetDescriptor &descriptor,
+                                         OutputFormat format) {
+    DatasetContext context;
+    context.nodeCount = descriptor.nodeCount;
+    context.datasetKind = descriptor.datasetKind;
+    context.dataSeed = descriptor.dataSeed;
+    context.nodes = makeGeneratedForestForKind(
+        descriptor.datasetKind, descriptor.nodeCount, descriptor.dataSeed);
+    context.expectedParent =
+        buildParentIndexForKind(ParentKind::Unordered, context.nodes);
+    const auto canonicalSorted = sortForestForKind(
+        SortKind::Comparison, context.nodes, context.expectedParent);
+
+    context.expectedIds.reserve(canonicalSorted.size());
+    for (const auto &node : canonicalSorted) {
+        context.expectedIds.push_back(node.id);
+    }
+    if (format == OutputFormat::Table) {
+        printDepthRangeStats(context);
+    }
+    return context;
+}
+
+void applyContextBaselines(std::vector<BenchmarkResult> &results,
+                           const DatasetDescriptor &descriptor,
+                           const Options &options) {
+    const std::size_t parentCount = options.parents.size();
+    const std::size_t sortCount = options.sorts.size();
+    const std::size_t baselineSortIndex =
+        options.hasBaselineSort
+            ? requiredSelectionIndex(options.sorts, options.baselineSort,
+                                     "baseline sort")
+            : 0;
+    const std::size_t baselineParentIndex =
+        options.hasBaselineParent
+            ? requiredSelectionIndex(options.parents, options.baselineParent,
+                                     "baseline parent")
+            : 0;
+
+    for (std::size_t parentIndex = 0; parentIndex < parentCount;
+         ++parentIndex) {
+        for (std::size_t sortIndex = 0; sortIndex < sortCount; ++sortIndex) {
+            BenchmarkResult &result = results[matrixResultIndex(
+                descriptor, parentIndex, sortIndex, sortCount)];
+            if (options.hasBaselineSort) {
+                BenchmarkResult &baseline = results[matrixResultIndex(
+                    descriptor, parentIndex, baselineSortIndex, sortCount)];
+                if (sortIndex == baselineSortIndex) {
+                    result.sortBaseline = baseline.sortAlgorithm;
+                    result.sortComparisonStatus =
+                        sortPhaseValid(result) ? "baseline" : "invalid-result";
+                } else if (!sortPhaseValid(result)) {
+                    result.sortComparisonStatus = "invalid-result";
+                } else if (!sortPhaseValid(baseline)) {
+                    result.sortComparisonStatus = "baseline-failed";
+                } else {
+                    applySortBaseline(result, baseline);
+                    baseline.sortDeltaAvailable = true;
+                }
+            }
+
+            if (options.hasBaselineParent) {
+                BenchmarkResult &baseline = results[matrixResultIndex(
+                    descriptor, baselineParentIndex, sortIndex, sortCount)];
+                if (parentIndex == baselineParentIndex) {
+                    result.parentBaseline = baseline.parentBuilder;
+                    result.parentComparisonStatus = parentPhaseValid(result)
+                                                        ? "baseline"
+                                                        : "invalid-result";
+                } else if (!parentPhaseValid(result)) {
+                    result.parentComparisonStatus = "invalid-result";
+                } else if (!parentPhaseValid(baseline)) {
+                    result.parentComparisonStatus = "baseline-failed";
+                } else {
+                    applyParentBaseline(result, baseline);
+                    baseline.parentDeltaAvailable = true;
+                }
+            }
+
+            if (options.hasBaselineParent && options.hasBaselineSort) {
+                BenchmarkResult &baseline =
+                    results[matrixResultIndex(descriptor, baselineParentIndex,
+                                              baselineSortIndex, sortCount)];
+                if (parentIndex == baselineParentIndex &&
+                    sortIndex == baselineSortIndex) {
+                    result.pipelineBaselineParent = baseline.parentBuilder;
+                    result.pipelineBaselineSort = baseline.sortAlgorithm;
+                    result.pipelineComparisonStatus =
+                        pipelineValid(result) ? "baseline" : "invalid-result";
+                } else if (!pipelineValid(result)) {
+                    result.pipelineComparisonStatus = "invalid-result";
+                } else if (!pipelineValid(baseline)) {
+                    result.pipelineComparisonStatus = "baseline-failed";
+                } else {
+                    applyPipelineBaseline(result, baseline);
+                    baseline.pipelineDeltaAvailable = true;
+                }
+            }
+        }
+    }
+}
+
+void runBenchmarkContext(const DatasetDescriptor &descriptor,
+                         const DatasetContext &context, const Options &options,
+                         std::vector<BenchmarkResult> &results) {
     std::vector<Job> jobs;
     std::vector<ParentJob> parentJobs;
-    std::vector<BenchmarkResult> results;
-
-    for (const auto &context : contexts) {
-        for (ParentKind parentKind : options.parents) {
-            const std::size_t parentJobIndex = parentJobs.size();
-            parentJobs.push_back(ParentJob{&context, parentKind, {}, 0.0, {}});
-            for (SortKind sortKind : options.sorts) {
-                BenchmarkResult result;
-                result.dataset = std::string(datasetName(context.datasetKind));
-                result.nodeCount = context.nodeCount;
-                result.dataSeed = context.dataSeed;
-                result.parentBuilder = std::string(parentName(parentKind));
-                result.sortAlgorithm = std::string(sortName(sortKind));
-                result.parentSamples.reserve(
-                    static_cast<std::size_t>(options.iterations));
-                result.sortSamples.reserve(
-                    static_cast<std::size_t>(options.iterations));
-                result.pipelineSamples.reserve(
-                    static_cast<std::size_t>(options.iterations));
-                result.verifySamples.reserve(
-                    static_cast<std::size_t>(options.iterations));
-
-                jobs.push_back({parentJobIndex, sortKind, results.size()});
-                parentJobs.back().resultIndexes.push_back(results.size());
-                results.push_back(std::move(result));
-            }
+    jobs.reserve(options.parents.size() * options.sorts.size());
+    parentJobs.reserve(options.parents.size());
+    for (std::size_t parentIndex = 0; parentIndex < options.parents.size();
+         ++parentIndex) {
+        const std::size_t parentJobIndex = parentJobs.size();
+        parentJobs.push_back(
+            ParentJob{&context, options.parents[parentIndex], {}, 0.0, {}});
+        parentJobs.back().resultIndexes.reserve(options.sorts.size());
+        for (std::size_t sortIndex = 0; sortIndex < options.sorts.size();
+             ++sortIndex) {
+            const std::size_t resultIndex = matrixResultIndex(
+                descriptor, parentIndex, sortIndex, options.sorts.size());
+            jobs.push_back(
+                {parentJobIndex, options.sorts[sortIndex], resultIndex});
+            parentJobs.back().resultIndexes.push_back(resultIndex);
         }
     }
 
@@ -441,14 +536,18 @@ std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
 
     const int totalPasses =
         checkedBenchmarkPassCount(options.warmup, options.iterations);
+    const uint32_t parentScheduleSeed = benchmarkParentScheduleSeed(
+        descriptor.nodeCount, static_cast<uint8_t>(descriptor.datasetKind),
+        descriptor.dataSeed, options.orderSeed);
+    const uint32_t sortScheduleSeed = benchmarkSortScheduleSeed(
+        descriptor.nodeCount, static_cast<uint8_t>(descriptor.datasetKind),
+        descriptor.dataSeed, options.orderSeed);
     for (int passIdx = 0; passIdx < totalPasses; ++passIdx) {
         if (options.shuffle) {
             parentOrder = makeSequentialIndexOrder(parentJobs.size());
             sortOrder = makeSequentialIndexOrder(jobs.size());
-            shuffleBenchmarkOrder(parentOrder, options.orderSeed ^ 0x70617265U,
-                                  passIdx);
-            shuffleBenchmarkOrder(sortOrder, options.orderSeed ^ 0x736f7274U,
-                                  passIdx);
+            shuffleBenchmarkOrder(parentOrder, parentScheduleSeed, passIdx);
+            shuffleBenchmarkOrder(sortOrder, sortScheduleSeed, passIdx);
         }
         const bool recordSample = passIdx >= options.warmup;
         for (std::size_t parentJobIdx : parentOrder) {
@@ -471,102 +570,36 @@ std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
         }
     }
 
-    for (BenchmarkResult &result : results) {
-        summarizeBenchmarkResult(result);
+    const std::size_t resultEnd =
+        descriptor.resultBegin +
+        (options.parents.size() * options.sorts.size());
+    for (std::size_t resultIndex = descriptor.resultBegin;
+         resultIndex < resultEnd; ++resultIndex) {
+        summarizeBenchmarkResult(results[resultIndex]);
+    }
+    applyContextBaselines(results, descriptor, options);
+}
+
+std::vector<BenchmarkResult> runBenchmarks(const Options &options) {
+    std::vector<BenchmarkResult> results;
+    const std::vector<DatasetDescriptor> descriptors =
+        initializeBenchmarkResults(options, results);
+    std::vector<std::size_t> executionOrder =
+        makeSequentialIndexOrder(descriptors.size());
+    if (options.shuffle) {
+        shuffleBenchmarkOrder(executionOrder,
+                              benchmarkContextOrderSeed(options.orderSeed), 0);
     }
 
-    if (options.hasBaselineSort) {
-        const std::string_view baselineSort = sortName(options.baselineSort);
-        for (BenchmarkResult &result : results) {
-            if (result.sortAlgorithm == baselineSort) {
-                result.sortBaseline = std::string(baselineSort);
-                result.sortComparisonStatus =
-                    sortPhaseValid(result) ? "baseline" : "invalid-result";
-                continue;
-            }
-            if (!sortPhaseValid(result)) {
-                result.sortComparisonStatus = "invalid-result";
-                continue;
-            }
-            BenchmarkResult *baseline =
-                findSortBaseline(results, result, baselineSort);
-            if (baseline == nullptr) {
-                result.sortComparisonStatus = "missing-baseline";
-                result.status =
-                    appendStatus(result.status, "sort-baseline-missing");
-            } else if (comparisonEligibility(sortPhaseValid(result),
-                                             sortPhaseValid(*baseline)) ==
-                       ComparisonEligibility::InvalidBaseline) {
-                result.sortComparisonStatus = "baseline-failed";
-            } else {
-                applySortBaseline(result, *baseline);
-            }
-        }
-    }
-
-    if (options.hasBaselineParent) {
-        const std::string_view baselineParent =
-            parentName(options.baselineParent);
-        for (BenchmarkResult &result : results) {
-            if (result.parentBuilder == baselineParent) {
-                result.parentBaseline = std::string(baselineParent);
-                result.parentComparisonStatus =
-                    parentPhaseValid(result) ? "baseline" : "invalid-result";
-                continue;
-            }
-            if (!parentPhaseValid(result)) {
-                result.parentComparisonStatus = "invalid-result";
-                continue;
-            }
-            BenchmarkResult *baseline =
-                findParentBaseline(results, result, baselineParent);
-            if (baseline == nullptr) {
-                result.parentComparisonStatus = "missing-baseline";
-                result.status =
-                    appendStatus(result.status, "parent-baseline-missing");
-            } else if (comparisonEligibility(parentPhaseValid(result),
-                                             parentPhaseValid(*baseline)) ==
-                       ComparisonEligibility::InvalidBaseline) {
-                result.parentComparisonStatus = "baseline-failed";
-            } else {
-                applyParentBaseline(result, *baseline);
-            }
-        }
-    }
-
-    if (options.hasBaselineParent && options.hasBaselineSort) {
-        const std::string_view baselineParent =
-            parentName(options.baselineParent);
-        const std::string_view baselineSort = sortName(options.baselineSort);
-        for (BenchmarkResult &result : results) {
-            if (result.parentBuilder == baselineParent &&
-                result.sortAlgorithm == baselineSort) {
-                result.pipelineBaselineParent = std::string(baselineParent);
-                result.pipelineBaselineSort = std::string(baselineSort);
-                result.pipelineComparisonStatus =
-                    pipelineValid(result) ? "baseline" : "invalid-result";
-                continue;
-            }
-            if (!pipelineValid(result)) {
-                result.pipelineComparisonStatus = "invalid-result";
-                continue;
-            }
-            BenchmarkResult *baseline = findPipelineBaseline(
-                results, result, baselineParent, baselineSort);
-            if (baseline == nullptr) {
-                result.pipelineComparisonStatus = "missing-baseline";
-                result.status =
-                    appendStatus(result.status, "pipeline-baseline-missing");
-            } else if (comparisonEligibility(pipelineValid(result),
-                                             pipelineValid(*baseline)) ==
-                       ComparisonEligibility::InvalidBaseline) {
-                result.pipelineComparisonStatus = "baseline-failed";
-            } else {
-                applyPipelineBaseline(result, *baseline);
-            }
-        }
-    }
-
+    forEachMaterializedContext(
+        descriptors, executionOrder,
+        [&](const DatasetDescriptor &descriptor) {
+            return materializeDatasetContext(descriptor, options.format);
+        },
+        [&](const DatasetDescriptor &descriptor,
+            const DatasetContext &context) {
+            runBenchmarkContext(descriptor, context, options, results);
+        });
     return results;
 }
 
@@ -593,6 +626,19 @@ void printTiming(double milliseconds) {
     std::cout << "  " << std::setw(kTimingValueWidth) << milliseconds << " ms";
 }
 
+void printDelta(double value, bool available) {
+    if (available) {
+        std::cout << std::setw(kDeltaColumnWidth) << value;
+    } else {
+        std::cout << std::setw(kDeltaColumnWidth) << "n/a";
+    }
+}
+
+void printWinner(std::string_view winner, bool available) {
+    std::cout << std::setw(kWinnerColumnWidth)
+              << (available ? winner : std::string_view{"n/a"});
+}
+
 void printTable(const std::vector<BenchmarkResult> &results) {
     printBenchmarkHeader();
     for (const BenchmarkResult &result : results) {
@@ -607,15 +653,19 @@ void printTable(const std::vector<BenchmarkResult> &results) {
         printTiming(result.sortStats.median);
         printTiming(result.pipelineStats.median);
         printTiming(result.verifyStats.median);
-        std::cout << "  " << std::setw(kDeltaColumnWidth)
-                  << result.sortDeltaMedianPct << "  "
-                  << std::setw(kDeltaColumnWidth) << result.parentDeltaMedianPct
-                  << "  " << std::setw(kDeltaColumnWidth)
-                  << result.pipelineDeltaMedianPct << "  "
-                  << std::setw(kWinnerColumnWidth) << result.sortWinner << "  "
-                  << std::setw(kWinnerColumnWidth) << result.parentWinner;
-        std::cout << "  " << std::setw(kWinnerColumnWidth)
-                  << result.pipelineWinner;
+        std::cout << "  ";
+        printDelta(result.sortDeltaMedianPct, result.sortDeltaAvailable);
+        std::cout << "  ";
+        printDelta(result.parentDeltaMedianPct, result.parentDeltaAvailable);
+        std::cout << "  ";
+        printDelta(result.pipelineDeltaMedianPct,
+                   result.pipelineDeltaAvailable);
+        std::cout << "  ";
+        printWinner(result.sortWinner, result.sortDeltaAvailable);
+        std::cout << "  ";
+        printWinner(result.parentWinner, result.parentDeltaAvailable);
+        std::cout << "  ";
+        printWinner(result.pipelineWinner, result.pipelineDeltaAvailable);
         std::cout << "  " << result.status << "\n";
     }
 }
@@ -679,16 +729,22 @@ void printResults(const std::vector<BenchmarkResult> &results,
     }
 }
 
+} // namespace
+
+} // namespace forest_sorting::benchmark_support
+
+namespace forest_sorting::benchmark_app::full {
+
 int runForestBenchmark(int argc, char **argv) {
     try {
-        validateSortRegistry();
-        const Options options = parseOptions(argc, argv);
+        benchmark_support::validateSortRegistry();
+        const auto options = benchmark_support::parseOptions(argc, argv);
         if (options.help) {
-            printHelp();
+            benchmark_support::printHelp();
             return 0;
         }
-        const auto results = runBenchmarks(options);
-        printResults(results, options);
+        const auto results = benchmark_support::runBenchmarks(options);
+        benchmark_support::printResults(results, options);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "forest-sorting-bench failed: " << error.what() << "\n";
@@ -698,3 +754,5 @@ int runForestBenchmark(int argc, char **argv) {
         return 1;
     }
 }
+
+} // namespace forest_sorting::benchmark_app::full

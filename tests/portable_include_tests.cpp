@@ -9,7 +9,7 @@
 
 using forest_sorting::test_support::require;
 
-TestBytes<32> makeId(uint64_t high, uint64_t low) {
+static TestBytes<32> makeId(uint64_t high, uint64_t low) {
     return makeTestBytes<32>(static_cast<uint8_t>(high),
                              static_cast<uint8_t>(low));
 }

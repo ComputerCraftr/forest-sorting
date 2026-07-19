@@ -6,60 +6,58 @@
 #include "forest_sorting/detail/parent_index.hpp"
 #include "forest_sorting/traits.hpp"
 
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
 #include <stdexcept>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace forest_sorting {
 
-template <typename Nodes>
-using ForestSortingNode =
-    std::decay_t<decltype(*std::begin(std::declval<const Nodes &>()))>;
+namespace detail {
 
-template <std::size_t DepthPrefixBytes, typename Nodes, typename Traits,
-          std::unsigned_integral Depth>
-    requires ForestTraits<Traits, ForestSortingNode<Nodes>> &&
-             (!std::same_as<Depth, bool>) && (sizeof(Depth) >= DepthPrefixBytes)
+template <IndexedNodeInput Nodes> using ForestSortingNode = IndexedValue<Nodes>;
+
+} // namespace detail
+
+template <IndexedNodeInput Nodes, typename Traits, IndexedDepthInput Depths>
+    requires ForestTraits<Traits, detail::ForestSortingNode<Nodes>>
 std::vector<std::size_t>
 sortedOrderByDepthAndIdWithDepths(const Nodes &nodes, const Traits &traits,
-                                  const std::vector<Depth> &depths) {
-    static_assert(DepthPrefixBytes >= 1 && DepthPrefixBytes <= 4,
-                  "DepthPrefixBytes must be between 1 and 4");
-    const std::size_t nodeCount = nodes.size();
+                                  const Depths &depths) {
+    const std::size_t nodeCount = static_cast<std::size_t>(nodes.size());
     const uint32_t observedMaxDepth =
-        detail::validatePrecomputedDepthInput<DepthPrefixBytes>(nodeCount,
-                                                                depths);
+        detail::validatePrecomputedDepthInput(nodeCount, depths);
+    const std::size_t depthPrefixBytes =
+        detail::depthPrefixBytesForMax(observedMaxDepth);
     if (nodeCount == 0) {
         return {};
     }
 
-    return detail::sortedOrderByDepthAndIdWithValidatedDepths<DepthPrefixBytes>(
-        nodes, traits, depths, observedMaxDepth);
-}
-
-template <std::size_t DepthPrefixBytes, typename Nodes, typename Traits>
-    requires ForestTraits<Traits, ForestSortingNode<Nodes>>
-std::vector<std::size_t> sortedOrderByDepthAndId(const Nodes &nodes,
-                                                 const Traits &traits) {
-    static_assert(DepthPrefixBytes >= 1 && DepthPrefixBytes <= 4,
-                  "DepthPrefixBytes must be between 1 and 4");
-    if (nodes.size() == 0) {
-        return {};
+    switch (depthPrefixBytes) {
+    case 1:
+        return detail::sortedOrderByDepthAndIdWithValidatedDepths<1>(
+            nodes, traits, detail::narrowIndexedDepths<1>(depths),
+            observedMaxDepth);
+    case 2:
+        return detail::sortedOrderByDepthAndIdWithValidatedDepths<2>(
+            nodes, traits, detail::narrowIndexedDepths<2>(depths),
+            observedMaxDepth);
+    case 3:
+        return detail::sortedOrderByDepthAndIdWithValidatedDepths<3>(
+            nodes, traits, detail::narrowIndexedDepths<3>(depths),
+            observedMaxDepth);
+    case 4:
+        return detail::sortedOrderByDepthAndIdWithValidatedDepths<4>(
+            nodes, traits, detail::narrowIndexedDepths<4>(depths),
+            observedMaxDepth);
+    default:
+        throw std::logic_error("invalid internal depth prefix width");
     }
-    auto parentResult = detail::buildParentIndexRadixJoinResult(nodes, traits);
-    auto computed = detail::computeDepths<DepthPrefixBytes>(
-        nodes, parentResult.parentIndex, traits);
-    return detail::stableDepthGroupTrustedIdPermutation<DepthPrefixBytes>(
-        std::move(parentResult.idPermutation), computed.values,
-        static_cast<uint32_t>(computed.observedMax));
 }
 
-template <typename Nodes, typename Traits>
+template <IndexedNodeInput Nodes, typename Traits>
+    requires ForestTraits<Traits, detail::ForestSortingNode<Nodes>>
 std::vector<std::size_t> sortedOrderByDepthAndId(const Nodes &nodes,
                                                  const Traits &traits) {
     if (nodes.size() == 0) {
@@ -69,81 +67,75 @@ std::vector<std::size_t> sortedOrderByDepthAndId(const Nodes &nodes,
     auto computed =
         detail::computeDepths<4>(nodes, parentResult.parentIndex, traits);
     const uint32_t observedMaxDepth = computed.observedMax;
+    const std::size_t depthPrefixBytes =
+        detail::depthPrefixBytesForMax(observedMaxDepth);
 
-    if (observedMaxDepth <= detail::maxDepthForPrefix<1>()) {
+    switch (depthPrefixBytes) {
+    case 1: {
         auto depths = detail::narrowDepths<1>(computed.values);
         return detail::stableDepthGroupTrustedIdPermutation<1>(
             std::move(parentResult.idPermutation), depths, observedMaxDepth);
     }
-    if (observedMaxDepth <= detail::maxDepthForPrefix<2>()) {
+    case 2: {
         auto depths = detail::narrowDepths<2>(computed.values);
         return detail::stableDepthGroupTrustedIdPermutation<2>(
             std::move(parentResult.idPermutation), depths, observedMaxDepth);
     }
-    if (observedMaxDepth <= detail::maxDepthForPrefix<3>()) {
+    case 3:
         return detail::stableDepthGroupTrustedIdPermutation<3>(
             std::move(parentResult.idPermutation), computed.values,
             observedMaxDepth);
+    case 4:
+        return detail::stableDepthGroupTrustedIdPermutation<4>(
+            std::move(parentResult.idPermutation), computed.values,
+            observedMaxDepth);
+    default:
+        throw std::logic_error("invalid internal depth prefix width");
     }
-    return detail::stableDepthGroupTrustedIdPermutation<4>(
-        std::move(parentResult.idPermutation), computed.values,
-        observedMaxDepth);
 }
 
-template <std::size_t DepthPrefixBytes, typename Nodes, typename Traits>
+template <CopyableNodeInput Nodes, typename Traits>
+    requires ForestTraits<Traits, detail::ForestSortingNode<Nodes>>
 auto sortedCopyByDepthAndId(const Nodes &nodes, const Traits &traits) {
-    using Node = ForestSortingNode<Nodes>;
-    if (nodes.size() == 0) {
-        return std::vector<Node>{};
-    }
-    const auto order = sortedOrderByDepthAndId<DepthPrefixBytes>(nodes, traits);
-
-    std::vector<Node> sorted;
-    sorted.reserve(nodes.size());
-    for (std::size_t nodeIndex : order) {
-        sorted.push_back(nodes[nodeIndex]);
-    }
-    return sorted;
-}
-
-template <typename Nodes, typename Traits>
-auto sortedCopyByDepthAndId(const Nodes &nodes, const Traits &traits) {
-    using Node = ForestSortingNode<Nodes>;
+    using Node = detail::ForestSortingNode<Nodes>;
     if (nodes.size() == 0) {
         return std::vector<Node>{};
     }
     const auto order = sortedOrderByDepthAndId(nodes, traits);
 
     std::vector<Node> sorted;
-    sorted.reserve(nodes.size());
+    sorted.reserve(static_cast<std::size_t>(nodes.size()));
     for (std::size_t nodeIndex : order) {
         sorted.push_back(nodes[nodeIndex]);
     }
     return sorted;
 }
 
-template <std::size_t DepthPrefixBytes, typename Nodes, typename Traits>
+template <MutableNodeInput Nodes, typename Traits>
+    requires ForestTraits<Traits, detail::ForestSortingNode<Nodes>>
 void sortInPlaceByDepthAndId(Nodes &nodes, const Traits &traits) {
-    if (nodes.size() == 0) {
+    if (nodes.size() <= 1) {
         return;
     }
-    auto sorted = sortedCopyByDepthAndId<DepthPrefixBytes>(nodes, traits);
-    std::move(sorted.begin(), sorted.end(), nodes.begin());
-}
-
-template <typename Nodes, typename Traits>
-void sortInPlaceByDepthAndId(Nodes &nodes, const Traits &traits) {
-    if (nodes.size() == 0) {
-        return;
+    const std::vector<std::size_t> order =
+        sortedOrderByDepthAndId(nodes, traits);
+    std::vector<std::size_t> destination(order.size());
+    for (std::size_t outputIndex = 0; outputIndex < order.size();
+         ++outputIndex) {
+        destination[order[outputIndex]] = outputIndex;
     }
-    auto sorted = sortedCopyByDepthAndId(nodes, traits);
-    std::move(sorted.begin(), sorted.end(), nodes.begin());
+    for (std::size_t index = 0; index < destination.size(); ++index) {
+        while (destination[index] != index) {
+            const std::size_t target = destination[index];
+            std::swap(nodes[index], nodes[target]);
+            std::swap(destination[index], destination[target]);
+        }
+    }
 }
 
-template <std::size_t DepthPrefixBytes, typename Nodes, typename Traits>
+template <IndexedNodeInput Nodes, typename Traits>
+    requires ForestTraits<Traits, detail::ForestSortingNode<Nodes>>
 bool verifySortedByDepthAndId(const Nodes &nodes, const Traits &traits) {
-    static_assert(DepthPrefixBytes >= 1 && DepthPrefixBytes <= 4,
-                  "DepthPrefixBytes must be between 1 and 4");
     if (nodes.size() == 0) {
         return true;
     }
@@ -153,17 +145,7 @@ bool verifySortedByDepthAndId(const Nodes &nodes, const Traits &traits) {
     } catch (const std::runtime_error &) {
         return false;
     }
-
-    return detail::verifyWithParentIndex<DepthPrefixBytes>(nodes, parentIndex,
-                                                           traits);
-}
-
-template <typename Nodes, typename Traits>
-bool verifySortedByDepthAndId(const Nodes &nodes, const Traits &traits) {
-    if (nodes.size() == 0) {
-        return true;
-    }
-    return verifySortedByDepthAndId<4>(nodes, traits);
+    return detail::verifyWithParentIndex<4>(nodes, parentIndex, traits);
 }
 
 } // namespace forest_sorting

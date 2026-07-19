@@ -30,6 +30,8 @@
 *.exe
 *.out
 *.app
+*.pyc
+__pycache__/
 
 # CMake build outputs
 /build/

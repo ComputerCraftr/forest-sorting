@@ -2,6 +2,7 @@
 #define FOREST_SORTING_DETAIL_ID_CHUNKS_HPP
 
 #include "forest_sorting/detail/radix_counts.hpp"
+#include "forest_sorting/traits.hpp"
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -17,14 +18,6 @@ inline constexpr std::size_t idChunkCount = [] {
     return (Traits::id_byte_count / ChunkBytes) +
            ((Traits::id_byte_count % ChunkBytes) != 0 ? 1U : 0U);
 }();
-
-template <typename NodeTraits, typename NodeId>
-concept HasChunkMsbFirst = requires(
-    const NodeTraits &traits, const NodeId &nodeId, std::size_t chunkIndex) {
-    {
-        traits.chunk_msb_first(nodeId, chunkIndex)
-    } -> std::convertible_to<std::uint64_t>;
-};
 
 template <std::size_t SorterChunkBytes> struct ChunkValue;
 template <> struct ChunkValue<1> {
@@ -59,28 +52,27 @@ ChunkValueType<SorterChunkBytes> buildChunkFromBytes(const NodeId &nodeId,
     return static_cast<ChunkValueType<SorterChunkBytes>>(value);
 }
 
-template <typename NodeTraits, typename NodeId, std::size_t SorterChunkBytes>
-concept HasTemplatedChunkMsbFirst = requires(
-    const NodeTraits &traits, const NodeId &nodeId, std::size_t chunkIndex) {
-    {
-        traits.template chunk_msb_first<SorterChunkBytes>(nodeId, chunkIndex)
-    } -> std::convertible_to<ChunkValueType<SorterChunkBytes>>;
-};
+template <std::size_t SorterChunkBytes, typename NodeTraits, typename NodeId>
+concept HasCompatibleForestTraitsChunkAccess =
+    forest_sorting::ForestTraitsChunkAccess<SorterChunkBytes, NodeTraits> &&
+    requires(const NodeTraits &traits, const NodeId &nodeId,
+             std::size_t chunkIndex) {
+        {
+            traits.template chunk_msb_first<SorterChunkBytes>(nodeId,
+                                                              chunkIndex)
+        } -> std::convertible_to<ChunkValueType<SorterChunkBytes>>;
+    };
 
 template <std::size_t SorterChunkBytes = cached_comparison_chunk_bytes,
           typename NodeId, typename NodeTraits>
 ChunkValueType<SorterChunkBytes> chunkMsbFirst(const NodeId &nodeId,
                                                std::size_t chunkIndex,
                                                const NodeTraits &traits) {
-    if constexpr (HasTemplatedChunkMsbFirst<NodeTraits, NodeId,
-                                            SorterChunkBytes>) {
+    if constexpr (HasCompatibleForestTraitsChunkAccess<SorterChunkBytes,
+                                                       NodeTraits, NodeId>) {
         return static_cast<ChunkValueType<SorterChunkBytes>>(
             traits.template chunk_msb_first<SorterChunkBytes>(nodeId,
                                                               chunkIndex));
-    } else if constexpr (SorterChunkBytes == cached_comparison_chunk_bytes &&
-                         HasChunkMsbFirst<NodeTraits, NodeId>) {
-        return static_cast<ChunkValueType<SorterChunkBytes>>(
-            traits.chunk_msb_first(nodeId, chunkIndex));
     } else {
         return buildChunkFromBytes<SorterChunkBytes>(nodeId, chunkIndex,
                                                      traits);

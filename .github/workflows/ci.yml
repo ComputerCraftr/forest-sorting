@@ -6,7 +6,7 @@ on:
 
 jobs:
     format:
-        runs-on: ubuntu-26.04
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout
               uses: actions/checkout@v6
@@ -14,7 +14,11 @@ jobs:
             - name: Install formatters
               run: |
                   sudo apt-get update
-                  sudo apt-get install -y clang-format-22 pipx
+                  sudo apt-get install -y pipx wget
+                  wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+                  chmod +x /tmp/llvm.sh
+                  sudo /tmp/llvm.sh 22
+                  sudo apt-get install -y clang-format-22
 
             - name: Check C++ formatting
               run: |
@@ -26,11 +30,14 @@ jobs:
                   git ls-files -z ':(glob)**/CMakeLists.txt' '*.cmake' \
                     | xargs -0 pipx run --spec cmakelang==0.6.13 cmake-format --check
 
+            - name: Check Python
+              run: pipx run ruff check tests/tools
+
     build-and-test:
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
-                os: [ubuntu-26.04, macos-latest]
+                os: [ubuntu-24.04, macos-latest]
         steps:
             - name: Checkout
               uses: actions/checkout@v6
@@ -39,14 +46,19 @@ jobs:
               if: runner.os == 'Linux'
               run: |
                   sudo apt-get update
-                  sudo apt-get install -y clang-22 clang-tidy-22 clang-tools-22 ninja-build
+                  sudo apt-get install -y ninja-build wget
+                  wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+                  chmod +x /tmp/llvm.sh
+                  sudo /tmp/llvm.sh 22
+                  sudo apt-get install -y clang-tidy-22 clang-tools-22
 
             - name: Install LLVM, Ninja, and configure path (macOS)
               if: runner.os == 'macOS'
               run: |
                   brew list ninja >/dev/null 2>&1 || brew install ninja
-                  brew list llvm >/dev/null 2>&1 || brew install llvm
-                  LLVM_PREFIX="$(brew --prefix llvm)"
+                  brew list llvm@22 >/dev/null 2>&1 || brew install llvm@22
+                  LLVM_PREFIX="$(brew --prefix llvm@22)"
+                  echo "LLVM_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
                   echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
 
             - name: Configure (Debug, sanitizers)
@@ -54,10 +66,12 @@ jobs:
                   if [[ "$RUNNER_OS" == "Linux" ]]; then
                     cmake --preset debug \
                       -DCMAKE_CXX_COMPILER=clang++-22 \
+                      -DFOREST_API_MANIFEST_CLANG="$(command -v clang++-22)" \
                       -DFOREST_CLANG_TIDY="$(command -v clang-tidy-22)" \
                       -DFOREST_RUN_CLANG_TIDY="$(command -v run-clang-tidy-22)"
                   else
-                    cmake --preset debug
+                    cmake --preset debug \
+                      -DFOREST_API_MANIFEST_CLANG="$LLVM_PREFIX/bin/clang++"
                   fi
 
             - name: Build (Debug, sanitizers)
@@ -67,14 +81,24 @@ jobs:
               run: cmake --build --preset build-debug --target tidy
 
             - name: Test (Debug, sanitizers)
-              run: ctest --preset test-debug --output-on-failure
+              env:
+                  ASAN_OPTIONS: detect_leaks=1
+              run: |
+                  if ! ctest --preset test-debug --quiet \
+                    --output-log out/build/debug/ctest.log; then
+                    ctest --preset test-debug --rerun-failed --output-on-failure
+                    exit 1
+                  fi
 
             - name: Configure (Release)
               run: |
                   if [[ "$RUNNER_OS" == "Linux" ]]; then
-                    cmake --preset release -DCMAKE_CXX_COMPILER=clang++-22
+                    cmake --preset release \
+                      -DCMAKE_CXX_COMPILER=clang++-22 \
+                      -DFOREST_API_MANIFEST_CLANG="$(command -v clang++-22)"
                   else
-                    cmake --preset release
+                    cmake --preset release \
+                      -DFOREST_API_MANIFEST_CLANG="$LLVM_PREFIX/bin/clang++"
                   fi
 
             - name: Build (Release)
@@ -84,7 +108,24 @@ jobs:
               run: ./out/build/release/benchmarks/forest-sorting-bench
 
             - name: Test (Release)
-              run: ctest --preset test-release --output-on-failure
+              run: |
+                  if ! ctest --preset test-release --quiet \
+                    --output-log out/build/release/ctest.log; then
+                    ctest --preset test-release --rerun-failed --output-on-failure
+                    exit 1
+                  fi
+
+            - name: Upload CTest and audit reports
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: enforcement-${{ matrix.os }}
+                  if-no-files-found: ignore
+                  path: |
+                      out/build/debug/ctest.log
+                      out/build/debug/audit/*.json
+                      out/build/release/ctest.log
+                      out/build/release/audit/*.json
 
     gcc-warnings:
         runs-on: ubuntu-24.04
@@ -92,14 +133,81 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v6
 
-            - name: Install Ninja
-              run: sudo apt-get update && sudo apt-get install -y ninja-build
+            - name: Install Clang API manifest frontend and Ninja
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y ninja-build wget
+                  wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+                  chmod +x /tmp/llvm.sh
+                  sudo /tmp/llvm.sh 22
 
             - name: Configure (GCC warnings)
-              run: cmake --preset gcc-warnings
+              run: >
+                  cmake --preset gcc-warnings
+                  -DFOREST_API_MANIFEST_CLANG="$(command -v clang++-22)"
 
             - name: Build (GCC warnings as errors)
               run: cmake --build --preset build-gcc-warnings
 
             - name: Test (GCC)
-              run: ctest --preset test-gcc-warnings --output-on-failure
+              run: |
+                  if ! ctest --preset test-gcc-warnings --quiet \
+                    --output-log out/build/gcc-warnings/ctest.log; then
+                    ctest --preset test-gcc-warnings --rerun-failed \
+                      --output-on-failure
+                    exit 1
+                  fi
+
+            - name: Upload CTest and audit reports
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: enforcement-gcc
+                  if-no-files-found: ignore
+                  path: |
+                      out/build/gcc-warnings/ctest.log
+                      out/build/gcc-warnings/audit/*.json
+
+    windows-warning-policy:
+        runs-on: windows-latest
+        strategy:
+            matrix:
+                compiler: [cl, clang-cl]
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Configure MSVC environment
+              uses: ilammy/msvc-dev-cmd@v1
+
+            - name: Prove frontend warning policy without manifest compiler
+              shell: pwsh
+              run: |
+                  $build = "out/build/warning-${{ matrix.compiler }}-absent"
+                  cmake --fresh -S . -B $build -G Ninja `
+                    -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} `
+                    -DFOREST_SORTING_WARNING_PROBE_ONLY=ON `
+                    -DCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE
+                  if (!(Test-Path "$build/warning-policy-probes/completed")) {
+                    throw "warning probe marker was not created"
+                  }
+                  if (Test-Path "$build/CTestTestfile.cmake") {
+                    throw "warning-only configuration created normal tests"
+                  }
+
+            - name: Prove invalid manifest compiler is never inspected
+              shell: pwsh
+              run: |
+                  $build = "out/build/warning-${{ matrix.compiler }}-invalid"
+                  $cmake = (Get-Command cmake).Source
+                  cmake --fresh -S . -B $build -G Ninja `
+                    -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} `
+                    -DFOREST_SORTING_WARNING_PROBE_ONLY=ON `
+                    -DCMAKE_DISABLE_FIND_PACKAGE_Python3=TRUE `
+                    "-DFOREST_API_MANIFEST_CLANG=$cmake"
+                  if (!(Test-Path "$build/warning-policy-probes/completed")) {
+                    throw "warning probe marker was not created"
+                  }
+                  if (Test-Path "$build/CTestTestfile.cmake") {
+                    throw "warning-only configuration created normal tests"
+                  }

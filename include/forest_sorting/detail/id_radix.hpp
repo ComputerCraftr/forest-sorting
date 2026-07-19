@@ -12,7 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <type_traits>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -26,8 +26,16 @@ inline constexpr std::size_t small_id_range_sort_threshold = 32;
 inline constexpr std::size_t production_id_radix_chunk_bytes = 4;
 
 inline constexpr std::size_t production_touched_count_max_range_size = 512;
-using ProductionIdCountPolicy =
-    BitmaskTouchedCountsUpTo<production_touched_count_max_range_size>;
+using ProductionIdCountPolicy = IdCountPolicy<
+    BitmaskTouchedCountsUpTo<production_touched_count_max_range_size>>;
+
+struct NoopTerminalRangeObserver {
+    static constexpr void observe(std::span<const std::size_t> indices,
+                                  std::size_t byteOffset) noexcept {
+        (void)indices;
+        (void)byteOffset;
+    }
+};
 
 struct IdMsdChunkRange {
     std::size_t begin;
@@ -124,45 +132,20 @@ stableLsdSortIndexRangeByIdMsdChunkWithCounterPreFilled(
     return source;
 }
 
-template <std::size_t RadixChunkBytes, typename IdForIndex, typename IdTraits,
-          typename CountScratch>
-IdMsdChunkEntry<RadixChunkBytes> *
-stableLsdSortIndexRangeByIdMsdChunkWithCounter(
-    std::vector<std::size_t> &order, IdForIndex idForIndex,
-    const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
-    std::size_t chunkIndex, IdMsdChunkEntry<RadixChunkBytes> *current,
-    IdMsdChunkEntry<RadixChunkBytes> *next, CountScratch &countScratch) {
-    const std::size_t rangeSize = rangeEnd - rangeBegin;
-    if (rangeSize <= 1) {
-        return current;
-    }
-
-    for (std::size_t offset = 0, orderOffset = rangeBegin; offset < rangeSize;
-         ++offset, ++orderOffset) {
-        const std::size_t itemIndex = order[orderOffset];
-        current[offset] = {chunkMsbFirst<RadixChunkBytes>(idForIndex(itemIndex),
-                                                          chunkIndex, traits),
-                           itemIndex};
-    }
-
-    return stableLsdSortIndexRangeByIdMsdChunkWithCounterPreFilled<
-        RadixChunkBytes>(order, rangeBegin, rangeEnd, current, next,
-                         countScratch);
-}
-
 template <std::size_t RadixChunkBytes, typename CountPolicy, typename Scratch>
 IdMsdChunkEntry<RadixChunkBytes> *dispatchLsdIndexMsdChunkSortPreFilled(
     std::vector<std::size_t> &order, std::size_t rangeBegin,
     std::size_t rangeEnd, IdMsdChunkEntry<RadixChunkBytes> *current,
     IdMsdChunkEntry<RadixChunkBytes> *next, Scratch &touchedScratch) {
     const std::size_t rangeSize = rangeEnd - rangeBegin;
-    if constexpr (std::is_same_v<CountPolicy, FullClearCounts>) {
-        FullClearCountScratch fullClearScratch;
+    using CounterTraits = RadixCounterTraits<CountPolicy>;
+    if constexpr (CounterTraits::alwaysUsePolicy) {
+        typename CounterTraits::policy_scratch_type countScratch;
         return stableLsdSortIndexRangeByIdMsdChunkWithCounterPreFilled<
             RadixChunkBytes>(order, rangeBegin, rangeEnd, current, next,
-                             fullClearScratch);
+                             countScratch);
     } else {
-        if (rangeSize <= CountPolicy::max_size) {
+        if (CounterTraits::usePolicyForRange(rangeSize)) {
             return stableLsdSortIndexRangeByIdMsdChunkWithCounterPreFilled<
                 RadixChunkBytes>(order, rangeBegin, rangeEnd, current, next,
                                  touchedScratch);
@@ -174,18 +157,18 @@ IdMsdChunkEntry<RadixChunkBytes> *dispatchLsdIndexMsdChunkSortPreFilled(
     }
 }
 
-template <std::size_t RadixChunkBytes, typename CountPolicy = FullClearCounts>
+template <std::size_t RadixChunkBytes,
+          IdRadixCountPolicy Policy = IdCountPolicy<FullClearCounts>>
 struct IdMsdChunkSortWorkspace {
     static constexpr std::size_t radix_chunk_bytes = RadixChunkBytes;
+    using CountPolicy = Policy::counter_policy;
 
     std::vector<IdMsdChunkRange> pending;
     std::unique_ptr<IdMsdChunkEntry<RadixChunkBytes>[]> current;
     std::unique_ptr<IdMsdChunkEntry<RadixChunkBytes>[]> next;
     std::size_t capacity = 0;
 
-    using ScratchType =
-        std::conditional_t<std::is_same_v<CountPolicy, FullClearCounts>,
-                           EmptyScratch, BitmaskTouchedCountScratch>;
+    using ScratchType = RadixCounterTraits<CountPolicy>::workspace_scratch_type;
     ScratchType touchedScratch;
 
     void allocate(std::size_t rangeSize) {
@@ -203,22 +186,26 @@ struct IdMsdChunkSortWorkspace {
     }
 };
 
-template <std::size_t RadixChunkBytes, typename CountPolicy,
+template <std::size_t RadixChunkBytes, IdRadixCountPolicy Policy,
           std::size_t SmallThreshold, typename IdForIndex, typename IdTraits,
           typename ChunkExtractor, typename PushNextRange,
-          typename SmallRangeSorter>
+          typename SmallRangeSorter, typename TerminalRangeObserver>
 void processIdMsdChunkRange(
     std::vector<std::size_t> &order, IdForIndex idForIndex,
     const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
-    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> &workspace,
+    IdMsdChunkSortWorkspace<RadixChunkBytes, Policy> &workspace,
     ChunkExtractor chunkExtractor, bool hasNextRange,
-    PushNextRange pushNextRange, SmallRangeSorter smallRangeSorter) {
+    PushNextRange pushNextRange, SmallRangeSorter smallRangeSorter,
+    TerminalRangeObserver &observer, std::size_t byteOffset) {
     const std::size_t rangeSize = rangeEnd - rangeBegin;
     if (rangeSize <= 1) {
         return;
     }
 
     if (rangeSize <= SmallThreshold) {
+        observer.observe(
+            std::span<const std::size_t>{order.data() + rangeBegin, rangeSize},
+            byteOffset);
         smallRangeSorter(order, idForIndex, traits, rangeBegin, rangeEnd);
         return;
     }
@@ -246,7 +233,8 @@ void processIdMsdChunkRange(
     }
 
     IdMsdChunkEntry<RadixChunkBytes> *sortedChunks =
-        dispatchLsdIndexMsdChunkSortPreFilled<RadixChunkBytes, CountPolicy>(
+        dispatchLsdIndexMsdChunkSortPreFilled<RadixChunkBytes,
+                                              typename Policy::counter_policy>(
             order, rangeBegin, rangeEnd, workspace.current.get(),
             workspace.next.get(), workspace.touchedScratch);
 
@@ -270,14 +258,17 @@ void processIdMsdChunkRange(
     pushNextRange(equalChunkBegin, rangeEnd);
 }
 
-template <std::size_t RadixChunkBytes, typename CountPolicy = FullClearCounts,
+template <std::size_t RadixChunkBytes,
+          IdRadixCountPolicy Policy = IdCountPolicy<FullClearCounts>,
           std::size_t SmallThreshold = small_id_range_sort_threshold,
-          typename IdForIndex, typename IdTraits>
+          typename IdForIndex, typename IdTraits,
+          typename TerminalRangeObserver = NoopTerminalRangeObserver>
 void sortIndexRangeByIdMsdChunks(
     std::vector<std::size_t> &order, IdForIndex idForIndex,
     const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
     std::size_t chunkIndex,
-    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> &workspace) {
+    IdMsdChunkSortWorkspace<RadixChunkBytes, Policy> &workspace,
+    TerminalRangeObserver observer = {}) {
     workspace.allocate(rangeEnd - rangeBegin);
     auto linearSmallRangeSorter =
         [](std::vector<std::size_t> &sortOrder, auto sortIdForIndex,
@@ -286,10 +277,10 @@ void sortIndexRangeByIdMsdChunks(
             stableSortIndexRangeSmallLinear<SmallThreshold>(
                 sortOrder, sortIdForIndex, sortTraits, sortBegin, sortEnd);
         };
-    sortIndexRangeByIdMsdChunksWithSmallSorter<RadixChunkBytes, CountPolicy,
+    sortIndexRangeByIdMsdChunksWithSmallSorter<RadixChunkBytes, Policy,
                                                SmallThreshold>(
         order, idForIndex, traits, rangeBegin, rangeEnd, chunkIndex, workspace,
-        linearSmallRangeSorter);
+        linearSmallRangeSorter, std::move(observer));
 }
 
 template <std::size_t MaxRangeSize = small_id_range_sort_threshold,
@@ -304,24 +295,21 @@ void stableSortRangeSmallLinear(std::vector<std::size_t> &order,
                                                   rangeBegin, rangeEnd);
 }
 
-template <std::size_t RadixChunkBytes, typename CountPolicy = FullClearCounts,
+template <std::size_t RadixChunkBytes,
+          IdRadixCountPolicy Policy = IdCountPolicy<FullClearCounts>,
           std::size_t SmallThreshold = small_id_range_sort_threshold,
-          typename IdForIndex, typename IdTraits, typename SmallRangeSorter>
+          typename IdForIndex, typename IdTraits, typename SmallRangeSorter,
+          typename TerminalRangeObserver = NoopTerminalRangeObserver>
 void sortIndexRangeByIdMsdChunksWithSmallSorter(
     std::vector<std::size_t> &order, IdForIndex idForIndex,
     const IdTraits &traits, std::size_t rangeBegin, std::size_t rangeEnd,
     std::size_t chunkIndex,
-    IdMsdChunkSortWorkspace<RadixChunkBytes, CountPolicy> &workspace,
-    SmallRangeSorter smallRangeSorter) {
+    IdMsdChunkSortWorkspace<RadixChunkBytes, Policy> &workspace,
+    SmallRangeSorter smallRangeSorter, TerminalRangeObserver observer = {}) {
     assert(rangeBegin <= rangeEnd);
     assert(rangeEnd <= order.size());
     const std::size_t initialRangeSize = rangeEnd - rangeBegin;
     if (initialRangeSize <= 1) {
-        return;
-    }
-
-    if (initialRangeSize <= SmallThreshold) {
-        smallRangeSorter(order, idForIndex, traits, rangeBegin, rangeEnd);
         return;
     }
 
@@ -353,9 +341,10 @@ void sortIndexRangeByIdMsdChunksWithSmallSorter(
             workspace.pending.push_back(
                 IdMsdChunkRange{childBegin, childEnd, nextChunkIndex});
         };
-        processIdMsdChunkRange<RadixChunkBytes, CountPolicy, SmallThreshold>(
+        processIdMsdChunkRange<RadixChunkBytes, Policy, SmallThreshold>(
             order, idForIndex, traits, currentBegin, currentEnd, workspace,
-            chunkExtractor, hasNextRange, pushNextRange, smallRangeSorter);
+            chunkExtractor, hasNextRange, pushNextRange, smallRangeSorter,
+            observer, currentChunkIndex * RadixChunkBytes);
     }
 }
 

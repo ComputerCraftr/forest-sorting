@@ -1,0 +1,39 @@
+{
+    "conditions": {
+        "ifndef __SIZEOF_INT128__": {
+            "headers": [
+                "forest_sorting/uint128.hpp",
+                "forest_sorting/uint128_forest.hpp"
+            ],
+            "present_configuration": "uint128-enabled",
+            "absent_configuration": "uint128-unavailable"
+        }
+    },
+    "configurations": {
+        "portable-generic": {
+            "headers": [
+                "forest_sorting/algorithms.hpp",
+                "forest_sorting/traits.hpp"
+            ],
+            "manifest": "public_api_portable_generic_manifest.json"
+        },
+        "uint128-enabled": {
+            "headers": [
+                "forest_sorting/algorithms.hpp",
+                "forest_sorting/traits.hpp",
+                "forest_sorting/uint128.hpp",
+                "forest_sorting/uint128_forest.hpp"
+            ],
+            "manifest": "public_api_uint128_enabled_manifest.json"
+        },
+        "uint128-unavailable": {
+            "compile_fail_headers": {
+                "forest_sorting/uint128.hpp": "forest_sorting UInt128 support requires unsigned __int128",
+                "forest_sorting/uint128_forest.hpp": "forest_sorting UInt128 forest compatibility requires unsigned __int128"
+            },
+            "undefines": [
+                "__SIZEOF_INT128__"
+            ]
+        }
+    }
+}

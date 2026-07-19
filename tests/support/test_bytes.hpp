@@ -40,6 +40,14 @@ template <std::size_t ByteCount> struct HashFreeTestBytesTraits {
             nodeId.bytes, [](uint8_t byteValue) { return byteValue == 0; });
     }
 
+    bool less(const Id &lhs, const Id &rhs) const noexcept {
+        return lhs.bytes < rhs.bytes;
+    }
+
+    bool equal(const Id &lhs, const Id &rhs) const noexcept {
+        return lhs.bytes == rhs.bytes;
+    }
+
     uint8_t byte_msb_first(const Id &nodeId,
                            std::size_t byteIndex) const noexcept {
         return nodeId.bytes[byteIndex];
@@ -57,11 +65,6 @@ template <std::size_t ByteCount> struct HashFreeTestBytesTraits {
             return forest_sorting::detail::buildChunkFromBytes<ChunkBytes>(
                 nodeId, chunkIndex, *this);
         }
-    }
-
-    uint64_t chunk_msb_first(const Id &nodeId,
-                             std::size_t chunkIndex) const noexcept {
-        return chunk_msb_first<8>(nodeId, chunkIndex);
     }
 };
 
